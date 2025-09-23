@@ -26,6 +26,9 @@
   "engines": {
     "node": ">=14.0.0"
   },
+  "dependencies": {
+    "fs-extra": "^10.1.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/404background/node-red-contrib-llm-plugin.git"
