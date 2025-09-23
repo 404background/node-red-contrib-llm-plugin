@@ -1,0 +1,259 @@
+<!--
+  VibeCoding Plugin for Node-RED
+  Provides LLM-driven flow generation using Ollama
+-->
+<script type="text/javascript">
+(function() {
+    console.log('[VibeCoding] Editor script loaded');
+    
+    // Session history for conversation context
+    var sessionHistory = [];
+    
+    RED.plugins.registerPlugin("vibecoding", {
+        onadd: function() {
+            console.log('[VibeCoding] Plugin onadd called');
+            
+            // Check if runtime is available before proceeding
+            new Promise((resolve, reject) => {
+                // Simple check to ensure Node-RED is ready
+                if (RED && RED.sidebar) {
+                    resolve();
+                } else {
+                    reject(new Error('Node-RED not fully loaded'));
+                }
+            })
+            .then(() => {
+                _onAdd();
+            })
+            .catch((error) => {
+                console.error('[VibeCoding] Plugin setup failed:', error);
+            });
+        },
+        
+        onremove: function() {
+            console.log('[VibeCoding] Plugin removed');
+            RED.sidebar.removeTab('vibecoding-sidebar');
+        }
+    });
+    
+    function _onAdd() {
+        console.log('[VibeCoding] _onAdd called');
+        
+        var tabId = 'vibecoding-sidebar';
+        var title = 'VibeCoding';
+
+        // Create HTML content directly
+        var html = [
+            '<div id="vibecoding-tab" class="sidebar-tab" style="padding: 10px;">',
+            '  <h3>VibeCoding</h3>',
+            '  <div>',
+            '    <label for="vibe-prompt">Instruction</label>',
+            '    <textarea id="vibe-prompt" rows="5" style="width:100%; margin-top:4px;" placeholder="Describe the flow you want (e.g., \'add an inject node that sends payload &quot;hello&quot; to debug\')"></textarea>',
+            '  </div>',
+            '  <div style="margin-top:8px; display:flex; gap:8px;">',
+            '    <button id="vibe-send" class="red-ui-button" type="button">Send</button>',
+            '    <button id="vibe-clear" class="red-ui-button" type="button">Clear</button>',
+            '  </div>',
+            '  <div id="vibe-history" style="margin-top:12px; max-height:200px; overflow-y:auto; border:1px solid #ccc; padding:8px; display:none;">',
+            '    <h4>Session History</h4>',
+            '    <div id="vibe-history-content"></div>',
+            '  </div>',
+            '</div>'
+        ].join('');
+
+        // Add sidebar tab
+        console.log('[VibeCoding] Adding sidebar tab');
+        RED.sidebar.addTab({
+            id: tabId,
+            label: title,
+            name: title,
+            content: html,
+            closeable: false,
+            visible: true
+        });
+
+        // Add event listeners after a short delay to ensure DOM is ready
+        setTimeout(function() {
+            console.log('[VibeCoding] Setting up event listeners');
+            
+            var sendButton = $('#vibe-send');
+            var clearButton = $('#vibe-clear'); 
+            var promptTextarea = $('#vibe-prompt');
+            var historyDiv = $('#vibe-history');
+            var historyContent = $('#vibe-history-content');
+            
+            if (sendButton.length && clearButton.length && promptTextarea.length) {
+                console.log('[VibeCoding] Elements found, attaching events');
+                
+                sendButton.on('click', function() {
+                    var prompt = promptTextarea.val().trim();
+                    if (!prompt) {
+                        RED.notify('Please enter an instruction', 'warning');
+                        return;
+                    }
+                    
+                    console.log('[VibeCoding] Sending prompt:', prompt);
+                    sendToOllama(prompt, historyContent, historyDiv);
+                });
+                
+                clearButton.on('click', function() {
+                    console.log('[VibeCoding] Clearing session');
+                    sessionHistory = [];
+                    promptTextarea.val('');
+                    historyContent.empty();
+                    historyDiv.hide();
+                    RED.notify('Session cleared', 'success');
+                });
+                
+                // Enter key support
+                promptTextarea.on('keydown', function(e) {
+                    if (e.ctrlKey && e.keyCode === 13) { // Ctrl+Enter
+                        sendButton.click();
+                    }
+                });
+                
+            } else {
+                console.error('[VibeCoding] Could not find required DOM elements');
+            }
+        }, 500);
+    }
+    
+    function sendToOllama(prompt, historyContent, historyDiv) {
+        // Add user message to history
+        sessionHistory.push({
+            role: 'user',
+            content: prompt
+        });
+        
+        // Show history
+        updateHistory(historyContent, historyDiv);
+        
+        // Prepare request payload
+        var requestData = {
+            model: 'llama2', // Default model, you can make this configurable
+            prompt: buildContextPrompt(prompt),
+            stream: false
+        };
+        
+        // Show loading state
+        $('#vibe-send').text('Sending...').prop('disabled', true);
+        
+        $.ajax({
+            url: 'http://localhost:11434/api/generate',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(requestData),
+            timeout: 30000, // 30 second timeout
+            success: function(response) {
+                console.log('[VibeCoding] Ollama response:', response);
+                
+                if (response && response.response) {
+                    // Add assistant response to history
+                    sessionHistory.push({
+                        role: 'assistant', 
+                        content: response.response
+                    });
+                    
+                    updateHistory(historyContent, historyDiv);
+                    
+                    // Try to extract and import flow JSON
+                    try {
+                        var flowJson = extractFlowJson(response.response);
+                        if (flowJson && Array.isArray(flowJson) && flowJson.length > 0) {
+                            console.log('[VibeCoding] Importing flow:', flowJson);
+                            RED.nodes.import(flowJson);
+                            RED.view.redraw();
+                            RED.notify('Flow generated and imported successfully!', 'success');
+                        } else {
+                            RED.notify('LLM responded but no valid flow JSON found', 'warning');
+                        }
+                    } catch (e) {
+                        console.error('[VibeCoding] Error processing response:', e);
+                        RED.notify('Error processing LLM response: ' + e.message, 'error');
+                    }
+                } else {
+                    RED.notify('Invalid response from Ollama', 'error');
+                }
+            },
+            error: function(xhr, status, error) {
+                console.error('[VibeCoding] Ollama request failed:', error);
+                var errorMsg = 'Failed to connect to Ollama. Make sure it\'s running on localhost:11434';
+                if (status === 'timeout') {
+                    errorMsg = 'Request timed out. Try a simpler prompt or check Ollama performance.';
+                }
+                RED.notify(errorMsg, 'error');
+                
+                // Add error to history
+                sessionHistory.push({
+                    role: 'error',
+                    content: errorMsg
+                });
+                updateHistory(historyContent, historyDiv);
+            },
+            complete: function() {
+                // Reset button state
+                $('#vibe-send').text('Send').prop('disabled', false);
+            }
+        });
+    }
+    
+    function buildContextPrompt(userPrompt) {
+        var systemPrompt = 'You are a Node-RED flow generator. Generate valid Node-RED flow JSON arrays for the given instructions. Only respond with valid JSON array format. Include node IDs, types, coordinates (x,y), and proper wiring between nodes. Common node types: inject, debug, function, switch, change, template, http request, mqtt in/out.';
+        
+        var fullPrompt = systemPrompt + '\n\nUser request: ' + userPrompt;
+        
+        // Add conversation history for context
+        if (sessionHistory.length > 1) {
+            fullPrompt += '\n\nPrevious conversation:';
+            sessionHistory.slice(0, -1).forEach(function(msg) {
+                if (msg.role !== 'error') {
+                    fullPrompt += '\n' + msg.role + ': ' + msg.content;
+                }
+            });
+        }
+        
+        return fullPrompt;
+    }
+    
+    function extractFlowJson(response) {
+        // Try to find JSON array in the response
+        var jsonMatch = response.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+            try {
+                return JSON.parse(jsonMatch[0]);
+            } catch (e) {
+                console.error('[VibeCoding] JSON parse error:', e);
+            }
+        }
+        return null;
+    }
+    
+    function updateHistory(historyContent, historyDiv) {
+        historyContent.empty();
+        
+        sessionHistory.forEach(function(msg) {
+            var msgClass = 'user';
+            var msgLabel = 'You';
+            
+            if (msg.role === 'assistant') {
+                msgClass = 'assistant';
+                msgLabel = 'LLM';
+            } else if (msg.role === 'error') {
+                msgClass = 'error';
+                msgLabel = 'Error';
+            }
+            
+            var msgDiv = $('<div class="vibe-msg vibe-msg-' + msgClass + '" style="margin-bottom:8px; padding:4px; border-left:3px solid ' + 
+                          (msgClass === 'user' ? '#0066cc' : msgClass === 'assistant' ? '#00cc66' : '#cc3300') + ';">');
+            msgDiv.append('<strong>' + msgLabel + ':</strong><br>');
+            msgDiv.append($('<pre style="white-space:pre-wrap; font-family:inherit; margin:0;">').text(msg.content));
+            historyContent.append(msgDiv);
+        });
+        
+        historyDiv.show();
+        historyContent.scrollTop(historyContent[0].scrollHeight);
+    }
+    
+    console.log('[VibeCoding] Plugin registration complete');
+})();
+</script>
