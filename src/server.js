@@ -1,3 +1,4 @@
+
 // VibeCoding Plugin - Server Side JavaScript
 const fs = require('fs-extra');
 const path = require('path');
@@ -51,199 +52,270 @@ function createVibeCodingServer(RED) {
                 return JSON.parse(content);
             }
         } catch (error) {
-            console.error("[VibeCoding] Error loading recent models:", error);
+            console.error("[VibeCoding] Error reading recent models:", error);
         }
         return [];
     }
-    
-    // Build enhanced prompt for Ollama
-    function buildPrompt(userPrompt, flowContext, isFlowRequest) {
-        let systemPrompt = '';
-        
-        if (isFlowRequest) {
-            systemPrompt = `You are a Node-RED flow generator assistant. Your task is to create Node-RED flows based on user requests.
 
-IMPORTANT RESPONSE FORMAT RULES:
-1. When generating a flow, ALWAYS format your response as follows:
-   - First: Brief explanation of what the flow does
-   - Then: Flow JSON wrapped in \`\`\`json and \`\`\` markers
-   - Finally: Usage instructions or additional notes
-
-2. The JSON must be valid Node-RED flow format with:
-   - "nodes" array containing node objects
-   - Each node must have: "id", "type", "x", "y", "z" properties
-   - Valid node types: "inject", "debug", "function", "http request", "mqtt in", "mqtt out", etc.
-   - Proper "wires" arrays for connections between nodes
-
-3. NEVER include JSON in non-flow responses (general questions, explanations, etc.)
-
-${flowContext ? buildFlowContextDescription(flowContext) : 'No current flow is open.'}
-
-User request: ${userPrompt}`;
-        } else {
-            systemPrompt = `You are a helpful Node-RED assistant. Answer questions about Node-RED, flows, and automation.
-
-IMPORTANT: Do NOT include any JSON code blocks in your response unless the user specifically asks to generate or modify a flow.
-
-${flowContext ? buildFlowContextDescription(flowContext) : 'No current flow context available.'}
-
-User question: ${userPrompt}`;
-        }
-        
-        return systemPrompt;
-    }
-    
-    // Build detailed flow context description
-    function buildFlowContextDescription(flowContext) {
-        if (!flowContext || !flowContext.nodes) {
-            return 'Current flow: Empty or no flow selected.';
-        }
-        
-        let description = `Current flow context: "${flowContext.label || 'Untitled Flow'}" (${flowContext.nodes.length} nodes)
-
-NODES IN CURRENT FLOW:`;
-        
-        flowContext.nodes.forEach((node, index) => {
-            description += `\n${index + 1}. ${node.type}`;
-            if (node.name) description += ` (${node.name})`;
+    // Utility function to save chat history
+    function saveChatHistory(chatId, chatData) {
+        try {
+            const date = new Date().toISOString().split('T')[0];
+            const sanitizedTitle = chatData.title.replace(/[<>:"/\\|?*]/g, '-').substring(0, 50);
+            const filename = `${date}-${sanitizedTitle}-${chatId.substring(0, 8)}.json`;
+            const filepath = path.join(logsDir, 'chats', filename);
             
-            // Add type-specific details
-            if (node.type === 'function' && node.func) {
-                description += `\n   Function code: ${node.func.substring(0, 100)}${node.func.length > 100 ? '...' : ''}`;
-            } else if (node.type === 'inject' && node.payload) {
-                description += `\n   Payload: ${node.payload} (${node.payloadType})`;
-            } else if (node.type === 'debug' && node.property) {
-                description += `\n   Debug property: ${node.property}`;
-            } else if (node.type === 'change' && node.rules && node.rules.length > 0) {
-                description += `\n   Rules: ${node.rules.length} change rule(s)`;
-            } else if (node.type === 'http request' && node.url) {
-                description += `\n   Method: ${node.method || 'GET'}, URL: ${node.url}`;
+            fs.ensureDirSync(path.dirname(filepath));
+            fs.writeFileSync(filepath, JSON.stringify(chatData, null, 2));
+        } catch (error) {
+            console.error("[VibeCoding] Error saving chat history:", error);
+        }
+    }
+
+    // Utility function to load all chat histories
+    function loadAllChatHistories() {
+        try {
+            const chatsDir = path.join(logsDir, 'chats');
+            if (!fs.existsSync(chatsDir)) {
+                return {};
             }
+            
+            const chatFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith('.json'));
+            const chatHistories = {};
+            
+            chatFiles.forEach(file => {
+                try {
+                    const filepath = path.join(chatsDir, file);
+                    const content = fs.readFileSync(filepath, 'utf8');
+                    const chatData = JSON.parse(content);
+                    chatHistories[chatData.id] = chatData;
+                } catch (error) {
+                    console.error("[VibeCoding] Error reading chat file:", file, error);
+                }
+            });
+            
+            return chatHistories;
+        } catch (error) {
+            console.error("[VibeCoding] Error loading chat histories:", error);
+            return {};
+        }
+    }
+
+    // Utility function to build flow context description
+    function buildFlowContextDescription(flow) {
+        if (!flow || (!flow.nodes || flow.nodes.length === 0)) {
+            return "No current flow context available.";
+        }
+        
+        let description = "Current Node-RED flow context:\n\n";
+        
+        // Describe nodes
+        description += "NODES:\n";
+        flow.nodes.forEach(node => {
+            description += `- ${node.type} (ID: ${node.id})`;
+            if (node.name) description += ` - Name: "${node.name}"`;
+            
+            // Add important properties based on node type
+            if (node.properties) {
+                const props = node.properties;
+                if (props.topic) description += ` - Topic: "${props.topic}"`;
+                if (props.payload) description += ` - Payload: "${props.payload}"`;
+                if (props.url) description += ` - URL: "${props.url}"`;
+                if (props.method) description += ` - Method: "${props.method}"`;
+                if (props.func) description += ` - Function code length: ${props.func.length} chars`;
+            }
+            description += "\n";
         });
         
-        if (flowContext.connections && flowContext.connections.length > 0) {
-            description += `\n\nCONNECTIONS:`;
-            flowContext.connections.forEach((conn, index) => {
-                const fromNode = flowContext.nodes.find(n => n.id === conn.from.id);
-                const toNode = flowContext.nodes.find(n => n.id === conn.to.id);
-                description += `\n${index + 1}. ${fromNode?.type || 'unknown'} → ${toNode?.type || 'unknown'}`;
+        // Describe connections
+        if (flow.connections && flow.connections.length > 0) {
+            description += "\nCONNECTIONS:\n";
+            flow.connections.forEach(conn => {
+                description += `- ${conn.from.type} (${conn.from.name || conn.from.id}) → ${conn.to.type} (${conn.to.name || conn.to.id})\n`;
             });
         }
         
         return description;
     }
     
-    // Detect if user wants a flow generated
-    function isFlowGenerationRequest(prompt) {
-        const flowKeywords = [
-            'create flow', 'generate flow', 'make flow', 'build flow',
-            'add node', 'create node', 'inject node', 'debug node',
-            'http request', 'mqtt', 'function node', 'switch node',
-            'flow that', 'flow to', 'nodes that', 'connect'
-        ];
-        
-        const lowercasePrompt = prompt.toLowerCase();
-        return flowKeywords.some(keyword => lowercasePrompt.includes(keyword));
-    }
+    // Function to build enhanced prompt
+    function buildPrompt(userPrompt, flowContext) {
+        let prompt = `You are a helpful Node-RED flow assistant. You help users create, modify, and understand Node-RED flows.
 
-    // Generate with Ollama
-    function generateWithOllama(model, prompt, flowContext, callback) {
-        const isFlowRequest = isFlowGenerationRequest(prompt);
-        const enhancedPrompt = buildPrompt(prompt, flowContext, isFlowRequest);
+FLOW JSON REQUIREMENTS:
+- Always wrap flow JSON in \`\`\`json code blocks
+- Use proper Node-RED node structure with id, type, name, x, y, z, wires properties
+- Generate unique IDs for each node (use random strings like "abc123")
+- Set appropriate x, y coordinates for visual layout (spread nodes out, typical spacing is 150-200 pixels)
+- Include the 'z' property with the workspace ID (use "flow1" as default)
+- Ensure wires array connects nodes properly (array of arrays, each sub-array represents output port connections)
+- Include all necessary properties for each node type
+- For inject nodes: set repeat to "" and crontab to ""
+- For function nodes: include complete JavaScript code in 'func' property
+- For debug nodes: set console to "false" and tostatus to false
+- Make flows that actually work and are useful
+
+`;
         
-        // Simple chat log entry
-        const chatEntry = {
-            timestamp: new Date().toISOString(),
-            user: prompt,
-            model: model,
-            hasFlowContext: !!flowContext
-        };
+        if (flowContext) {
+            prompt += buildFlowContextDescription(flowContext) + "\n\n";
+        }
         
-        const logFile = path.join(logsDir, `chat-${new Date().toISOString().split('T')[0]}.json`);
-        logToFile(logFile, chatEntry);
+        prompt += `USER REQUEST: ${userPrompt}
+
+Please provide a helpful response. If the user is asking for a flow, provide working Node-RED JSON that accomplishes their goal.`;
         
-        // Prepare Ollama request
-        const requestData = JSON.stringify({
-            model: model,
-            prompt: enhancedPrompt,
-            stream: false,
-            options: {
-                temperature: 0.1,
-                top_p: 0.9
-            }
-        });
-        
-        const options = {
-            hostname: 'localhost',
-            port: 11434,
-            path: '/api/generate',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(requestData)
-            },
-            timeout: 120000 // 2 minutes timeout for generation
-        };
-        
-        const request = http.request(options, (response) => {
-            let data = '';
-            response.on('data', chunk => data += chunk);
-            response.on('end', () => {
-                try {
-                    const result = JSON.parse(data);
-                    
-                    if (result.response) {
-                        // Log chat response only
-                        const responseEntry = {
-                            timestamp: new Date().toISOString(),
-                            assistant: result.response.substring(0, 500) + (result.response.length > 500 ? '...' : ''),
-                            model: model
-                        };
-                        logToFile(logFile, responseEntry);
-                        
-                        callback(null, result.response);
-                    } else {
-                        const error = result.error || 'Unknown error from Ollama';
-                        callback(error, null);
-                    }
-                } catch (e) {
-                    callback(`Failed to parse Ollama response: ${e.message}`, null);
-                }
+        return prompt;
+    }
+    
+    // Function to make HTTP request to Ollama
+    function generateWithOllama(model, prompt, timeout = 120000) {
+        return new Promise((resolve, reject) => {
+            const data = JSON.stringify({
+                model: model,
+                prompt: prompt,
+                stream: false
             });
+            
+            const options = {
+                hostname: 'localhost',
+                port: 11434,
+                path: '/api/generate',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(data)
+                },
+                timeout: timeout
+            };
+            
+            const req = http.request(options, (res) => {
+                let responseData = '';
+                
+                res.on('data', (chunk) => {
+                    responseData += chunk;
+                });
+                
+                res.on('end', () => {
+                    try {
+                        const response = JSON.parse(responseData);
+                        if (response.response) {
+                            resolve(response.response);
+                        } else {
+                            reject(new Error('No response from model'));
+                        }
+                    } catch (parseError) {
+                        reject(new Error('Invalid response format'));
+                    }
+                });
+            });
+            
+            req.on('error', (error) => {
+                reject(error);
+            });
+            
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Request timed out'));
+            });
+            
+            req.write(data);
+            req.end();
         });
-        
-        request.on('error', (error) => {
-            callback(`Ollama request failed: ${error.message}`, null);
-        });
-        
-        request.on('timeout', () => {
-            request.destroy();
-            callback('Ollama request timed out', null);
-        });
-        
-        request.write(requestData);
-        request.end();
     }
     
     // HTTP endpoint for generation
     RED.httpAdmin.post('/vibecoding/generate', function(req, res) {
-        console.log('[VibeCoding] Generate endpoint called');
-        const { model, prompt, currentFlow } = req.body;
+    const { model, prompt, currentFlow } = req.body;
+    // currentFlowが大きい場合はサマリのみ出力
+    let logFlow = currentFlow;
+    if (currentFlow && currentFlow.nodes) {
+        logFlow = {
+            nodes: currentFlow.nodes.map(n => ({id: n.id, type: n.type, name: n.name, x: n.x, y: n.y})),
+            connections: currentFlow.connections
+        };
+    }
+    console.log('[VibeCoding] LLM送信内容:', JSON.stringify({ model, prompt, currentFlow: logFlow }, null, 2));
         
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
         
-        // Save model to recent models
+        const today = new Date().toISOString().split('T')[0];
+        const logPath = path.join(logsDir, `chat-${today}.json`);
+        
+        // Log the request
+        logToFile(logPath, {
+            timestamp: new Date().toISOString(),
+            type: 'request',
+            model: model,
+            prompt: prompt,
+            hasFlow: !!currentFlow
+        });
+        
+        // Build enhanced prompt
+        const enhancedPrompt = buildPrompt(prompt, currentFlow);
+        
+        // Save recent model
         saveRecentModel(model);
         
-        generateWithOllama(model, prompt, currentFlow, (error, response) => {
-            if (error) {
-                res.status(500).json({ error: error });
-            } else {
+        generateWithOllama(model, enhancedPrompt, 120000)
+            .then(response => {
+                // Log the response
+                logToFile(logPath, {
+                    timestamp: new Date().toISOString(),
+                    type: 'response',
+                    response: response
+                });
+                
                 res.json({ response: response });
+            })
+            .catch(error => {
+                console.error("[VibeCoding] Generation error:", error);
+                
+                // Log the error
+                logToFile(logPath, {
+                    timestamp: new Date().toISOString(),
+                    type: 'error',
+                    error: error.message
+                });
+                
+                let errorMessage = 'Generation failed';
+                if (error.code === 'ECONNREFUSED') {
+                    errorMessage = 'Could not connect to Ollama. Please ensure Ollama is running on localhost:11434';
+                } else if (error.message.includes('timeout')) {
+                    errorMessage = 'Request timed out. The model may be too slow or not responding.';
+                } else {
+                    errorMessage = error.message;
+                }
+                
+                res.status(500).json({ error: errorMessage });
+            });
+    });
+    
+    // HTTP endpoint for chat histories
+    RED.httpAdmin.get('/vibecoding/chat-histories', function(req, res) {
+        try {
+            const chatHistories = loadAllChatHistories();
+            res.json({ chatHistories: chatHistories });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+    
+    // HTTP endpoint to save chat history
+    RED.httpAdmin.post('/vibecoding/save-chat', function(req, res) {
+        try {
+            const { chatId, chatData } = req.body;
+            if (!chatId || !chatData) {
+                return res.status(400).json({ error: 'Chat ID and data required' });
             }
-        });
+            
+            saveChatHistory(chatId, chatData);
+            res.json({ success: true });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
     });
     
     // HTTP endpoint for recent models
@@ -305,6 +377,7 @@ NODES IN CURRENT FLOW:`;
             res.status(500).send('/* Error loading CSS */');
         }
     });
-}
 
-module.exports = createVibeCodingServer;
+    console.log("[VibeCoding] Server initialized successfully");
+}
+module.exports = { createVibeCodingServer };
