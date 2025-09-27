@@ -1,5 +1,5 @@
-// VibeCoding Plugin - UI Components
-// Shared UI components and utilities for the VibeCoding plugin
+// LLM Plugin - UI Components
+// Shared UI components and utilities for the LLM Plugin
 
 function createUIComponents() {
     return {
@@ -29,13 +29,13 @@ function createUIComponents() {
         
         // Create a loading spinner
         createSpinner: function() {
-            return $('<div class="vibecoding-spinner">Generating...</div>');
+            return $('<div class="llm-plugin-spinner">Generating...</div>');
         },
         
         // Create a message bubble for chat
         createMessageBubble: function(content, isUser) {
             const bubble = $('<div>')
-                .addClass('vibecoding-message')
+                .addClass('llm-plugin-message')
                 .addClass(isUser ? 'user-message' : 'assistant-message');
             
             const contentDiv = $('<div>')
@@ -67,7 +67,7 @@ function createUIComponents() {
             if (typeof RED !== 'undefined' && RED.notify) {
                 RED.notify(message, type || 'info');
             } else {
-                console.log(`[VibeCoding ${type}] ${message}`);
+                console.log(`[LLM Plugin ${type}] ${message}`);
             }
         },
         

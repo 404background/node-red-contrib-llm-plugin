@@ -1,47 +1,31 @@
-# VibeCoding Plugin - Source Files
+# LLM Plugin - Source Files
 
-このフォルダには、VibeCodingプラグインのソースファイルが含まれています。
+This folder contains the source files for the LLM Plugin sidebar used by Node-RED. The code here implements a conservative, validation-first importer and a modular client that talks to a local LLM (Ollama) via server endpoints.
 
-## ファイル構成
+## Overview
 
-### `client.js`
-- **役割**: クライアント側（ブラウザ）で動作するJavaScript
-- **機能**: 
-  - サイドバータブの作成とUI操作
-  - チャット風インターフェース
-  - Ollamaとの通信（HTTP API経由）
-  - フロー更新機能
-  - モデル履歴管理
+The client-side code is modular. The browser entry is `src/client.js`, a small loader that injects client modules in sequence. The server registers admin HTTP endpoints under `/red/llm-plugin/` which the client uses for generation, chat persistence, and model history.
 
-### `server.js` 
-- **役割**: サーバー側（Node-RED）で動作するJavaScript
-- **機能**:
-  - HTTPエンドポイント提供（/vibecoding/generate, /vibecoding/logs, /vibecoding/recent-models）
-  - Ollamaとの通信処理
-  - ログファイル管理
-  - モデル履歴保存
+## Important files
 
-### `ui-components.js`
-- **役割**: UI関連のヘルパー関数
-- **機能**:
-  - チャットメッセージ表示
-  - フロー更新ダイアログ
-  - エラー表示
+- `src/client.js` — loader script that sequentially loads the client modules in the browser.
+- `src/chat_manager.js` — chat session lifecycle, saving/loading chats to the backend, and chat list UI.
+- `src/importer.js` — parses flow JSON from assistant messages and imports it into Node-RED; remaps ids and normalizes wires to prevent dangling references.
+- `src/ui_core.js` — UI helpers for rendering chat messages and flow import actions.
+- `src/vibe_ui.js` — constructs the sidebar UI and wires event handlers and network calls to the server endpoints.
+- `server.js` — Node-RED server-side logic (registers endpoints, constructs prompts for the LLM, handles chat persistence).
+- `llm_plugin.html` — Node-RED sidebar HTML (loads `src/client.js` and plugin styles).
+- `llm_plugin.js` — Node-RED node bootstrap (ensures server routes are registered when the plugin loads).
+- `llm-plugin_styles.css` — plugin CSS.
 
-### `flow-manager.js`
-- **役割**: Node-REDフロー管理機能
-- **機能**:
-  - フローJSONの解析
-  - フローの更新・インポート
-  - 現在のフロー取得
+## Behavior notes
 
-## 開発ガイドライン
+This `src/` folder contains the client and server source for the LLM Plugin. The importer is intentionally conservative: it remaps ids and normalizes wires to allow Node-RED to import flows suggested by an LLM while avoiding destructive automatic edits to assistant-provided JSON.
 
-- クライアント側コードは`client.js`から開始
-- サーバー側の機能追加は`server.js`に実装
-- UI関連の新機能は`ui-components.js`に追加
-- フロー操作の機能拡張は`flow-manager.js`に実装
+## Contributing and development tips
 
-## プラグイン読み込み
+- Keep client code modular: add small focused modules under `src/` and load them via the loader.
+- Edit `server.js` for server-side changes and restart Node-RED to apply them.
+- When adding endpoints, use the `/red/llm-plugin/` namespace to remain backward-compatible.
 
-メインファイル`vibecoding_plugin.html`と`vibecoding_plugin.js`が、これらのソースファイルを読み込んでプラグインとして動作します。
+If you'd like, I can add a short developer checklist, usage examples for Ollama (how to start it), or a minimal automated test harness to exercise client loading and the importer flow.

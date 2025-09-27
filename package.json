@@ -1,22 +1,22 @@
 {
   "name": "@background404/node-red-contrib-llm-plugin",
-  "version": "0.3.0",
+  "version": "0.0.1",
   "description": "Node-RED plugin for developing with LLM using Ollama",
-  "main": "vibecoding_plugin.js",
+  "main": "llm_plugin.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "node-red": {
     "version": ">=1.0.0",
     "plugins": {
-      "vibecoding": "vibecoding_plugin.js"
+      "llm_plugin": "llm_plugin.js"
     }
   },
   "keywords": [
     "node-red",
     "plugin", 
     "editor",
-    "vibecoding",
+    "llm-plugin",
     "llm",
     "ollama",
     "ai"

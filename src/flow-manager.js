@@ -1,4 +1,4 @@
-// VibeCoding Plugin - Flow Manager
+// LLM Plugin - Flow Manager
 // Functions for managing Node-RED flows
 
 function createFlowManager() {
@@ -26,7 +26,7 @@ function createFlowManager() {
                 }
                 return null;
             } catch (error) {
-                console.error('[VibeCoding] Error getting current flow:', error);
+                console.error('[LLM Plugin] Error getting current flow:', error);
                 return null;
             }
         },
@@ -79,7 +79,7 @@ function createFlowManager() {
                 if (callback) callback(null, 'Flow imported successfully');
                 
             } catch (error) {
-                console.error('[VibeCoding] Error importing flow:', error);
+                console.error('[LLM Plugin] Error importing flow:', error);
                 if (callback) callback(error.message, null);
             }
         },
@@ -96,7 +96,7 @@ function createFlowManager() {
                 this.importFlow(flowJSON, callback);
                 
             } catch (error) {
-                console.error('[VibeCoding] Error updating flow:', error);
+                console.error('[LLM Plugin] Error updating flow:', error);
                 if (callback) callback(error.message, null);
             }
         },
@@ -131,54 +131,7 @@ function createFlowManager() {
         generateNodeId: function() {
             return 'vc_' + Math.random().toString(36).substr(2, 9);
         },
-        
-        // Create basic flow template
-        createBasicFlow: function(description) {
-            const nodes = [];
-            
-            // Inject node
-            nodes.push({
-                id: this.generateNodeId(),
-                type: 'inject',
-                name: 'Start',
-                topic: '',
-                payload: '',
-                payloadType: 'date',
-                repeat: '',
-                crontab: '',
-                once: false,
-                onceDelay: 0.1,
-                x: 100,
-                y: 100,
-                wires: [[]]
-            });
-            
-            // Debug node
-            nodes.push({
-                id: this.generateNodeId(),
-                type: 'debug',
-                name: 'Output',
-                active: true,
-                tosidebar: true,
-                console: false,
-                tostatus: false,
-                complete: 'false',
-                x: 300,
-                y: 100,
-                wires: []
-            });
-            
-            // Wire them together
-            if (nodes.length >= 2) {
-                nodes[0].wires[0].push(nodes[1].id);
-            }
-            
-            return {
-                description: description || 'Basic flow template',
-                nodes: nodes
-            };
-        },
-        
+
         // Validate flow structure
         validateFlow: function(flowJSON) {
             try {

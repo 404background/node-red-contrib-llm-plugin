@@ -1,10 +1,11 @@
-.vibecoding-container {
+/* LLM Plugin Styles - migrated from vibecoding_styles.css */
+.llm-plugin-container {
     display: flex;
     flex-direction: column;
     height: 100%;
     font-family: Arial, sans-serif;
 }
-.vibecoding-header {
+.llm-plugin-header {
     padding: 10px;
     border-bottom: 1px solid #ddd;
     background: #f5f5f5;
@@ -12,7 +13,7 @@
     justify-content: space-between;
     align-items: center;
 }
-.vibecoding-title {
+.llm-plugin-title {
     margin: 0;
     color: #333;
     font-size: 16px;
@@ -135,13 +136,13 @@
     cursor: pointer;
     font-size: 11px;
 }
-.vibecoding-chat {
+.llm-plugin-chat {
     flex: 1;
     overflow-y: auto;
     padding: 10px;
     background: #fff;
 }
-.vibecoding-message {
+.llm-plugin-message {
     margin-bottom: 15px;
     display: flex;
     flex-direction: column;
@@ -171,7 +172,6 @@
     display: flex;
     gap: 4px;
     opacity: 1;
-    transition: none;
     transition: opacity 0.2s;
 }
 .retry-btn {
@@ -210,21 +210,7 @@
     border-radius: 3px;
     font-family: 'Courier New', monospace;
 }
-.message-content pre {
-    background: #2d3748;
-    color: #e2e8f0;
-    padding: 10px;
-    border-radius: 5px;
-    margin: 10px 0;
-    overflow-x: auto;
-    white-space: pre-wrap;
-}
-.message-content strong {
-    font-weight: bold;
-}
-.message-content em {
-    font-style: italic;
-}
+.message-content pre,
 .json-block {
     background: #2d3748;
     color: #e2e8f0;
@@ -233,10 +219,20 @@
     margin: 10px 0;
     overflow-x: auto;
 }
+.message-content pre {
+    white-space: pre-wrap;
+}
+.message-content strong {
+    font-weight: bold;
+}
+.message-content em {
+    font-style: italic;
+}
 .flow-actions {
     margin-top: 10px;
 }
-.flow-actions button {
+.flow-actions button,
+.import-btn {
     background: #28a745;
     color: white;
     border: none;
@@ -246,7 +242,22 @@
     cursor: pointer;
     font-size: 12px;
 }
-.vibecoding-input {
+.import-btn:hover {
+    background: #218838;
+}
+.raw-json {
+    background: #2d3748;
+    color: #e2e8f0;
+    padding: 10px;
+    border-radius: 5px;
+    margin: 10px 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    border: none;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+}
+.llm-plugin-input {
     border-top: 1px solid #ddd;
     padding: 10px;
     background: #f9f9f9;
