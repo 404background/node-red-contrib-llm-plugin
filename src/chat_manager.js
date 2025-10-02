@@ -79,6 +79,9 @@
     };
 
     ChatManager.showChatList = function() {
+        // Remove any existing modal to avoid stacking multiple modals
+        jQuery('.chat-modal').remove();
+
         var chats = Object.values(chatHistory).sort((a, b) => new Date(b.created) - new Date(a.created));
         var modal = jQuery('<div>').addClass('chat-modal');
         var modalContent = jQuery('<div>').addClass('chat-modal-content');
@@ -104,7 +107,17 @@
                 var loadBtn = jQuery('<button>').addClass('load-btn').text('Load')
                     .click(function() { ChatManager.loadChat(chat.id); modal.remove(); });
                 var deleteBtn = jQuery('<button>').addClass('delete-btn').text('Delete')
-                    .click(function() { ChatManager.deleteChat(chat.id); ChatManager.showChatList(); });
+                    .click(function() {
+                        // Use deleteChat with a callback so we can refresh safely
+                        ChatManager.deleteChat(chat.id, function(success) {
+                            // Remove current modal first to avoid stacking
+                            modal.remove();
+                            if (success) {
+                                // Re-open refreshed list
+                                ChatManager.showChatList();
+                            }
+                        });
+                    });
                 chatActions.append(loadBtn, deleteBtn);
                 chatItem.append(chatInfo, chatActions);
                 chatList.append(chatItem);
@@ -129,20 +142,30 @@
         }
     };
 
-    ChatManager.deleteChat = function(chatId) {
-        if (confirm('Delete this chat? This cannot be undone.')) {
-            jQuery.ajax({
-                url: 'llm-plugin/delete-chat',
-                method: 'POST',
-                contentType: 'application/json',
-                data: JSON.stringify({ chatId: chatId })
-            }).always(function() {
-                delete chatHistory[chatId];
-                if (currentChatId === chatId) {
-                    ChatManager.startNewChat();
-                }
-            });
+    ChatManager.deleteChat = function(chatId, callback) {
+        if (!confirm('Delete this chat? This cannot be undone.')) {
+            if (typeof callback === 'function') callback(false);
+            return;
         }
+        // Prefer to send the server-side filename (if available) to the delete endpoint
+        var chat = chatHistory[chatId] || {};
+        var payload = {};
+        if (chat.__file) payload.filename = chat.__file;
+        else payload.chatId = chatId; // fallback for older servers
+
+        jQuery.ajax({
+            url: 'llm-plugin/delete-chat',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(payload)
+        }).always(function() {
+            // Update client-side state and UI regardless of server result to stay consistent
+            delete chatHistory[chatId];
+            if (currentChatId === chatId) {
+                ChatManager.startNewChat();
+            }
+            if (typeof callback === 'function') callback(true);
+        });
     };
 
     ChatManager.addMessage = function(content, isUser) {

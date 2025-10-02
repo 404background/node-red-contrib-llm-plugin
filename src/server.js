@@ -68,6 +68,10 @@ function createLLMPluginServer(RED) {
                     const filepath = path.join(chatsDir, file);
                     const content = fs.readFileSync(filepath, 'utf8');
                     const chatData = JSON.parse(content);
+                    // include the source filename so clients can request deletion by filename
+                    if (chatData && typeof chatData === 'object') {
+                        chatData.__file = file;
+                    }
                     chatHistories[chatData.id] = chatData;
                 } catch (error) {
                     console.error("[LLM Plugin] Error reading chat file:", file, error);
@@ -267,6 +271,51 @@ function createLLMPluginServer(RED) {
             res.json({ success: true });
         } catch (error) {
             res.status(500).json({ error: error.message });
+        }
+    });
+
+    // HTTP endpoint to delete a chat file
+    // Prefer accepting a filename (from server-provided metadata). Fallback to chatId if needed.
+    RED.httpAdmin.post('/llm-plugin/delete-chat', function(req, res) {
+        try {
+            const { chatId, filename } = req.body || {};
+            const chatsDir = path.join(logsDir, 'chats');
+            if (!fs.existsSync(chatsDir)) return res.json({ success: true });
+
+            // If filename provided, only allow basename (no path traversal) and delete directly
+            if (filename && typeof filename === 'string') {
+                if (filename.indexOf('..') !== -1) return res.status(400).json({ error: 'Invalid filename' });
+                const filepath = path.join(chatsDir, path.basename(filename));
+                if (fs.existsSync(filepath)) {
+                    fs.unlinkSync(filepath);
+                    return res.json({ success: true });
+                }
+                // Already gone -> idempotent success
+                return res.json({ success: true });
+            }
+
+            // Fallback: match by chatId (legacy support)
+            if (!chatId) return res.status(400).json({ error: 'Chat ID or filename required' });
+            const chatFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith('.json'));
+            let deleted = false;
+            chatFiles.forEach(file => {
+                try {
+                    const filepath = path.join(chatsDir, file);
+                    const content = fs.readFileSync(filepath, 'utf8');
+                    const chatData = JSON.parse(content);
+                    if (chatData && chatData.id === chatId) {
+                        fs.unlinkSync(filepath);
+                        deleted = true;
+                    }
+                } catch (e) {
+                    console.error('[LLM Plugin] Error checking/deleting chat file:', file, e);
+                }
+            });
+            // Always respond success if nothing found to keep idempotency
+            return res.json({ success: deleted });
+        } catch (error) {
+            console.error('[LLM Plugin] Error deleting chat file:', error);
+            return res.status(500).json({ error: error.message });
         }
     });
 
