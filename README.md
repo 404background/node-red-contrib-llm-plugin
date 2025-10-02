@@ -2,7 +2,8 @@
 
 LLM Plugin is a Node-RED sidebar extension that lets you interact with large language models (LLMs) directly from the Node-RED editor. You can chat with an LLM, send existing flows to the LLM for modification or explanation, and import flows the LLM suggests.
 
-![LLM Plugin screenshot](images/plugin.png)
+Click the image below to play the demo video on YouTube. 
+[![LLM Plugin screenshot](images/plugin.png)](https://youtu.be/DSk61QEyg0w)
 
 Current key capabilities
 - Local Ollama support: the plugin communicates with a local Ollama instance to run models and generate responses.
