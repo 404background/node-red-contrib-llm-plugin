@@ -2,3 +2,32 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" crossorigin="anonymous">
 
 <script src="llm-plugin/src/client.js"></script>
+
+<script type="text/html" id="llm-plugin-settings-template" data-template-name="llm-plugin-settings-template">
+    <div class="form-row">
+        <label for="llm-provider"><i class="fa fa-cogs"></i> LLM Provider</label>
+        <select id="llm-provider">
+            <option value="ollama">Ollama</option>
+            <option value="openai">OpenAI</option>
+        </select>
+    </div>
+
+    <div id="ollama-settings">
+        <div class="form-row">
+            <label for="ollama-model"><i class="fa fa-cube"></i> Ollama Model</label>
+            <input type="text" id="ollama-model" placeholder="e.g., llama3" list="ollama-model-options">
+            <datalist id="ollama-model-options"></datalist>
+        </div>
+    </div>
+
+    <div id="openai-settings" style="display: none;">
+        <div class="form-row">
+            <label for="openai-api-key"><i class="fa fa-key"></i> OpenAI API Key</label>
+            <input type="password" id="openai-api-key" placeholder="sk-...">
+        </div>
+        <div class="form-row">
+            <label for="openai-model"><i class="fa fa-cube"></i> OpenAI Model</label>
+            <input type="text" id="openai-model" placeholder="e.g., gpt-4-turbo">
+        </div>
+    </div>
+</script>

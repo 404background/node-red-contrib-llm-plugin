@@ -2,11 +2,54 @@
 const fs = require('fs-extra');
 const path = require('path');
 const http = require('http');
+const { exec } = require('child_process');
+const { OpenAI } = require('openai');
 
 function createLLMPluginServer(RED) {
     // Create logs directory in plugin folder
     const logsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
     fs.ensureDirSync(logsDir);
+
+    // Get settings from RED.settings
+    function getPluginSettings() {
+        return RED.settings.get('llmPluginSettings') || {};
+    }
+
+    // Save settings to RED.settings
+    function savePluginSettings(settings) {
+        RED.settings.set('llmPluginSettings', settings);
+    }
+
+    function listOllamaModels() {
+        return new Promise((resolve) => {
+            exec('ollama list --format json', { timeout: 5000 }, (error, stdout) => {
+                if (error || !stdout) {
+                    if (error && error.code !== 'ENOENT') {
+                        console.warn('[LLM Plugin] Unable to run "ollama list":', error.message || error);
+                    }
+                    return resolve([]);
+                }
+                const models = [];
+                stdout.split(/\r?\n/).forEach(line => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return;
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        const name = parsed.name || parsed.model || '';
+                        if (name) {
+                            models.push(name);
+                        }
+                    } catch (parseError) {
+                        // Ignore malformed lines, log once for visibility
+                        console.warn('[LLM Plugin] Could not parse ollama list entry:', parseError.message || parseError);
+                    }
+                });
+                // remove duplicates while preserving order
+                const uniqueModels = Array.from(new Set(models));
+                resolve(uniqueModels);
+            });
+        });
+    }
 
     // Utility function to save recent model
     function saveRecentModel(model) {
@@ -147,10 +190,12 @@ function createLLMPluginServer(RED) {
         let prompt = `You are a helpful Node-RED flow assistant. You help users create, modify, and understand Node-RED flows.\n`;
 
         prompt += "IMPORTANT RESPONSE RULES:\n";
-        prompt += "1) Respond naturally; detect language from the user's message.\n";
-        prompt += "2) If the user requests a Node-RED flow, return ONLY a single JSON code block (```json ... ```).\n";
-        prompt += "3) Ensure the flow is importable into Node-RED.\n";
-        prompt += "4) Keep responses concise.\n\n";
+    prompt += "1) Respond naturally; detect language from the user's message.\n";
+    prompt += "2) If the user requests a Node-RED flow, return ONLY one ```json``` block.\n";
+    prompt += "3) Node-RED flow JSON must be an array of node objects (no wrapper object).\n";
+    prompt += "4) Each node needs: id (unique), type, z (tab id), x, y, and wires (array per output listing target node ids).\n";
+    prompt += "5) Reference only ids present in the JSON and omit `tab` nodes unless asked.\n";
+    prompt += "6) Keep answers concise.\n\n";
 
         if (flowContext) {
             prompt += "FLOW CONTEXT SUMMARY:\n";
@@ -216,39 +261,79 @@ function createLLMPluginServer(RED) {
         });
     }
 
+    // Function to generate with OpenAI
+    async function generateWithOpenAI(apiKey, model, prompt) {
+        const openai = new OpenAI({ apiKey });
+        const completion = await openai.chat.completions.create({
+            messages: [{ role: 'system', content: prompt }],
+            model: model,
+        });
+        return completion.choices[0].message.content;
+    }
+
+
     // HTTP endpoint for generation
-    RED.httpAdmin.post('/llm-plugin/generate', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
         const { model, prompt, currentFlow } = req.body;
-        let logFlow = currentFlow;
-        if (currentFlow && currentFlow.nodes) {
-            logFlow = {
-                nodes: currentFlow.nodes.map(n => ({id: n.id, type: n.type, name: n.name, x: n.x, y: n.y})),
-                connections: currentFlow.connections
-            };
-        }
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
+
+        const settings = getPluginSettings();
+        const provider = settings.provider || 'ollama';
+
         const enhancedPrompt = buildPrompt(prompt, currentFlow);
         saveRecentModel(model);
-        // Do not pass a timeout so the request can run as long as needed
-        generateWithOllama(model, enhancedPrompt)
-            .then(response => {
-                res.json({ response: response });
-            })
-            .catch(error => {
-                console.error("[LLM Plugin] Generation error:", error);
-                let errorMessage = 'Generation failed';
-                if (error.code === 'ECONNREFUSED') {
-                    errorMessage = 'Could not connect to Ollama. Please ensure Ollama is running on localhost:11434';
-                } else if (error.message && error.message.includes('timeout')) {
-                    errorMessage = 'Request timed out. The model may be too slow or not responding.';
-                } else {
-                    errorMessage = error.message;
+
+        try {
+            let response;
+            if (provider === 'openai') {
+                if (!settings.openaiApiKey || !settings.openaiModel) {
+                    throw new Error('OpenAI API key and model are not configured.');
                 }
-                res.status(500).json({ error: errorMessage });
-            });
+                response = await generateWithOpenAI(settings.openaiApiKey, model, enhancedPrompt);
+            } else {
+                response = await generateWithOllama(model, enhancedPrompt);
+            }
+            res.json({ response: response });
+        } catch (error) {
+            console.error("[LLM Plugin] Generation error:", error);
+            let errorMessage = 'Generation failed';
+            if (error.code === 'ECONNREFUSED') {
+                errorMessage = 'Could not connect to Ollama. Please ensure Ollama is running on localhost:11434';
+            } else if (error.message && error.message.includes('timeout')) {
+                errorMessage = 'Request timed out. The model may be too slow or not responding.';
+            } else {
+                errorMessage = error.message;
+            }
+            res.status(500).json({ error: errorMessage });
+        }
     });
+
+    // HTTP endpoint for settings
+    RED.httpAdmin.get('/llm-plugin/settings', function(req, res) {
+        res.json(getPluginSettings());
+    });
+
+    RED.httpAdmin.post('/llm-plugin/settings', function(req, res) {
+        try {
+            savePluginSettings(req.body);
+            res.status(200).send();
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    });
+
+    RED.httpAdmin.get('/llm-plugin/ollama/models', async function(req, res) {
+        try {
+            const models = await listOllamaModels();
+            res.json({ models });
+        } catch (error) {
+            console.error('[LLM Plugin] Error fetching Ollama models:', error);
+            res.status(500).json({ error: 'Failed to list Ollama models' });
+        }
+    });
+
 
     // HTTP endpoint for chat histories
     RED.httpAdmin.get('/llm-plugin/chat-histories', function(req, res) {

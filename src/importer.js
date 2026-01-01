@@ -37,7 +37,10 @@
             if (!m){ if (window.RED && RED.notify) RED.notify('No JSON flow found in message','warning'); return; }
             var flow = JSON.parse(m[1]);
             var nodes = Array.isArray(flow)? flow : (flow.nodes? flow.nodes : [flow]);
-            nodes = nodes.filter(function(n){ return n && n.type; });
+            // Drop anything that is not a node-like object with a usable type string
+            nodes = nodes.filter(function(n){
+                return n && typeof n.type !== 'undefined' && String(n.type).trim().length > 0;
+            });
 
             // Import as-is with minimal changes - preserve original IDs when possible
             var existingIds = new Set();
@@ -48,6 +51,7 @@
             var newNodes = nodes.map(function(n){
                 // Deep clone to avoid modifying original
                 var nn = JSON.parse(JSON.stringify(n));
+                nn.type = String(nn.type || '').trim();
                 
                 // Only ensure required fields exist
                 if (!nn.id) nn.id = genId();
@@ -63,8 +67,8 @@
                 return nn;
             });
 
-            // Remove any `tab` nodes to prevent creating new flow tabs
-            newNodes = newNodes.filter(n => n.type !== 'tab');
+            // Remove any `tab` (flow) nodes aggressively (trim and case-insensitive)
+            newNodes = newNodes.filter(function(n){ return n.type && n.type.toLowerCase() !== 'tab'; });
 
             // Ensure all nodes are assigned to the current workspace (use id string)
             var currentWorkspace = null;
@@ -85,6 +89,12 @@
             }
 
             try{ LAST_SANITIZED = JSON.parse(JSON.stringify(newNodes)); }catch(e){ LAST_SANITIZED = null; }
+
+            // If nothing remains after sanitization, warn and bail out early
+            if (!newNodes.length) {
+                try { if (window && window.RED && RED.notify) RED.notify('Import aborted: no valid nodes found (removed tab/blank nodes)', 'warning'); } catch(e){}
+                return;
+            }
 
             // Basic structural validation - only check for required node properties
             var bad = newNodes.find(function(n){ return typeof n.type !== 'string' || n.type.length===0; }); if (bad){ if (RED && RED.notify) RED.notify('Import aborted: invalid node shape','error'); safeLog('bad node', bad); return; }

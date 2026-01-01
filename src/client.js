@@ -4,6 +4,7 @@
         'llm-plugin/src/chat_manager.js',
         'llm-plugin/src/importer.js',
         'llm-plugin/src/ui_core.js',
+        'llm-plugin/src/settings.js',
         'llm-plugin/src/vibe_ui.js'
     ];
 

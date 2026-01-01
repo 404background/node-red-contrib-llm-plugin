@@ -10,9 +10,10 @@ Current key capabilities
 - Send flows to the LLM: you can pass a flow (JSON) to the LLM to request edits, compact summaries, or translations.
 - Import LLM-proposed flows: the plugin parses LLM responses containing a ```json``` flow block and imports the suggested flow into your workspace (ids are remapped and wires are normalized to avoid dangling references).
 - Chat and history: chat with the LLM in the sidebar and manage chat history stored locally.
+- Settings gear: use the sidebar's gear icon to choose the provider (Ollama or OpenAI), select models, and manage API keys without leaving the plugin.
 
 LLM Plugin is designed to make Node-RED automation and prototyping easier by leveraging LLMs while being conservative about modifying LLM output: the importer validates flows and avoids destructive automatic changes unless explicitly enabled.
 
 Known limitations: in some cases an LLM's proposed flow may not be importable as-is (the importer validates structure and will abort on malformed or incomplete node shapes). If an import is aborted you may need to correct the JSON or revise the prompt and try again.
 
-Note on LLM support: this release uses a local Ollama instance for model generation. Support for cloud-based models (for example ChatGPT/OpenAI) is planned for a future release.
+Note on LLM support: this release supports a local Ollama instance and OpenAI models.

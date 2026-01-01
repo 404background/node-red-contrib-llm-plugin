@@ -27,7 +27,8 @@
     "node": ">=14.0.0"
   },
   "dependencies": {
-    "fs-extra": "^10.1.0"
+    "fs-extra": "^10.1.0",
+    "openai": "^6.2.0"
   },
   "repository": {
     "type": "git",
