@@ -1,6 +1,6 @@
 {
   "name": "@background404/node-red-contrib-llm-plugin",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Node-RED plugin for developing with LLM using Ollama",
   "main": "llm_plugin.js",
   "scripts": {
