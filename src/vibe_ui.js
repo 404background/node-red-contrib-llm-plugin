@@ -100,15 +100,6 @@
     var settingsSaving = false;
     var lastFocusedBeforeSettings = null;
 
-        function applyModelFromSettings(settings) {
-            if (!settings) return;
-            var provider = settings.provider || 'ollama';
-            var model = provider === 'openai' ? settings.openaiModel : settings.ollamaModel;
-            if (model) {
-                modelInput.val(model);
-            }
-        }
-
         function fetchSettings(force) {
             if (!force && cachedSettings) {
                 return Promise.resolve(cachedSettings);
@@ -189,7 +180,6 @@
             })
             .done(function() {
                 cachedSettings = settings;
-                applyModelFromSettings(settings);
                 if (window.RED && RED.notify) {
                     RED.notify('LLM Plugin settings saved.', 'success');
                 }
@@ -207,7 +197,7 @@
             });
         });
 
-        fetchSettings().then(applyModelFromSettings);
+        fetchSettings();
         loadRecentModels();
         function bindGenerateBtn() {
             generateBtn.off('click').on('click', function() {

@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "fs-extra": "^10.1.0",
+    "marked": "^17.0.1",
     "openai": "^6.2.0"
   },
   "repository": {

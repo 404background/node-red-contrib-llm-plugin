@@ -99,6 +99,30 @@
             // Basic structural validation - only check for required node properties
             var bad = newNodes.find(function(n){ return typeof n.type !== 'string' || n.type.length===0; }); if (bad){ if (RED && RED.notify) RED.notify('Import aborted: invalid node shape','error'); safeLog('bad node', bad); return; }
 
+            // Additional validation: Check for missing wires or empty function nodes
+            var warnings = [];
+            newNodes.forEach(function(n) {
+                // Check for function nodes with empty code
+                if (n.type === 'function' && (!n.func || n.func.trim().length === 0)) {
+                    warnings.push('Node "' + (n.name || n.id) + '" (function) has no code.');
+                }
+                // Check for nodes that typically should have wires but don't (excluding known endpoints like debug, comment, inject)
+                // This is a heuristic check.
+                var endpoints = ['debug', 'comment', 'inject', 'link in', 'link out', 'ui_text', 'ui_gauge', 'ui_chart', 'ui_toast'];
+                if (endpoints.indexOf(n.type) === -1 && (!n.wires || n.wires.length === 0 || (n.wires.length === 1 && n.wires[0].length === 0))) {
+                    // Only warn if it also doesn't have any incoming wires from within this group (hard to check here without full graph, so keep it simple)
+                    // Just warn about no outputs for non-endpoint nodes
+                    warnings.push('Node "' + (n.name || n.type) + '" has no output connections.');
+                }
+            });
+
+            if (warnings.length > 0) {
+                if (window.RED && RED.notify) {
+                    RED.notify('Import Warning: ' + warnings.join(' '), 'warning');
+                }
+                console.warn('[LLM Plugin] Import warnings:', warnings);
+            }
+
             var origEmit = null;
             try{
                 if (RED && RED.events && typeof RED.events.emit === 'function'){ origEmit = RED.events.emit; RED.events.emit = function(evt){ try{ if (evt==='flows:add') return origEmit.apply(RED.events, arguments); return origEmit.apply(RED.events, arguments); }catch(e){ if (e && e.message && String(e.message).indexOf('indexOf')!==-1) return null; safeLog('emit suppressed', e); return null; } }; }

@@ -1,5 +1,6 @@
 ﻿<link rel="stylesheet" type="text/css" href="llm-plugin_styles.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
 <script src="llm-plugin/src/client.js"></script>
 
@@ -14,9 +15,8 @@
 
     <div id="ollama-settings">
         <div class="form-row">
-            <label for="ollama-model"><i class="fa fa-cube"></i> Ollama Model</label>
-            <input type="text" id="ollama-model" placeholder="e.g., llama3" list="ollama-model-options">
-            <datalist id="ollama-model-options"></datalist>
+            <label for="ollama-url"><i class="fa fa-network-wired"></i> Ollama URL</label>
+            <input type="text" id="ollama-url" placeholder="http://localhost:11434">
         </div>
     </div>
 
@@ -25,9 +25,8 @@
             <label for="openai-api-key"><i class="fa fa-key"></i> OpenAI API Key</label>
             <input type="password" id="openai-api-key" placeholder="sk-...">
         </div>
-        <div class="form-row">
-            <label for="openai-model"><i class="fa fa-cube"></i> OpenAI Model</label>
-            <input type="text" id="openai-model" placeholder="e.g., gpt-4-turbo">
+        <div class="form-tips" style="font-size: 12px; color: #666; margin-top: 5px;">
+            <i class="fa fa-info-circle"></i> API Key is stored in Node-RED's internal configuration (e.g. <code>.config.runtime.json</code>) and is <strong>NOT</strong> included in flow exports.
         </div>
     </div>
 </script>

@@ -1,6 +1,6 @@
 # LLM Plugin - Source Files
 
-This folder contains the source files for the LLM Plugin sidebar used by Node-RED. The code here implements a conservative, validation-first importer and a modular client that talks to a local LLM (Ollama) via server endpoints.
+This folder contains the source files for the LLM Plugin sidebar used by Node-RED.
 
 ## Overview
 
@@ -8,24 +8,20 @@ The client-side code is modular. The browser entry is `src/client.js`, a small l
 
 ## Important files
 
-- `src/client.js` — loader script that sequentially loads the client modules in the browser.
-- `src/chat_manager.js` — chat session lifecycle, saving/loading chats to the backend, and chat list UI.
-- `src/importer.js` — parses flow JSON from assistant messages and imports it into Node-RED; remaps ids and normalizes wires to prevent dangling references.
-- `src/ui_core.js` — UI helpers for rendering chat messages and flow import actions.
-- `src/vibe_ui.js` — constructs the sidebar UI and wires event handlers and network calls to the server endpoints.
-- `server.js` — Node-RED server-side logic (registers endpoints, constructs prompts for the LLM, handles chat persistence).
-- `llm_plugin.html` — Node-RED sidebar HTML (loads `src/client.js` and plugin styles).
-- `llm_plugin.js` — Node-RED node bootstrap (ensures server routes are registered when the plugin loads).
-- `llm-plugin_styles.css` — plugin CSS.
+- `src/client.js` — Loader script for client modules.
+- `src/chat_manager.js` — Manages chat sessions and history.
+- `src/importer.js` — Parses and imports flow JSON from LLM responses.
+- `src/ui_core.js` — UI helpers for rendering messages and handling imports.
+- `src/vibe_ui.js` — Main UI construction and event handling.
+- `server.js` — Node-RED server-side logic (endpoints, prompts, persistence).
+- `llm_plugin.html` — Sidebar HTML template.
+- `llm_plugin.js` — Node-RED node bootstrap.
+- `llm-plugin_styles.css` — Plugin styles.
 
-## Behavior notes
+## Development
 
-This `src/` folder contains the client and server source for the LLM Plugin. The importer is intentionally conservative: it remaps ids and normalizes wires to allow Node-RED to import flows suggested by an LLM while avoiding destructive automatic edits to assistant-provided JSON.
+- **Modular Client**: Add focused modules under `src/` and load them via `client.js`.
+- **Server Logic**: Edit `server.js` for backend changes. Restart Node-RED to apply.
+- **Endpoints**: Use `/red/llm-plugin/` namespace for compatibility.
 
-## Contributing and development tips
-
-- Keep client code modular: add small focused modules under `src/` and load them via the loader.
-- Edit `server.js` for server-side changes and restart Node-RED to apply them.
-- When adding endpoints, use the `/red/llm-plugin/` namespace to remain backward-compatible.
-
-If you'd like, I can add a short developer checklist, usage examples for Ollama (how to start it), or a minimal automated test harness to exercise client loading and the importer flow.
+This plugin is under active development. Contributions and feedback are welcome!

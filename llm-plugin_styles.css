@@ -160,6 +160,14 @@
     padding: 10px;
     border-radius: 10px;
     word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-all;
+}
+.message-content p {
+    margin: 0 0 10px 0;
+}
+.message-content p:last-child {
+    margin-bottom: 0;
 }
 .user-message .message-content {
     background: #007acc;

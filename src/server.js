@@ -21,33 +21,57 @@ function createLLMPluginServer(RED) {
     }
 
     function listOllamaModels() {
-        return new Promise((resolve) => {
-            exec('ollama list --format json', { timeout: 5000 }, (error, stdout) => {
-                if (error || !stdout) {
-                    if (error && error.code !== 'ENOENT') {
-                        console.warn('[LLM Plugin] Unable to run "ollama list":', error.message || error);
+        const settings = getPluginSettings();
+        const ollamaUrl = settings.ollamaUrl || 'http://localhost:11434';
+        
+        // If localhost, try CLI first as it's more reliable for local installs
+        if (ollamaUrl.includes('localhost') || ollamaUrl.includes('127.0.0.1')) {
+            return new Promise((resolve) => {
+                exec('ollama list --format json', { timeout: 5000 }, (error, stdout) => {
+                    if (!error && stdout) {
+                        const models = [];
+                        stdout.split(/\r?\n/).forEach(line => {
+                            const trimmed = line.trim();
+                            if (!trimmed) return;
+                            try {
+                                const parsed = JSON.parse(trimmed);
+                                const name = parsed.name || parsed.model || '';
+                                if (name) models.push(name);
+                            } catch (e) {}
+                        });
+                        return resolve(Array.from(new Set(models)));
                     }
-                    return resolve([]);
-                }
-                const models = [];
-                stdout.split(/\r?\n/).forEach(line => {
-                    const trimmed = line.trim();
-                    if (!trimmed) return;
-                    try {
-                        const parsed = JSON.parse(trimmed);
-                        const name = parsed.name || parsed.model || '';
-                        if (name) {
-                            models.push(name);
-                        }
-                    } catch (parseError) {
-                        // Ignore malformed lines, log once for visibility
-                        console.warn('[LLM Plugin] Could not parse ollama list entry:', parseError.message || parseError);
-                    }
+                    // Fallback to API if CLI fails
+                    listOllamaModelsFromApi(ollamaUrl).then(resolve);
                 });
-                // remove duplicates while preserving order
-                const uniqueModels = Array.from(new Set(models));
-                resolve(uniqueModels);
             });
+        } else {
+            return listOllamaModelsFromApi(ollamaUrl);
+        }
+    }
+
+    function listOllamaModelsFromApi(baseUrl) {
+        return new Promise((resolve) => {
+            try {
+                const url = new URL('/api/tags', baseUrl);
+                const req = http.request(url.toString(), { method: 'GET', timeout: 5000 }, (res) => {
+                    let data = '';
+                    res.on('data', chunk => data += chunk);
+                    res.on('end', () => {
+                        try {
+                            const parsed = JSON.parse(data);
+                            if (parsed && parsed.models) {
+                                resolve(parsed.models.map(m => m.name));
+                            } else {
+                                resolve([]);
+                            }
+                        } catch (e) { resolve([]); }
+                    });
+                });
+                req.on('error', () => resolve([]));
+                req.on('timeout', () => { req.destroy(); resolve([]); });
+                req.end();
+            } catch (e) { resolve([]); }
         });
     }
 
@@ -169,33 +193,35 @@ function createLLMPluginServer(RED) {
         }
 
         // Also include a compact JSON snippet containing only essential fields (limited size)
+        // We pass the raw node object but limit string lengths to avoid token overflow
         const compact = nodes.map(n => {
-            const out = { id: n.id, type: n.type };
-            if (n.name) out.name = n.name;
-            if (typeof n.x !== 'undefined') out.x = n.x;
-            if (typeof n.y !== 'undefined') out.y = n.y;
-            if (n.z) out.z = n.z;
-            if (n.wires) out.wires = n.wires;
-            if (n.func) out.func = (typeof n.func === 'string') ? n.func.slice(0,500) : undefined;
+            const out = Object.assign({}, n);
+            // Truncate very long string properties
+            Object.keys(out).forEach(key => {
+                if (typeof out[key] === 'string' && out[key].length > 1000) {
+                    out[key] = out[key].slice(0, 1000) + '... (truncated)';
+                }
+            });
+            // Remove visual coordinates to save tokens if needed, but user asked for raw data mostly.
+            // Keeping x,y,z is fine as they are short.
             return out;
         }).slice(0, 50);
 
-        description += `\nCompactFlowJSON: \n` + JSON.stringify(compact, null, 2).slice(0, 5000) + '\n';
+        description += `\nCompactFlowJSON: \n` + JSON.stringify(compact, null, 2).slice(0, 15000) + '\n';
         return description;
     }
 
     // Function to build enhanced prompt
     function buildPrompt(userPrompt, flowContext) {
-        // Build a concise prompt that hands the user's request to the LLM.
-        let prompt = `You are a helpful Node-RED flow assistant. You help users create, modify, and understand Node-RED flows.\n`;
+        let prompt = `You are a Node-RED expert.\n\n`;
 
-        prompt += "IMPORTANT RESPONSE RULES:\n";
-    prompt += "1) Respond naturally; detect language from the user's message.\n";
-    prompt += "2) If the user requests a Node-RED flow, return ONLY one ```json``` block.\n";
-    prompt += "3) Node-RED flow JSON must be an array of node objects (no wrapper object).\n";
-    prompt += "4) Each node needs: id (unique), type, z (tab id), x, y, and wires (array per output listing target node ids).\n";
-    prompt += "5) Reference only ids present in the JSON and omit `tab` nodes unless asked.\n";
-    prompt += "6) Keep answers concise.\n\n";
+        prompt += "RULES:\n";
+        prompt += "- Detect language from user input.\n";
+        prompt += "- When explaining flows, analyze logic and data flow. Do NOT mention IDs or coordinates.\n";
+        prompt += "- To generate flows, output a single ```json``` array of node objects.\n";
+        prompt += "- Nodes must have: id, type, z, x, y, wires.\n";
+        prompt += "- Do NOT include `tab` nodes.\n";
+        prompt += "- Be concise.\n\n";
 
         if (flowContext) {
             prompt += "FLOW CONTEXT SUMMARY:\n";
@@ -210,6 +236,15 @@ function createLLMPluginServer(RED) {
     // Function to make HTTP request to Ollama
     // timeout: 0 (default) means wait indefinitely
     function generateWithOllama(model, prompt, timeout = 0) {
+        const settings = getPluginSettings();
+        const ollamaUrlStr = settings.ollamaUrl || 'http://localhost:11434';
+        let ollamaUrl;
+        try {
+            ollamaUrl = new URL(ollamaUrlStr);
+        } catch (e) {
+            ollamaUrl = new URL('http://localhost:11434');
+        }
+
         return new Promise((resolve, reject) => {
             const data = JSON.stringify({
                 model: model,
@@ -217,8 +252,8 @@ function createLLMPluginServer(RED) {
                 stream: false
             });
             const options = {
-                hostname: 'localhost',
-                port: 11434,
+                hostname: ollamaUrl.hostname,
+                port: ollamaUrl.port || 80,
                 path: '/api/generate',
                 method: 'POST',
                 headers: {
@@ -230,11 +265,12 @@ function createLLMPluginServer(RED) {
                 options.timeout = timeout;
             }
             const req = http.request(options, (res) => {
-                let responseData = '';
+                const chunks = [];
                 res.on('data', (chunk) => {
-                    responseData += chunk;
+                    chunks.push(chunk);
                 });
                 res.on('end', () => {
+                    const responseData = Buffer.concat(chunks).toString();
                     try {
                         const response = JSON.parse(responseData);
                         if (response.response) {
@@ -300,7 +336,10 @@ function createLLMPluginServer(RED) {
             console.error("[LLM Plugin] Generation error:", error);
             let errorMessage = 'Generation failed';
             if (error.code === 'ECONNREFUSED') {
-                errorMessage = 'Could not connect to Ollama. Please ensure Ollama is running on localhost:11434';
+                const ollamaUrl = settings.ollamaUrl || 'http://localhost:11434';
+                errorMessage = `Could not connect to Ollama at ${ollamaUrl}. Please ensure Ollama is running and accessible.`;
+            } else if (error.code === 'ECONNRESET') {
+                errorMessage = 'The connection to the LLM provider was unexpectedly closed. Please check if the Ollama server is running and stable.';
             } else if (error.message && error.message.includes('timeout')) {
                 errorMessage = 'Request timed out. The model may be too slow or not responding.';
             } else {

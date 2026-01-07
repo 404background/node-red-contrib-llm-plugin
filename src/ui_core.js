@@ -2,6 +2,27 @@
     var UI = {};
 
     function formatMessage(text) {
+        // Use marked library if available for proper Markdown rendering
+        if (typeof marked !== 'undefined' && marked.parse) {
+            // Configure marked to handle line breaks
+            // marked.setOptions({ breaks: true }); // Optional: enable if you want GFM line breaks
+            
+            // Custom renderer to handle specific needs if any, or just use default
+            var html = marked.parse(text);
+            
+            // Post-process to handle our specific JSON block requirement for import buttons
+            // We want to keep the raw JSON block hidden or styled specifically if needed, 
+            // but marked will render it as <pre><code>...</code></pre>.
+            // The UI.addMessageToUI function looks for the raw text to find the JSON for the button,
+            // so here we just ensure the display is nice.
+            
+            // If there is a JSON block that looks like a flow, we might want to ensure it has a specific class
+            // But marked already adds language-json class.
+            
+            return html;
+        }
+
+        // Fallback simple formatter (deprecated but kept for safety)
         text = text.replace(/```json\s*\n([\s\S]*?)\n\s*```/g, function(match, jsonContent) {
             try {
                 var parsed = JSON.parse(jsonContent);
@@ -26,6 +47,10 @@
             if (!/^<ol>/.test(match) && !/^<ul>/.test(match)) return '<ol>' + match + '</ol>';
             return match;
         });
+        // Fix: Combine consecutive <ol> lists into one
+        text = text.replace(/<\/ol>\s*<ol>/g, '');
+        text = text.replace(/<\/ul>\s*<ul>/g, '');
+        
         text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
         text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
@@ -101,23 +126,32 @@
 
     UI.getCurrentFlow = function() {
         try {
-            if (window.RED && RED.workspaces && RED.nodes) {
+            if (window.RED && RED.nodes && RED.workspaces) {
                 var activeWorkspace = RED.workspaces.active();
-                if (activeWorkspace) {
-                    var nodes = RED.nodes.filterNodes({z: activeWorkspace});
-                    var workspace = RED.nodes.workspace(activeWorkspace);
-                    var exportArray = [];
-                    if (workspace) {
-                        exportArray.push(workspace);
-                    }
-                    nodes.forEach(function(node) {
-                        var nodeCopy = Object.assign({}, node);
-                        delete nodeCopy._def;
-                        delete nodeCopy.__proto__;
-                        exportArray.push(nodeCopy);
-                    });
-                    return exportArray;
+                if (!activeWorkspace) return null;
+
+                // Get all nodes on the current tab
+                var nodes = RED.nodes.filterNodes({z: activeWorkspace});
+                
+                // Use Node-RED's standard export function to ensure we get a clean, complete JSON representation
+                // including configuration nodes and proper property handling.
+                if (typeof RED.nodes.createExportableNodeSet === 'function') {
+                    return RED.nodes.createExportableNodeSet(nodes);
                 }
+
+                // Fallback for older versions
+                var workspace = RED.nodes.workspace(activeWorkspace);
+                var exportArray = [];
+                if (workspace) {
+                    exportArray.push(workspace);
+                }
+                nodes.forEach(function(node) {
+                    var nodeCopy = Object.assign({}, node);
+                    delete nodeCopy._def;
+                    delete nodeCopy.__proto__;
+                    exportArray.push(nodeCopy);
+                });
+                return exportArray;
             }
         } catch (error) {
             console.error('Error getting current flow:', error);
