@@ -1,303 +1,301 @@
+// Main sidebar UI module — vanilla JS (no jQuery).
+// Builds the plugin sidebar, settings dialog, and generation workflow.
 (function(){
-    function createLLMPluginUI() {
-        var container = jQuery('<div>').addClass('llm-plugin-container');
-        var header = jQuery('<div>').addClass('llm-plugin-header');
-        var title = jQuery('<h3>').addClass('llm-plugin-title').text('LLM Plugin Chat');
-        var headerButtons = jQuery('<div>').addClass('header-buttons');
-        var newChatBtn = jQuery('<button>').addClass('header-btn').text('New Chat')
-            .click(function() { if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.startNewChat(); });
-        var chatListBtn = jQuery('<button>').addClass('header-btn').text('Chats')
-            .click(function() { if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.showChatList(); });
-        var settingsBtn = jQuery('<button>').addClass('header-btn').attr('id', 'llm-plugin-settings-button').html('<i class="fa fa-cog"></i>');
-        headerButtons.append(newChatBtn, chatListBtn, settingsBtn);
-        header.append(title, headerButtons);
-        var chatArea = jQuery('<div>').addClass('llm-plugin-chat').attr('id', 'llm-plugin-chat');
-        var inputArea = jQuery('<div>').addClass('llm-plugin-input');
-        var flowContextOption = jQuery('<div>').addClass('flow-context-option');
-        var flowContextCheckbox = jQuery('<input>').attr({
-            type: 'checkbox',
-            id: 'llm-plugin-include-flow',
-            checked: true
-        });
-        var flowContextLabel = jQuery('<label>').attr('for', 'llm-plugin-include-flow').text(' Send current flow');
-        flowContextOption.append(flowContextCheckbox, flowContextLabel);
-        var modelInput = jQuery('<input>').attr({
-            type: 'text',
-            id: 'llm-plugin-model',
-            placeholder: 'Model (e.g., llama3.2:latest)'
-        }).addClass('model-input');
-        var modelSuggestions = jQuery('<div>').addClass('model-suggestions').attr('id', 'llm-plugin-model-suggestions');
-        var promptGroup = jQuery('<div>').addClass('prompt-input-group');
-        var promptInput = jQuery('<textarea>').attr({
-            id: 'llm-plugin-prompt',
-            placeholder: 'Ask something or request a flow...'
-        }).addClass('prompt-input');
-        var generateBtn = jQuery('<button>').attr('id', 'llm-plugin-generate').addClass('generate-btn').text('Send');
-        promptGroup.append(promptInput, generateBtn);
-        inputArea.append(flowContextOption, modelInput, modelSuggestions, promptGroup);
-        var settingsOverlay = jQuery('<div>').attr({
-            id: 'llm-plugin-settings-overlay',
-            role: 'dialog',
-            'aria-modal': 'true',
-            'aria-hidden': 'true'
-        }).addClass('llm-settings-overlay');
-        var settingsDialog = jQuery('<div>').attr('id', 'llm-plugin-settings-dialog').addClass('llm-settings-dialog');
-        var settingsTemplate = jQuery('#llm-plugin-settings-template').html();
-        if (!settingsTemplate) {
-            settingsTemplate = '<div class="llm-settings-missing">Settings template not found.</div>';
-        }
-        settingsDialog.append(settingsTemplate);
-        var settingsActions = jQuery('<div>').addClass('llm-settings-actions');
-        var cancelSettingsBtn = jQuery('<button>').attr({
-            type: 'button',
-            id: 'llm-plugin-settings-cancel'
-        }).addClass('llm-settings-btn secondary').text('Cancel');
-        var saveSettingsBtn = jQuery('<button>').attr({
-            type: 'button',
-            id: 'llm-plugin-settings-save'
-        }).addClass('llm-settings-btn primary').text('Save');
-        settingsActions.append(cancelSettingsBtn, saveSettingsBtn);
-        settingsDialog.append(settingsActions);
-        settingsOverlay.append(settingsDialog);
-        container.append(header, chatArea, inputArea, settingsOverlay);
 
+    /**
+     * Build the sidebar DOM tree and return a raw DOM element.
+     * Node-RED's sidebar.addTab accepts DOM elements for its `content` property.
+     */
+    function createLLMPluginUI() {
+        var container = document.createElement('div');
+        container.className = 'llm-plugin-container';
+        container.innerHTML =
+            '<div class="llm-plugin-header">' +
+                '<h3 class="llm-plugin-title">LLM Plugin Chat</h3>' +
+                '<div class="header-buttons">' +
+                    '<button class="header-btn" data-action="new-chat">New Chat</button>' +
+                    '<button class="header-btn" data-action="chat-list">Chats</button>' +
+                    '<button class="header-btn" id="llm-plugin-settings-button"><i class="fa fa-cog"></i></button>' +
+                '</div>' +
+            '</div>' +
+            '<div class="llm-plugin-chat" id="llm-plugin-chat"></div>' +
+            '<div class="llm-plugin-input">' +
+                '<div class="flow-context-option">' +
+                    '<input type="checkbox" id="llm-plugin-include-flow" checked>' +
+                    '<label for="llm-plugin-include-flow"> Send current flow</label>' +
+                '</div>' +
+                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)">' +
+                '<div class="model-suggestions" id="llm-plugin-model-suggestions"></div>' +
+                '<div class="prompt-input-group">' +
+                    '<textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>' +
+                    '<button id="llm-plugin-generate" class="generate-btn">Send</button>' +
+                '</div>' +
+            '</div>' +
+            '<div id="llm-plugin-settings-overlay" class="llm-settings-overlay" role="dialog" aria-modal="true" aria-hidden="true">' +
+                '<div id="llm-plugin-settings-dialog" class="llm-settings-dialog"></div>' +
+            '</div>';
+
+        // Inject settings form from the <script> template defined in llm_plugin.html
+        var settingsDialog = container.querySelector('#llm-plugin-settings-dialog');
+        var templateEl = document.getElementById('llm-plugin-settings-template');
+        settingsDialog.innerHTML = templateEl
+            ? templateEl.innerHTML
+            : '<div class="llm-settings-missing">Settings template not found.</div>';
+        settingsDialog.insertAdjacentHTML('beforeend',
+            '<div class="llm-settings-actions">' +
+                '<button type="button" id="llm-plugin-settings-cancel" class="llm-settings-btn secondary">Cancel</button>' +
+                '<button type="button" id="llm-plugin-settings-save" class="llm-settings-btn primary">Save</button>' +
+            '</div>');
+
+        // Header buttons
+        container.querySelector('[data-action="new-chat"]').addEventListener('click', function() {
+            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.startNewChat();
+        });
+        container.querySelector('[data-action="chat-list"]').addEventListener('click', function() {
+            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.showChatList();
+        });
+
+        // Settings manager (accepts raw DOM element after settings.js refactor)
         var settingsManager = null;
         if (window.createLLMPluginSettings) {
             settingsManager = window.createLLMPluginSettings(settingsDialog);
         } else {
             console.warn('[LLM Plugin] Settings module not loaded.');
         }
-        settingsDialog.data('settingsManager', settingsManager);
+
         setTimeout(function() {
-            initializeClientApp();
+            initializeClientApp(settingsManager);
         }, 100);
+
         return container;
     }
 
-    function initializeClientApp() {
-        var generateBtn = jQuery('#llm-plugin-generate');
-        var modelInput = jQuery('#llm-plugin-model');
-        var promptInput = jQuery('#llm-plugin-prompt');
-        var chatArea = jQuery('#llm-plugin-chat');
-        var flowContextCheckbox = jQuery('#llm-plugin-include-flow');
-        var currentRequest = null;
+    /**
+     * Wire up all interactive behaviour once the DOM is in place.
+     * @param {Object|null} settingsManager  load/save/updateVisibility
+     */
+    function initializeClientApp(settingsManager) {
+        var generateBtn       = document.getElementById('llm-plugin-generate');
+        var modelInput        = document.getElementById('llm-plugin-model');
+        var promptInput       = document.getElementById('llm-plugin-prompt');
+        var chatArea          = document.getElementById('llm-plugin-chat');
+        var flowCheckbox      = document.getElementById('llm-plugin-include-flow');
+        var settingsOverlay   = document.getElementById('llm-plugin-settings-overlay');
+        var settingsDialog    = document.getElementById('llm-plugin-settings-dialog');
+        var openSettingsBtn   = document.getElementById('llm-plugin-settings-button');
+        var saveSettingsBtn   = document.getElementById('llm-plugin-settings-save');
+        var cancelSettingsBtn = document.getElementById('llm-plugin-settings-cancel');
+
+        var currentAbortController = null;
+        var cachedSettings = null;
+        var settingsSaving = false;
+        var lastFocusedBeforeSettings = null;
+
+        // --- Chat history bootstrap ---
         if (window.LLMPlugin && LLMPlugin.ChatManager) {
             LLMPlugin.ChatManager.loadChatHistoriesFromServer().then(function() {
                 console.log('Chat histories loaded from server');
             });
         }
-        if (window.LLMPlugin && LLMPlugin.UI) {
-            // no-op
-        }
 
-        var settingsOverlay = jQuery('#llm-plugin-settings-overlay');
-        var settingsDialog = jQuery('#llm-plugin-settings-dialog');
-        var openSettingsBtn = jQuery('#llm-plugin-settings-button');
-        var saveSettingsBtn = jQuery('#llm-plugin-settings-save');
-        var cancelSettingsBtn = jQuery('#llm-plugin-settings-cancel');
-        var settingsManager = settingsDialog.data('settingsManager');
-    var cachedSettings = null;
-    var settingsSaving = false;
-    var lastFocusedBeforeSettings = null;
-
+        // --- Settings helpers ---
         function fetchSettings(force) {
-            if (!force && cachedSettings) {
-                return Promise.resolve(cachedSettings);
-            }
-            return new Promise(function(resolve) {
-                jQuery.getJSON('llm-plugin/settings')
-                    .done(function(data) {
-                        cachedSettings = data || {};
-                        resolve(cachedSettings);
-                    })
-                    .fail(function() {
-                        cachedSettings = cachedSettings || {};
-                        resolve(cachedSettings);
-                    });
-            });
+            if (!force && cachedSettings) return Promise.resolve(cachedSettings);
+            return fetch('llm-plugin/settings')
+                .then(function(res) { return res.json(); })
+                .then(function(data) { cachedSettings = data || {}; return cachedSettings; })
+                .catch(function()    { cachedSettings = cachedSettings || {}; return cachedSettings; });
         }
 
         function openSettingsDialog() {
             lastFocusedBeforeSettings = document.activeElement;
             fetchSettings().then(function(settings) {
-                if (settingsManager && settingsManager.load) {
-                    settingsManager.load(settings);
-                }
-                settingsOverlay.addClass('visible').attr('aria-hidden', 'false');
-                settingsDialog.attr('tabindex', '-1').focus();
-                var firstField = settingsDialog.find('select, input').filter(':visible').first();
-                if (firstField.length) {
-                    setTimeout(function() {
-                        firstField.trigger('focus');
-                    }, 30);
+                if (settingsManager && settingsManager.load) settingsManager.load(settings);
+                settingsOverlay.classList.add('visible');
+                settingsOverlay.setAttribute('aria-hidden', 'false');
+                settingsDialog.setAttribute('tabindex', '-1');
+                settingsDialog.focus();
+                // Focus first visible input
+                var fields = settingsDialog.querySelectorAll('select, input');
+                for (var i = 0; i < fields.length; i++) {
+                    if (fields[i].offsetParent !== null) {
+                        (function(f) { setTimeout(function() { f.focus(); }, 30); })(fields[i]);
+                        break;
+                    }
                 }
             });
         }
 
         function closeSettingsDialog() {
-            settingsOverlay.removeClass('visible').attr('aria-hidden', 'true');
-            settingsDialog.removeAttr('tabindex');
+            settingsOverlay.classList.remove('visible');
+            settingsOverlay.setAttribute('aria-hidden', 'true');
+            settingsDialog.removeAttribute('tabindex');
             if (lastFocusedBeforeSettings && typeof lastFocusedBeforeSettings.focus === 'function') {
-                setTimeout(function() {
-                    lastFocusedBeforeSettings.focus();
-                }, 30);
+                setTimeout(function() { lastFocusedBeforeSettings.focus(); }, 30);
             }
         }
 
-        openSettingsBtn.off('click').on('click', function() {
-            openSettingsDialog();
+        openSettingsBtn.addEventListener('click', openSettingsDialog);
+        cancelSettingsBtn.addEventListener('click', closeSettingsDialog);
+        settingsOverlay.addEventListener('click', function(e) {
+            if (e.target === settingsOverlay) closeSettingsDialog();
+        });
+        settingsDialog.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') { e.preventDefault(); closeSettingsDialog(); }
         });
 
-        cancelSettingsBtn.off('click').on('click', function() {
-            closeSettingsDialog();
-        });
-
-        settingsOverlay.off('click').on('click', function(event) {
-            if (event.target === this) {
-                closeSettingsDialog();
-            }
-        });
-
-        settingsDialog.off('keydown').on('keydown', function(event) {
-            if (event.key === 'Escape') {
-                event.preventDefault();
-                closeSettingsDialog();
-            }
-        });
-
-        saveSettingsBtn.off('click').on('click', function() {
-            if (!settingsManager || settingsSaving) {
-                return;
-            }
+        saveSettingsBtn.addEventListener('click', function() {
+            if (!settingsManager || settingsSaving) return;
             var settings = settingsManager.save();
             settingsSaving = true;
-            saveSettingsBtn.prop('disabled', true).addClass('saving');
-            jQuery.ajax({
-                url: 'llm-plugin/settings',
-                type: 'POST',
-                contentType: 'application/json',
-                data: JSON.stringify(settings)
+            saveSettingsBtn.disabled = true;
+            saveSettingsBtn.classList.add('saving');
+            fetch('llm-plugin/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
             })
-            .done(function() {
-                cachedSettings = settings;
-                if (window.RED && RED.notify) {
-                    RED.notify('LLM Plugin settings saved.', 'success');
-                }
+            .then(function(res) {
+                if (!res.ok) return res.json().then(function(d) { throw new Error(d.error || 'Failed to save settings'); });
+                cachedSettings = null;
+                if (window.RED && RED.notify) RED.notify('LLM Plugin settings saved.', 'success');
                 closeSettingsDialog();
             })
-            .fail(function(xhr) {
-                var msg = (xhr.responseJSON && xhr.responseJSON.error) || 'Failed to save settings';
-                if (window.RED && RED.notify) {
-                    RED.notify(msg, 'error');
-                }
+            .catch(function(err) {
+                if (window.RED && RED.notify) RED.notify(err.message || 'Failed to save settings', 'error');
             })
-            .always(function() {
+            .finally(function() {
                 settingsSaving = false;
-                saveSettingsBtn.prop('disabled', false).removeClass('saving');
+                saveSettingsBtn.disabled = false;
+                saveSettingsBtn.classList.remove('saving');
             });
         });
 
+        // --- Initial data fetch ---
         fetchSettings();
         loadRecentModels();
-        function bindGenerateBtn() {
-            generateBtn.off('click').on('click', function() {
-                if (generateBtn.hasClass('stop-btn')) {
-                    if (currentRequest) {
-                        currentRequest.abort();
-                        jQuery('.loading-message').remove();
-                        generateBtn.prop('disabled', false).removeClass('stop-btn').html('Send');
-                        currentRequest = null;
-                    }
-                } else {
-                    handleGenerate();
+
+        // --- Generate / Stop toggle (single handler) ---
+        generateBtn.addEventListener('click', function() {
+            if (generateBtn.classList.contains('stop-btn')) {
+                if (currentAbortController) {
+                    currentAbortController.abort();
+                    var loadingMsg = chatArea.querySelector('.loading-message');
+                    if (loadingMsg) loadingMsg.remove();
+                    resetGenerateBtn();
+                    currentAbortController = null;
                 }
-            });
-        }
-        bindGenerateBtn();
-        promptInput.keypress(function(e) {
-            if (e.which === 13 && e.ctrlKey) {
+            } else {
                 handleGenerate();
             }
         });
+
+        promptInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) handleGenerate();
+        });
+
+        function resetGenerateBtn() {
+            generateBtn.disabled = false;
+            generateBtn.classList.remove('stop-btn');
+            generateBtn.textContent = 'Send';
+        }
+
+        // --- Model suggestions ---
         function loadRecentModels() {
-            jQuery.get('llm-plugin/recent-models')
-                .done(function(data) {
+            fetch('llm-plugin/recent-models')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
                     if (data.models && data.models.length > 0) {
-                        var modelSuggestions = jQuery('#llm-plugin-model-suggestions');
-                        modelSuggestions.empty();
+                        var container = document.getElementById('llm-plugin-model-suggestions');
+                        container.innerHTML = '';
                         data.models.forEach(function(model) {
-                            var chip = jQuery('<span>').addClass('model-chip')
-                                .text(model)
-                                .click(function() { modelInput.val(model); });
-                            modelSuggestions.append(chip);
+                            var chip = document.createElement('span');
+                            chip.className = 'model-chip';
+                            chip.textContent = model;
+                            chip.addEventListener('click', function() { modelInput.value = model; });
+                            container.appendChild(chip);
                         });
                     }
                 })
-                .fail(function() {
+                .catch(function() {
                     console.log('Could not load recent models');
                 });
         }
+
+        // --- Core generation flow ---
         function handleGenerate() {
-            var model = modelInput.val().trim();
-            var prompt = promptInput.val().trim();
+            var model  = modelInput.value.trim();
+            var prompt = promptInput.value.trim();
             if (!model || !prompt) {
-                if (window.RED && RED.notify) {
-                    RED.notify('Please enter both model and prompt', 'warning');
-                }
+                if (window.RED && RED.notify) RED.notify('Please enter both model and prompt', 'warning');
                 return;
             }
+
             if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.addMessage(prompt, true);
-            promptInput.val('');
-            var loadingMsg = (window.LLMPlugin && LLMPlugin.UI) ? LLMPlugin.UI.addMessageToUI('Generating...', false, false) : null;
-            if (loadingMsg) loadingMsg.addClass('loading-message');
-            generateBtn.prop('disabled', false).addClass('stop-btn').html('<i class="fa fa-stop" aria-hidden="true"></i>');
-            bindGenerateBtn();
-            var currentFlow = flowContextCheckbox.is(':checked') ? (window.LLMPlugin && LLMPlugin.UI ? LLMPlugin.UI.getCurrentFlow() : null) : null;
-            if (currentRequest) { currentRequest.abort(); }
-            currentRequest = jQuery.ajax({
-                url: 'llm-plugin/generate',
+            promptInput.value = '';
+
+            var loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
+                ? LLMPlugin.UI.addMessageToUI('Generating...', false, false)
+                : null;
+            if (loadingMsg) loadingMsg.classList.add('loading-message');
+
+            generateBtn.disabled = false;
+            generateBtn.classList.add('stop-btn');
+            generateBtn.innerHTML = '<i class="fa fa-stop" aria-hidden="true"></i>';
+
+            var currentFlow = flowCheckbox.checked
+                ? (window.LLMPlugin && LLMPlugin.UI ? LLMPlugin.UI.getCurrentFlow() : null)
+                : null;
+
+            if (currentAbortController) currentAbortController.abort();
+            currentAbortController = new AbortController();
+
+            fetch('llm-plugin/generate', {
                 method: 'POST',
-                contentType: 'application/json',
-                data: JSON.stringify({
-                    model: model,
-                    prompt: prompt,
-                    currentFlow: currentFlow
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: model, prompt: prompt, currentFlow: currentFlow }),
+                signal: currentAbortController.signal
             })
-            .done(function(data) {
+            .then(function(res) {
+                if (!res.ok) {
+                    return res.json()
+                        .catch(function() { return { error: 'Request failed (' + res.status + ')' }; })
+                        .then(function(d) {
+                            var err = new Error(d.error || 'Request failed');
+                            err.status = res.status;
+                            throw err;
+                        });
+                }
+                return res.json();
+            })
+            .then(function(data) {
                 if (loadingMsg) loadingMsg.remove();
-                // Save assistant response into chat history so it persists across restarts
                 if (window.LLMPlugin && LLMPlugin.ChatManager) {
                     LLMPlugin.ChatManager.addMessage(data.response, false);
                 } else if (window.LLMPlugin && LLMPlugin.UI) {
-                    // fallback: just display
                     LLMPlugin.UI.addMessageToUI(data.response, false, true);
                 }
             })
-            .fail(function(xhr, status, error) {
+            .catch(function(err) {
                 if (loadingMsg) loadingMsg.remove();
+                if (err && err.name === 'AbortError') return; // user cancelled
                 var errorMsg = 'Request failed';
-                if (xhr.responseJSON && xhr.responseJSON.error) {
-                    errorMsg = xhr.responseJSON.error;
-                } else if (status === 'timeout') {
-                    errorMsg = 'Request timed out';
-                } else if (xhr.status === 404) {
+                if (err && err.message) {
+                    errorMsg = err.message;
+                }
+                if (err && err.status === 404) {
                     errorMsg = 'LLM Plugin endpoint not found. Check plugin installation.';
-                } else if (status !== 'abort') {
-                    errorMsg = error || 'Unknown error';
                 }
-                if (status !== 'abort') {
-                    if (window.LLMPlugin && LLMPlugin.UI) LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false, false);
-                }
+                if (window.LLMPlugin && LLMPlugin.UI) LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false, false);
             })
-            .always(function() {
-                generateBtn.prop('disabled', false).removeClass('stop-btn').html('Send');
-                bindGenerateBtn();
-                currentRequest = null;
+            .finally(function() {
+                resetGenerateBtn();
+                currentAbortController = null;
             });
         }
     }
 
+    // --- Sidebar registration ---
     function initializeWhenReady() {
         if (typeof RED !== 'undefined' && RED.sidebar) {
             RED.sidebar.addTab({
@@ -314,7 +312,7 @@
         }
     }
 
-    // expose minimal init
+    // Expose minimal surface
     window.LLMPlugin = window.LLMPlugin || {};
     window.LLMPlugin.UI = window.LLMPlugin.UI || {};
     window.LLMPlugin.UI.createLLMPluginUI = createLLMPluginUI;

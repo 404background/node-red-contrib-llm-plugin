@@ -7,6 +7,62 @@
     function genId() { return 'id_' + Math.random().toString(36).substr(2,9); }
     function safeLog(){ try { if (window && window.console && window.console.log) window.console.log.apply(window.console, arguments); } catch(e){} }
 
+    // Try to parse text as Node-RED flow nodes. Returns array of nodes or null.
+    function tryParseFlowNodes(text) {
+        try {
+            var parsed = JSON.parse(text);
+            var nodes = null;
+            if (Array.isArray(parsed)) {
+                nodes = parsed;
+            } else if (parsed && parsed.nodes && Array.isArray(parsed.nodes)) {
+                nodes = parsed.nodes;
+            } else if (parsed && typeof parsed === 'object' && typeof parsed.type === 'string') {
+                nodes = [parsed];
+            }
+            if (nodes && nodes.length > 0 && nodes.some(function(n) { return n && typeof n.type === 'string' && n.type.trim().length > 0; })) {
+                return nodes.filter(function(n) { return n && typeof n.type !== 'undefined' && String(n.type).trim().length > 0; });
+            }
+        } catch (e) { /* not valid JSON */ }
+        return null;
+    }
+
+    // Extract Node-RED flow nodes from LLM message content.
+    // Handles: code fences (```json, ```JSON, ```, ```javascript), multiple blocks (picks last valid),
+    // and raw JSON arrays without code fences as fallback.
+    function extractFlowNodes(messageContent) {
+        // 1. Try code-fenced blocks (case-insensitive, optional language label)
+        var codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
+        var candidates = [];
+        var m;
+        while ((m = codeBlockRegex.exec(messageContent)) !== null) {
+            candidates.push(m[1].trim());
+        }
+        // Try from last to first (LLMs typically put the final/best answer last)
+        for (var i = candidates.length - 1; i >= 0; i--) {
+            var nodes = tryParseFlowNodes(candidates[i]);
+            if (nodes) return nodes;
+        }
+
+        // 2. Fallback: try to find raw JSON arrays outside code fences
+        var stripped = messageContent.replace(/```[\s\S]*?```/g, '');
+        var lastClose = stripped.lastIndexOf(']');
+        while (lastClose >= 0) {
+            var depth = 0;
+            for (var k = lastClose; k >= 0; k--) {
+                if (stripped[k] === ']') depth++;
+                if (stripped[k] === '[') depth--;
+                if (depth === 0) {
+                    var rawNodes = tryParseFlowNodes(stripped.substring(k, lastClose + 1));
+                    if (rawNodes) return rawNodes;
+                    break;
+                }
+            }
+            lastClose = stripped.lastIndexOf(']', lastClose - 1);
+        }
+
+        return null;
+    }
+
     function sanitizeNodes(nodes){
         // Conservative sanitizer: do minimal non-destructive normalization so Node-RED can import
         var out = nodes.map(function(n){ return Object.assign({}, n); });
@@ -33,14 +89,8 @@
 
     Importer.importFlowFromMessage = function(messageContent){
         try{
-            var m = messageContent.match(/```json\s*\n([\s\S]*?)\n\s*```/);
-            if (!m){ if (window.RED && RED.notify) RED.notify('No JSON flow found in message','warning'); return; }
-            var flow = JSON.parse(m[1]);
-            var nodes = Array.isArray(flow)? flow : (flow.nodes? flow.nodes : [flow]);
-            // Drop anything that is not a node-like object with a usable type string
-            nodes = nodes.filter(function(n){
-                return n && typeof n.type !== 'undefined' && String(n.type).trim().length > 0;
-            });
+            var nodes = extractFlowNodes(messageContent);
+            if (!nodes || nodes.length === 0){ if (window.RED && RED.notify) RED.notify('No JSON flow found in message','warning'); return; }
 
             // Import as-is with minimal changes - preserve original IDs when possible
             var existingIds = new Set();
@@ -145,5 +195,6 @@
 
     window.LLMPlugin = window.LLMPlugin || {};
     window.LLMPlugin.Importer = Importer;
+    Importer.extractFlowNodes = extractFlowNodes;
     Importer.getLastSanitized = function(){ return LAST_SANITIZED; };
 })();

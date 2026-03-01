@@ -1,5 +1,6 @@
+// Chat management module — vanilla JS (no jQuery).
+// Uses fetch API for server communication and native DOM for UI.
 (function(){
-    // Chat management module
     var ChatManager = {};
 
     var currentChatId = null;
@@ -7,6 +8,14 @@
 
     function generateChatId() {
         return 'chat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    }
+
+    /** Tiny DOM helper: createElement with optional className and textContent. */
+    function el(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
     }
 
     ChatManager.getCurrentChatId = function() {
@@ -34,31 +43,28 @@
             messages: [],
             created: new Date().toISOString()
         };
-        var chatArea = jQuery('#llm-plugin-chat');
-        if (chatArea && chatArea.length) chatArea.empty();
+        var chatArea = document.getElementById('llm-plugin-chat');
+        if (chatArea) chatArea.innerHTML = '';
         if (window.RED && RED.notify) RED.notify('Started new chat', 'success');
     };
 
     ChatManager.saveChatToServer = function(chatId) {
         var chat = chatHistory[chatId];
         if (chat && chat.messages && chat.messages.length > 0) {
-            jQuery.ajax({
-                url: 'llm-plugin/save-chat',
+            fetch('llm-plugin/save-chat', {
                 method: 'POST',
-                contentType: 'application/json',
-                data: JSON.stringify({
-                    chatId: chatId,
-                    chatData: chat
-                })
-            }).fail(function(error) {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chatId: chatId, chatData: chat })
+            }).catch(function(error) {
                 console.error('Failed to save chat:', error);
             });
         }
     };
 
     ChatManager.loadChatHistoriesFromServer = function() {
-        return jQuery.get('llm-plugin/chat-histories')
-            .done(function(data) {
+        return fetch('llm-plugin/chat-histories')
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
                 if (data && data.chatHistories) {
                     chatHistory = data.chatHistories;
                     // If we don't already have a current chat, pick the most recent one and load it
@@ -67,72 +73,81 @@
                         if (chatsArray.length > 0) {
                             chatsArray.sort(function(a,b){ return new Date(b.created) - new Date(a.created); });
                             currentChatId = chatsArray[0].id;
-                            // load into UI
                             try { ChatManager.loadChat(currentChatId); } catch(e) {}
                         }
                     }
                 }
             })
-            .fail(function(error) {
+            .catch(function(error) {
                 console.error('Failed to load chat histories:', error);
             });
     };
 
     ChatManager.showChatList = function() {
-        // Remove any existing modal to avoid stacking multiple modals
-        jQuery('.chat-modal').remove();
+        // Remove any existing modal to avoid stacking
+        document.querySelectorAll('.chat-modal').forEach(function(m) { m.remove(); });
 
-        var chats = Object.values(chatHistory).sort((a, b) => new Date(b.created) - new Date(a.created));
-        var modal = jQuery('<div>').addClass('chat-modal');
-        var modalContent = jQuery('<div>').addClass('chat-modal-content');
-        var modalHeader = jQuery('<div>').addClass('modal-header');
-        var modalTitle = jQuery('<h3>').text('Chat History');
-        var closeBtn = jQuery('<button>').addClass('close-btn').text('×')
-            .attr('title', 'Close')
-            .click(function() { modal.remove(); });
-        modalHeader.append(modalTitle, closeBtn);
-        var chatList = jQuery('<div>').addClass('chat-list');
+        var chats = Object.values(chatHistory).sort(function(a, b) {
+            return new Date(b.created) - new Date(a.created);
+        });
+
+        var modal        = el('div', 'chat-modal');
+        var modalContent = el('div', 'chat-modal-content');
+
+        var modalHeader  = el('div', 'modal-header');
+        modalHeader.appendChild(el('h3', null, 'Chat History'));
+        var closeBtn     = el('button', 'close-btn', '\u00d7');
+        closeBtn.title   = 'Close';
+        closeBtn.addEventListener('click', function() { modal.remove(); });
+        modalHeader.appendChild(closeBtn);
+
+        var chatList = el('div', 'chat-list');
+
         if (chats.length === 0) {
-            chatList.append(jQuery('<p>').text('No chat history found.'));
+            chatList.appendChild(el('p', null, 'No chat history found.'));
         } else {
             chats.forEach(function(chat) {
-                var chatItem = jQuery('<div>').addClass('chat-item');
-                if (chat.id === currentChatId) chatItem.addClass('current-chat');
-                var chatInfo = jQuery('<div>').addClass('chat-info');
-                var chatTitle = jQuery('<div>').addClass('chat-title').text(chat.title);
-                var chatDate = jQuery('<div>').addClass('chat-date').text(new Date(chat.created).toLocaleString());
-                var messageCount = jQuery('<div>').addClass('message-count').text((chat.messages||[]).length + ' messages');
-                chatInfo.append(chatTitle, chatDate, messageCount);
-                var chatActions = jQuery('<div>').addClass('chat-actions');
-                var loadBtn = jQuery('<button>').addClass('load-btn').text('Load')
-                    .click(function() { ChatManager.loadChat(chat.id); modal.remove(); });
-                var deleteBtn = jQuery('<button>').addClass('delete-btn').text('Delete')
-                    .click(function() {
-                        // Use deleteChat with a callback so we can refresh safely
-                        ChatManager.deleteChat(chat.id, function(success) {
-                            // Remove current modal first to avoid stacking
-                            modal.remove();
-                            if (success) {
-                                // Re-open refreshed list
-                                ChatManager.showChatList();
-                            }
-                        });
+                var chatItem = el('div', 'chat-item');
+                if (chat.id === currentChatId) chatItem.classList.add('current-chat');
+
+                var chatInfo = el('div', 'chat-info');
+                chatInfo.appendChild(el('div', 'chat-title', chat.title));
+                chatInfo.appendChild(el('div', 'chat-date', new Date(chat.created).toLocaleString()));
+                chatInfo.appendChild(el('div', 'message-count', (chat.messages || []).length + ' messages'));
+
+                var chatActions = el('div', 'chat-actions');
+                var loadBtn = el('button', 'load-btn', 'Load');
+                loadBtn.addEventListener('click', function() {
+                    ChatManager.loadChat(chat.id);
+                    modal.remove();
+                });
+                var deleteBtn = el('button', 'delete-btn', 'Delete');
+                deleteBtn.addEventListener('click', function() {
+                    ChatManager.deleteChat(chat.id, function(success) {
+                        modal.remove();
+                        if (success) ChatManager.showChatList();
                     });
-                chatActions.append(loadBtn, deleteBtn);
-                chatItem.append(chatInfo, chatActions);
-                chatList.append(chatItem);
+                });
+                chatActions.appendChild(loadBtn);
+                chatActions.appendChild(deleteBtn);
+
+                chatItem.appendChild(chatInfo);
+                chatItem.appendChild(chatActions);
+                chatList.appendChild(chatItem);
             });
         }
-        modalContent.append(modalHeader, chatList);
-        modal.append(modalContent);
-        jQuery('body').append(modal);
+
+        modalContent.appendChild(modalHeader);
+        modalContent.appendChild(chatList);
+        modal.appendChild(modalContent);
+        document.body.appendChild(modal);
     };
 
     ChatManager.loadChat = function(chatId) {
         if (chatHistory[chatId]) {
             currentChatId = chatId;
-            var chatArea = jQuery('#llm-plugin-chat');
-            if (chatArea && chatArea.length) chatArea.empty();
+            var chatArea = document.getElementById('llm-plugin-chat');
+            if (chatArea) chatArea.innerHTML = '';
             (chatHistory[chatId].messages||[]).forEach(function(msg) {
                 if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
                     LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false);
@@ -147,19 +162,16 @@
             if (typeof callback === 'function') callback(false);
             return;
         }
-        // Prefer to send the server-side filename (if available) to the delete endpoint
         var chat = chatHistory[chatId] || {};
         var payload = {};
         if (chat.__file) payload.filename = chat.__file;
-        else payload.chatId = chatId; // fallback for older servers
+        else payload.chatId = chatId;
 
-        jQuery.ajax({
-            url: 'llm-plugin/delete-chat',
+        fetch('llm-plugin/delete-chat', {
             method: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify(payload)
-        }).always(function() {
-            // Update client-side state and UI regardless of server result to stay consistent
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).finally(function() {
             delete chatHistory[chatId];
             if (currentChatId === chatId) {
                 ChatManager.startNewChat();
@@ -176,20 +188,19 @@
             isUser: isUser,
             timestamp: new Date().toISOString()
         });
-        if (isUser && (chat.messages.filter(m => m.isUser).length === 1)) {
+        if (isUser && (chat.messages.filter(function(m) { return m.isUser; }).length === 1)) {
             chat.title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
         }
         ChatManager.saveChatToServer(chatId);
         if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-            // Show retry button for assistant messages (isUser = false)
             return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser);
         }
         // fallback: append simple message
-        var chatArea = jQuery('#llm-plugin-chat');
-        if (chatArea && chatArea.length) {
-            var msg = jQuery('<div>').text(content);
-            chatArea.append(msg);
-            chatArea.scrollTop(chatArea[0].scrollHeight);
+        var chatArea = document.getElementById('llm-plugin-chat');
+        if (chatArea) {
+            var msg = el('div', null, content);
+            chatArea.appendChild(msg);
+            chatArea.scrollTop = chatArea.scrollHeight;
         }
     };
 

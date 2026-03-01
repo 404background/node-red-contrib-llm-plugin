@@ -1,31 +1,26 @@
+// UI core module — vanilla JS (no jQuery).
+// Handles message rendering, flow context export, and retry logic.
 (function(){
     var UI = {};
+
+    // Escape HTML special characters to prevent XSS
+    function escapeHtml(str) {
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
 
     function formatMessage(text) {
         // Use marked library if available for proper Markdown rendering
         if (typeof marked !== 'undefined' && marked.parse) {
-            // Configure marked to handle line breaks
-            // marked.setOptions({ breaks: true }); // Optional: enable if you want GFM line breaks
-            
-            // Custom renderer to handle specific needs if any, or just use default
-            var html = marked.parse(text);
-            
-            // Post-process to handle our specific JSON block requirement for import buttons
-            // We want to keep the raw JSON block hidden or styled specifically if needed, 
-            // but marked will render it as <pre><code>...</code></pre>.
-            // The UI.addMessageToUI function looks for the raw text to find the JSON for the button,
-            // so here we just ensure the display is nice.
-            
-            // If there is a JSON block that looks like a flow, we might want to ensure it has a specific class
-            // But marked already adds language-json class.
-            
-            return html;
+            return marked.parse(text);
         }
 
         // Fallback simple formatter (deprecated but kept for safety)
-        text = text.replace(/```json\s*\n([\s\S]*?)\n\s*```/g, function(match, jsonContent) {
+        // Escape HTML first to prevent XSS, then apply formatting
+        text = escapeHtml(text);
+        text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/gi, function(match, jsonContent) {
             try {
-                var parsed = JSON.parse(jsonContent);
+                var unescaped = jsonContent.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
+                var parsed = JSON.parse(unescaped);
                 if (parsed && (Array.isArray(parsed) || parsed.nodes)) {
                     return '<pre class="raw-json">' + jsonContent + '</pre>';
                 }
@@ -47,10 +42,8 @@
             if (!/^<ol>/.test(match) && !/^<ul>/.test(match)) return '<ol>' + match + '</ol>';
             return match;
         });
-        // Fix: Combine consecutive <ol> lists into one
         text = text.replace(/<\/ol>\s*<ol>/g, '');
         text = text.replace(/<\/ul>\s*<ul>/g, '');
-        
         text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
         text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
@@ -59,39 +52,51 @@
     }
 
     UI.addMessageToUI = function(content, isUser, showActions) {
-        var chatArea = jQuery('#llm-plugin-chat');
-        if (!chatArea || !chatArea.length) return null;
-        var message = jQuery('<div>').addClass('llm-plugin-message')
-            .addClass(isUser ? 'user-message' : 'assistant-message');
-        var messageContent = jQuery('<div>').addClass('message-content')
-            .html(formatMessage(content));
-        message.append(messageContent);
+        var chatArea = document.getElementById('llm-plugin-chat');
+        if (!chatArea) return null;
+
+        var message = document.createElement('div');
+        message.className = 'llm-plugin-message ' + (isUser ? 'user-message' : 'assistant-message');
+
+        var messageContent = document.createElement('div');
+        messageContent.className = 'message-content';
+        messageContent.innerHTML = formatMessage(content);
+        message.appendChild(messageContent);
+
         if (!isUser && showActions) {
-            var messageActions = jQuery('<div>').addClass('message-actions');
-            var retryBtn = jQuery('<button>').addClass('retry-btn')
-                .html('<i class="fa fa-redo" aria-hidden="true" style="color:#222;"></i>')
-                .attr('title', 'Retry message')
-                .click(function() { UI.retryLastUserMessage(); });
-            messageActions.append(retryBtn);
-            message.append(messageActions);
+            var messageActions = document.createElement('div');
+            messageActions.className = 'message-actions';
+            var retryBtn = document.createElement('button');
+            retryBtn.className = 'retry-btn';
+            retryBtn.innerHTML = '<i class="fa fa-redo" aria-hidden="true" style="color:#222;"></i>';
+            retryBtn.title = 'Retry message';
+            retryBtn.addEventListener('click', function() { UI.retryLastUserMessage(); });
+            messageActions.appendChild(retryBtn);
+            message.appendChild(messageActions);
         }
-        if (!isUser && content.indexOf('```json') !== -1) {
+
+        if (!isUser) {
             try {
-                var jsonMatch = content.match(/```json\s*\n([\s\S]*?)\n\s*```/);
-                if (jsonMatch) {
-                    var testJSON = JSON.parse(jsonMatch[1]);
-                    if (testJSON && (Array.isArray(testJSON) || testJSON.nodes)) {
-                        var flowActions = jQuery('<div>').addClass('flow-actions');
-                        var importBtn = jQuery('<button>').addClass('import-btn').text('Import Flow')
-                            .click(function() { if (window.LLMPlugin && LLMPlugin.Importer) LLMPlugin.Importer.importFlowFromMessage(content); });
-                        flowActions.append(importBtn);
-                        message.append(flowActions);
-                    }
+                var flowNodes = (window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.extractFlowNodes)
+                    ? LLMPlugin.Importer.extractFlowNodes(content)
+                    : null;
+                if (flowNodes && flowNodes.length > 0) {
+                    var flowActions = document.createElement('div');
+                    flowActions.className = 'flow-actions';
+                    var importBtn = document.createElement('button');
+                    importBtn.className = 'import-btn';
+                    importBtn.textContent = 'Import Flow';
+                    importBtn.addEventListener('click', function() {
+                        if (window.LLMPlugin && LLMPlugin.Importer) LLMPlugin.Importer.importFlowFromMessage(content);
+                    });
+                    flowActions.appendChild(importBtn);
+                    message.appendChild(flowActions);
                 }
             } catch (e) {}
         }
-        chatArea.append(message);
-        chatArea.scrollTop(chatArea[0].scrollHeight);
+
+        chatArea.appendChild(message);
+        chatArea.scrollTop = chatArea.scrollHeight;
         return message;
     };
 
@@ -99,21 +104,18 @@
 
     UI.retryLastUserMessage = function() {
         try {
-            // Find the last user message from the current chat and re-send it
             if (window.LLMPlugin && LLMPlugin.ChatManager) {
                 var chatId = LLMPlugin.ChatManager.getCurrentChatId();
-                var chatHistory = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
-                var chat = chatHistory[chatId];
+                var history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
+                var chat = history[chatId];
                 if (chat && chat.messages) {
-                    // Find the last user message
                     var userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
                     if (userMessages.length > 0) {
                         var lastUserMsg = userMessages[userMessages.length - 1];
-                        // Set the prompt and trigger generation
-                        var promptInput = jQuery('#llm-plugin-prompt');
-                        var generateBtn = jQuery('#llm-plugin-generate');
-                        if (promptInput.length && generateBtn.length) {
-                            promptInput.val(lastUserMsg.content);
+                        var promptInput = document.getElementById('llm-plugin-prompt');
+                        var generateBtn = document.getElementById('llm-plugin-generate');
+                        if (promptInput && generateBtn) {
+                            promptInput.value = lastUserMsg.content;
                             generateBtn.click();
                         }
                     }
@@ -130,25 +132,19 @@
                 var activeWorkspace = RED.workspaces.active();
                 if (!activeWorkspace) return null;
 
-                // Get all nodes on the current tab
                 var nodes = RED.nodes.filterNodes({z: activeWorkspace});
-                
-                // Use Node-RED's standard export function to ensure we get a clean, complete JSON representation
-                // including configuration nodes and proper property handling.
+                if (!nodes || nodes.length === 0) return null;
+
                 if (typeof RED.nodes.createExportableNodeSet === 'function') {
                     return RED.nodes.createExportableNodeSet(nodes);
                 }
 
-                // Fallback for older versions
-                var workspace = RED.nodes.workspace(activeWorkspace);
+                // Fallback for older Node-RED versions
                 var exportArray = [];
-                if (workspace) {
-                    exportArray.push(workspace);
-                }
                 nodes.forEach(function(node) {
                     var nodeCopy = Object.assign({}, node);
                     delete nodeCopy._def;
-                    delete nodeCopy.__proto__;
+                    delete nodeCopy.credentials;
                     exportArray.push(nodeCopy);
                 });
                 return exportArray;

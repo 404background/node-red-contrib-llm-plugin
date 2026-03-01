@@ -1,16 +1,20 @@
-// LLM Plugin - Server Side JavaScript
+// LLM Plugin — Server Side
+// Registers all HTTP admin endpoints used by the client sidebar.
 const fs = require('fs-extra');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const { exec } = require('child_process');
 const { OpenAI } = require('openai');
 
 function createLLMPluginServer(RED) {
-    // Create logs directory in plugin folder
     const logsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
     fs.ensureDirSync(logsDir);
 
-    // Get settings from RED.settings
+    // ------------------------------------------------------------------ //
+    //  Settings persistence                                               //
+    // ------------------------------------------------------------------ //
+
     function getPluginSettings() {
         return RED.settings.get('llmPluginSettings') || {};
     }
@@ -19,6 +23,16 @@ function createLLMPluginServer(RED) {
     function savePluginSettings(settings) {
         RED.settings.set('llmPluginSettings', settings);
     }
+
+    // Mask API key for safe client-side display (never expose full key)
+    function maskApiKey(key) {
+        if (!key || key.length < 8) return '';
+        return key.substring(0, 5) + '...' + key.substring(key.length - 4);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Ollama model discovery                                             //
+    // ------------------------------------------------------------------ //
 
     function listOllamaModels() {
         const settings = getPluginSettings();
@@ -54,7 +68,8 @@ function createLLMPluginServer(RED) {
         return new Promise((resolve) => {
             try {
                 const url = new URL('/api/tags', baseUrl);
-                const req = http.request(url.toString(), { method: 'GET', timeout: 5000 }, (res) => {
+                const httpModule = url.protocol === 'https:' ? https : http;
+                const req = httpModule.request(url.toString(), { method: 'GET', timeout: 5000 }, (res) => {
                     let data = '';
                     res.on('data', chunk => data += chunk);
                     res.on('end', () => {
@@ -75,7 +90,10 @@ function createLLMPluginServer(RED) {
         });
     }
 
-    // Utility function to save recent model
+    // ------------------------------------------------------------------ //
+    //  Recent-model tracking                                              //
+    // ------------------------------------------------------------------ //
+
     function saveRecentModel(model) {
         try {
             const modelsFile = path.join(logsDir, 'recent-models.json');
@@ -107,11 +125,15 @@ function createLLMPluginServer(RED) {
         return [];
     }
 
-    // Utility function to save chat history
+    // ------------------------------------------------------------------ //
+    //  Chat history persistence                                           //
+    // ------------------------------------------------------------------ //
+
     function saveChatHistory(chatId, chatData) {
         try {
             const date = new Date().toISOString().split('T')[0];
-            const sanitizedTitle = chatData.title.replace(/[<>:"/\\|?*]/g, '-').substring(0, 50);
+            const rawTitle = (chatData.title && typeof chatData.title === 'string') ? chatData.title : 'untitled';
+            const sanitizedTitle = rawTitle.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
             const filename = `${date}-${sanitizedTitle}-${chatId.substring(0, 8)}.json`;
             const filepath = path.join(logsDir, 'chats', filename);
             fs.ensureDirSync(path.dirname(filepath));
@@ -151,63 +173,44 @@ function createLLMPluginServer(RED) {
         }
     }
 
-    // Utility: build a compact summary of the flow context for the prompt.
+    // ------------------------------------------------------------------ //
+    //  Prompt construction & flow context                                  //
+    // ------------------------------------------------------------------ //
+
+    // Build a flow context description for the prompt.
     // Accepts either an object with {nodes, connections} or an array of nodes (export array).
+    // All nodes are passed through without truncation so the LLM sees the complete flow.
     function buildFlowContextDescription(flow) {
         if (!flow) return "No current flow context available.";
 
         // normalize: if flow is an array, treat as nodes array
         let nodes = [];
-        let connections = [];
         if (Array.isArray(flow)) {
-            nodes = flow.filter(n => n && n.type).slice(0, 50);
+            nodes = flow.filter(n => n && n.type);
         } else if (flow.nodes) {
-            nodes = (flow.nodes || []).slice(0, 50);
-            connections = flow.connections || [];
+            nodes = (flow.nodes || []);
         }
 
         if (!nodes || nodes.length === 0) return "No current flow context available.";
 
-        // Build a short human-readable summary (max 12 nodes listed)
-        const maxList = 12;
+        // Defensive credential stripping — never pass secrets to the LLM
+        nodes = nodes.map(n => {
+            const out = Object.assign({}, n);
+            delete out.credentials;
+            return out;
+        });
+
+        // Human-readable summary
         let description = `Flow summary: ${nodes.length} node(s)`;
-        description += `\nTypes present: ${[...new Set(nodes.map(n => n.type))].slice(0,20).join(', ')}`;
-        description += "\nTop nodes:\n";
-        nodes.slice(0, maxList).forEach(n => {
+        description += `\nTypes present: ${[...new Set(nodes.map(n => n.type))].join(', ')}`;
+        description += "\nNodes:\n";
+        nodes.forEach(n => {
             const nm = n.name ? ` - ${String(n.name).slice(0,30)}` : '';
             description += `- ${n.type}${nm} (id:${String(n.id).slice(0,8)})\n`;
         });
-        if (nodes.length > maxList) description += `- ... and ${nodes.length - maxList} more nodes\n`;
 
-        if (connections && connections.length > 0) {
-            description += `Connections: ${connections.length}\n`;
-            // show up to 6 connections
-            connections.slice(0,6).forEach(c => {
-                try {
-                    const from = c.from || {};
-                    const to = c.to || {};
-                    description += `- ${from.type || from.id} -> ${to.type || to.id}\n`;
-                } catch (e) {}
-            });
-            if (connections.length > 6) description += `- ... and ${connections.length - 6} more connections\n`;
-        }
-
-        // Also include a compact JSON snippet containing only essential fields (limited size)
-        // We pass the raw node object but limit string lengths to avoid token overflow
-        const compact = nodes.map(n => {
-            const out = Object.assign({}, n);
-            // Truncate very long string properties
-            Object.keys(out).forEach(key => {
-                if (typeof out[key] === 'string' && out[key].length > 1000) {
-                    out[key] = out[key].slice(0, 1000) + '... (truncated)';
-                }
-            });
-            // Remove visual coordinates to save tokens if needed, but user asked for raw data mostly.
-            // Keeping x,y,z is fine as they are short.
-            return out;
-        }).slice(0, 50);
-
-        description += `\nCompactFlowJSON: \n` + JSON.stringify(compact, null, 2).slice(0, 15000) + '\n';
+        // Full JSON representation — no node or size limits
+        description += `\nFlowJSON:\n` + JSON.stringify(nodes, null, 2) + '\n';
         return description;
     }
 
@@ -233,8 +236,11 @@ function createLLMPluginServer(RED) {
         return prompt;
     }
 
-    // Function to make HTTP request to Ollama
-    // timeout: 0 (default) means wait indefinitely
+    // ------------------------------------------------------------------ //
+    //  LLM provider adapters                                              //
+    // ------------------------------------------------------------------ //
+
+    // Ollama generation (timeout 0 = wait indefinitely)
     function generateWithOllama(model, prompt, timeout = 0) {
         const settings = getPluginSettings();
         const ollamaUrlStr = settings.ollamaUrl || 'http://localhost:11434';
@@ -251,9 +257,10 @@ function createLLMPluginServer(RED) {
                 prompt: prompt,
                 stream: false
             });
+            const isHttps = ollamaUrl.protocol === 'https:';
             const options = {
                 hostname: ollamaUrl.hostname,
-                port: ollamaUrl.port || 80,
+                port: ollamaUrl.port || (isHttps ? 443 : 80),
                 path: '/api/generate',
                 method: 'POST',
                 headers: {
@@ -264,7 +271,8 @@ function createLLMPluginServer(RED) {
             if (timeout && timeout > 0) {
                 options.timeout = timeout;
             }
-            const req = http.request(options, (res) => {
+            const httpModule = isHttps ? https : http;
+            const req = httpModule.request(options, (res) => {
                 const chunks = [];
                 res.on('data', (chunk) => {
                     chunks.push(chunk);
@@ -297,7 +305,7 @@ function createLLMPluginServer(RED) {
         });
     }
 
-    // Function to generate with OpenAI
+    // OpenAI generation
     async function generateWithOpenAI(apiKey, model, prompt) {
         const openai = new OpenAI({ apiKey });
         const completion = await openai.chat.completions.create({
@@ -308,7 +316,10 @@ function createLLMPluginServer(RED) {
     }
 
 
-    // HTTP endpoint for generation
+    // ------------------------------------------------------------------ //
+    //  HTTP admin endpoints                                               //
+    // ------------------------------------------------------------------ //
+
     RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
         const { model, prompt, currentFlow } = req.body;
         if (!model || !prompt) {
@@ -324,16 +335,34 @@ function createLLMPluginServer(RED) {
         try {
             let response;
             if (provider === 'openai') {
-                if (!settings.openaiApiKey || !settings.openaiModel) {
-                    throw new Error('OpenAI API key and model are not configured.');
+                if (!settings.openaiApiKey) {
+                    throw new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.');
                 }
-                response = await generateWithOpenAI(settings.openaiApiKey, model, enhancedPrompt);
+                try {
+                    response = await generateWithOpenAI(settings.openaiApiKey, model, enhancedPrompt);
+                } catch (openaiError) {
+                    // Provide detailed error messages based on OpenAI API error codes
+                    if (openaiError.status === 401 || openaiError.code === 'invalid_api_key') {
+                        throw new Error('Invalid OpenAI API key. Please check your API key in settings.');
+                    } else if (openaiError.status === 429) {
+                        throw new Error('OpenAI rate limit exceeded or quota exhausted. Please wait and try again, or check your billing.');
+                    } else if (openaiError.status === 503) {
+                        throw new Error('OpenAI service is temporarily unavailable. Please try again later.');
+                    } else if (openaiError.status === 404) {
+                        throw new Error('Model "' + model + '" not found on OpenAI. Please check the model name.');
+                    } else if (openaiError.status === 400) {
+                        throw new Error('Bad request to OpenAI: ' + (openaiError.message || 'Check your prompt and model settings.'));
+                    }
+                    // Re-throw with sanitized message (avoid leaking SDK internals)
+                    throw new Error('OpenAI error: ' + (openaiError.message || 'Unknown error'));
+                }
             } else {
                 response = await generateWithOllama(model, enhancedPrompt);
             }
             res.json({ response: response });
         } catch (error) {
-            console.error("[LLM Plugin] Generation error:", error);
+            // Log only safe fields — never log the full error object which may contain sensitive headers
+            console.error("[LLM Plugin] Generation error:", error.message || error);
             let errorMessage = 'Generation failed';
             if (error.code === 'ECONNREFUSED') {
                 const ollamaUrl = settings.ollamaUrl || 'http://localhost:11434';
@@ -349,20 +378,39 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // HTTP endpoint for settings
+    // --- Settings endpoints ---
     RED.httpAdmin.get('/llm-plugin/settings', function(req, res) {
-        res.json(getPluginSettings());
+        const settings = Object.assign({}, getPluginSettings());
+        // Never expose the full API key to the client
+        const hasKey = !!(settings.openaiApiKey && settings.openaiApiKey.length > 0);
+        settings.openaiApiKeyMasked = hasKey ? maskApiKey(settings.openaiApiKey) : '';
+        delete settings.openaiApiKey;
+        res.json(settings);
     });
 
     RED.httpAdmin.post('/llm-plugin/settings', function(req, res) {
         try {
-            savePluginSettings(req.body);
+            const body = req.body || {};
+            // Whitelist: only persist known settings fields
+            const newSettings = {
+                provider: body.provider || 'ollama',
+                ollamaUrl: body.ollamaUrl || 'http://localhost:11434'
+            };
+            // If API key field is empty, preserve the existing key (user didn't change it)
+            if (body.openaiApiKey && typeof body.openaiApiKey === 'string' && body.openaiApiKey.trim() !== '') {
+                newSettings.openaiApiKey = body.openaiApiKey.trim();
+            } else {
+                const existing = getPluginSettings();
+                newSettings.openaiApiKey = existing.openaiApiKey || '';
+            }
+            savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
     });
 
+    // --- Model list ---
     RED.httpAdmin.get('/llm-plugin/ollama/models', async function(req, res) {
         try {
             const models = await listOllamaModels();
@@ -374,7 +422,7 @@ function createLLMPluginServer(RED) {
     });
 
 
-    // HTTP endpoint for chat histories
+    // --- Chat history endpoints ---
     RED.httpAdmin.get('/llm-plugin/chat-histories', function(req, res) {
         try {
             const chatHistories = loadAllChatHistories();
@@ -384,7 +432,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // HTTP endpoint to save chat history
     RED.httpAdmin.post('/llm-plugin/save-chat', function(req, res) {
         try {
             const { chatId, chatData } = req.body;
@@ -398,8 +445,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // HTTP endpoint to delete a chat file
-    // Prefer accepting a filename (from server-provided metadata). Fallback to chatId if needed.
     RED.httpAdmin.post('/llm-plugin/delete-chat', function(req, res) {
         try {
             const { chatId, filename } = req.body || {};
@@ -443,7 +488,7 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // HTTP endpoint for recent models
+    // --- Static asset endpoints ---
     RED.httpAdmin.get('/llm-plugin/recent-models', function(req, res) {
         try {
             const models = getRecentModels();
@@ -453,7 +498,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // HTTP endpoint for CSS file
     RED.httpAdmin.get('/llm-plugin_styles.css', function(req, res) {
         try {
             const cssPath = path.join(__dirname, '..', 'llm-plugin_styles.css');
@@ -470,12 +514,11 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // Serve client module files under /llm-plugin/src/* (e.g. /red/llm-plugin/src/client.js)
     RED.httpAdmin.get('/llm-plugin/src/:file', function(req, res) {
         try {
-            const fileName = req.params.file;
+            const fileName = path.basename(req.params.file);
             // Prevent path traversal
-            if (fileName.indexOf('..') !== -1) return res.status(400).send('Invalid file');
+            if (fileName.indexOf('..') !== -1 || fileName !== req.params.file) return res.status(400).send('Invalid file');
             const filePath = path.join(__dirname, fileName);
             if (fs.existsSync(filePath)) {
                 const ext = path.extname(filePath).toLowerCase();
