@@ -10,6 +10,10 @@
         return 'chat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     }
 
+    function generateMessageId() {
+        return 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    }
+
     /** Tiny DOM helper: createElement with optional className and textContent. */
     function el(tag, className, text) {
         var node = document.createElement(tag);
@@ -41,22 +45,97 @@
             id: currentChatId,
             title: 'New Chat',
             messages: [],
-            created: new Date().toISOString()
+            created: new Date().toISOString(),
+            baselineCheckpointId: null
         };
         var chatArea = document.getElementById('llm-plugin-chat');
-        if (chatArea) chatArea.innerHTML = '';
+        while (chatArea && chatArea.firstChild) chatArea.removeChild(chatArea.firstChild);
         if (window.RED && RED.notify) RED.notify('Started new chat', 'success');
+    };
+
+    function renderBaselineCheckpointUI(checkpointId) {
+        var chatArea = document.getElementById('llm-plugin-chat');
+        if (!chatArea || !checkpointId) return;
+        var existing = chatArea.querySelector('.baseline-checkpoint-row');
+        if (existing) existing.remove();
+        var row = document.createElement('div');
+        row.className = 'baseline-checkpoint-row flow-actions';
+        var btn = document.createElement('button');
+        btn.className = 'restore-btn';
+        btn.textContent = 'Restore Checkpoint';
+        btn.dataset.checkpointId = checkpointId;
+        btn.addEventListener('click', function() {
+            if (!(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.restoreCheckpoint)) return;
+            if (!confirm('Restore the flow from this checkpoint? Current flow will be replaced.')) return;
+            btn.disabled = true;
+            LLMPlugin.Importer.restoreCheckpoint(checkpointId)
+                .then(function(result) {
+                    if (result && result.ok) {
+                        if (window.RED && RED.notify) RED.notify('Checkpoint restored', 'success');
+                    } else if (window.RED && RED.notify) {
+                        RED.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
+                    }
+                })
+                .catch(function(err) {
+                    if (window.RED && RED.notify) RED.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
+                })
+                .finally(function() { btn.disabled = false; });
+        });
+        row.appendChild(btn);
+        chatArea.insertBefore(row, chatArea.firstChild);
+    }
+
+    ChatManager.ensureBaselineCheckpoint = function(chatId) {
+        var id = chatId || ChatManager.getCurrentChatId();
+        var chat = chatHistory[id];
+        if (!chat || chat.baselineCheckpointId || chat._baselinePending) return;
+        if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) return;
+
+        var flow = LLMPlugin.UI.getCurrentFlow();
+        if (!Array.isArray(flow) || flow.length === 0) return;
+
+        chat._baselinePending = true;
+        fetch('llm-plugin/checkpoint/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chatId: id,
+                label: 'chat-start-pre-edit',
+                flow: flow,
+                meta: { source: 'chat-start' }
+            })
+        })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            if (data && data.checkpointId) {
+                chat.baselineCheckpointId = data.checkpointId;
+                ChatManager.saveChatToServer(id);
+                renderBaselineCheckpointUI(data.checkpointId);
+            }
+        })
+        .catch(function(e) {
+            console.warn('[LLM Plugin] Failed to save baseline checkpoint:', e && e.message ? e.message : e);
+        })
+        .finally(function() {
+            delete chat._baselinePending;
+        });
+    };
+
+    ChatManager.getBaselineCheckpointId = function(chatId) {
+        var id = chatId || ChatManager.getCurrentChatId();
+        var chat = chatHistory[id];
+        return chat ? (chat.baselineCheckpointId || null) : null;
     };
 
     ChatManager.saveChatToServer = function(chatId) {
         var chat = chatHistory[chatId];
-        if (chat && chat.messages && chat.messages.length > 0) {
+        if (chat) {
             fetch('llm-plugin/save-chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ chatId: chatId, chatData: chat })
             }).catch(function(error) {
-                console.error('Failed to save chat:', error);
+                if (window.RED && RED.notify) RED.notify('Failed to save chat', 'warning');
             });
         }
     };
@@ -79,7 +158,7 @@
                 }
             })
             .catch(function(error) {
-                console.error('Failed to load chat histories:', error);
+                if (window.RED && RED.notify) RED.notify('Failed to load chat histories', 'warning');
             });
     };
 
@@ -147,13 +226,34 @@
         if (chatHistory[chatId]) {
             currentChatId = chatId;
             var chatArea = document.getElementById('llm-plugin-chat');
-            if (chatArea) chatArea.innerHTML = '';
+            while (chatArea && chatArea.firstChild) chatArea.removeChild(chatArea.firstChild);
             (chatHistory[chatId].messages||[]).forEach(function(msg) {
                 if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-                    LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false);
+                    LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
                 }
             });
+            if (chatHistory[chatId].baselineCheckpointId) {
+                renderBaselineCheckpointUI(chatHistory[chatId].baselineCheckpointId);
+            }
             if (window.RED && RED.notify) RED.notify('Loaded chat: ' + chatHistory[chatId].title, 'success');
+        }
+    };
+
+    ChatManager.updateMessageMeta = function(messageId, patch) {
+        var chatId = ChatManager.getCurrentChatId();
+        var chat = chatHistory[chatId];
+        if (!chat || !chat.messages) return;
+        for (var i = chat.messages.length - 1; i >= 0; i--) {
+            if (chat.messages[i].id === messageId) {
+                var base = chat.messages[i].meta || {};
+                var next = patch || {};
+                var merged = {};
+                Object.keys(base).forEach(function(k) { merged[k] = base[k]; });
+                Object.keys(next).forEach(function(k) { merged[k] = next[k]; });
+                chat.messages[i].meta = merged;
+                ChatManager.saveChatToServer(chatId);
+                break;
+            }
         }
     };
 
@@ -180,20 +280,25 @@
         });
     };
 
-    ChatManager.addMessage = function(content, isUser) {
+    ChatManager.addMessage = function(content, isUser, metaOverwrite) {
         var chatId = ChatManager.getCurrentChatId();
         var chat = chatHistory[chatId];
-        chat.messages.push({
+        if (isUser) ChatManager.ensureBaselineCheckpoint(chatId);
+
+        var message = {
+            id: generateMessageId(),
             content: content,
             isUser: isUser,
-            timestamp: new Date().toISOString()
-        });
+            timestamp: new Date().toISOString(),
+            meta: metaOverwrite || {}
+        };
+        chat.messages.push(message);
         if (isUser && (chat.messages.filter(function(m) { return m.isUser; }).length === 1)) {
             chat.title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
         }
         ChatManager.saveChatToServer(chatId);
         if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-            return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser);
+            return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser, message);
         }
         // fallback: append simple message
         var chatArea = document.getElementById('llm-plugin-chat');

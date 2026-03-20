@@ -29,4 +29,13 @@
             <i class="fa fa-info-circle"></i> API Key is stored in Node-RED's internal configuration (e.g. <code>.config.runtime.json</code>) and is <strong>NOT</strong> included in flow exports.
         </div>
     </div>
+
+    <div class="form-row" style="margin-top: 12px;">
+        <label for="llm-system-prompt"><i class="fa fa-comment-alt"></i> System Prompt</label>
+        <textarea id="llm-system-prompt" rows="6" style="width: 100%; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="Additional instructions for the LLM..."></textarea>
+        <div class="form-tips" style="font-size: 12px; color: #666; margin-top: 5px;">
+            <i class="fa fa-info-circle"></i> This text is prepended to the built-in system prompt for every request. Use it to give the LLM persistent instructions (e.g. preferred node types, coding style, language).
+        </div>
+        <button type="button" id="llm-system-prompt-reset" style="margin-top: 4px; font-size: 11px; padding: 2px 8px;">Reset to default</button>
+    </div>
 </script>

@@ -11,7 +11,23 @@
     function formatMessage(text) {
         // Use marked library if available for proper Markdown rendering
         if (typeof marked !== 'undefined' && marked.parse) {
-            return marked.parse(text);
+            // If the whole response is raw JSON, render it as a formatted
+            // code block so UI can fold it like fenced JSON output.
+            var raw = String(text || '').trim();
+            if (raw && (raw.charAt(0) === '{' || raw.charAt(0) === '[')) {
+                try {
+                    var parsedRaw = JSON.parse(raw);
+                    if (parsedRaw && typeof parsedRaw === 'object') {
+                        return '<pre><code class="language-json">' +
+                            escapeHtml(JSON.stringify(parsedRaw, null, 2)) +
+                            '</code></pre>';
+                    }
+                } catch (e) { /* not raw JSON */ }
+            }
+
+            // Prevent raw HTML injection from model responses while preserving markdown.
+            var safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return marked.parse(safeText);
         }
 
         // Fallback simple formatter (deprecated but kept for safety)
@@ -22,7 +38,8 @@
                 var unescaped = jsonContent.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
                 var parsed = JSON.parse(unescaped);
                 if (parsed && (Array.isArray(parsed) || parsed.nodes)) {
-                    return '<pre class="raw-json">' + jsonContent + '</pre>';
+                    // Re-escape: use the parsed object to produce clean JSON, then escape for safe HTML display
+                    return '<pre class="raw-json">' + escapeHtml(JSON.stringify(parsed, null, 2)) + '</pre>';
                 }
             } catch (e) {}
             return '';
@@ -51,24 +68,102 @@
         return text;
     }
 
-    UI.addMessageToUI = function(content, isUser, showActions) {
+    function createRestoreCheckpointButton(checkpointId) {
+        var btn = document.createElement('button');
+        btn.className = 'restore-btn';
+        btn.textContent = 'Restore Checkpoint';
+        btn.dataset.checkpointId = checkpointId;
+        btn.addEventListener('click', function() {
+            var cpId = btn.dataset.checkpointId;
+            if (!cpId || !(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.restoreCheckpoint)) return;
+            var ok = confirm('Restore the flow from this checkpoint? Current flow in the active tab will be replaced.');
+            if (!ok) return;
+            btn.disabled = true;
+            LLMPlugin.Importer.restoreCheckpoint(cpId)
+                .then(function(result) {
+                    if (result && result.ok) {
+                        if (window.RED && RED.notify) RED.notify('Checkpoint restored', 'success');
+                    } else if (window.RED && RED.notify) {
+                        RED.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
+                    }
+                })
+                .catch(function(err) {
+                    if (window.RED && RED.notify) RED.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
+                })
+                .finally(function() {
+                    btn.disabled = false;
+                });
+        });
+        return btn;
+    }
+
+    UI.addMessageToUI = function(content, isUser, showActions, messageMeta) {
         var chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea) return null;
 
         var message = document.createElement('div');
         message.className = 'llm-plugin-message ' + (isUser ? 'user-message' : 'assistant-message');
+        if (messageMeta && messageMeta.id) {
+            message.dataset.messageId = messageMeta.id;
+        }
 
         var messageContent = document.createElement('div');
         messageContent.className = 'message-content';
         messageContent.innerHTML = formatMessage(content);
+
+        // Wrap JSON / Vibe-Schema code blocks in a collapsible <details> element
+        var codeBlocks = messageContent.querySelectorAll('pre');
+        for (var i = 0; i < codeBlocks.length; i++) {
+            var pre = codeBlocks[i];
+            var codeEl = pre.querySelector('code') || pre;
+            try {
+                var text = codeEl.textContent || '';
+                var parsed = JSON.parse(text);
+                if (parsed && typeof parsed === 'object') {
+                    var details = document.createElement('details');
+                    details.className = 'json-collapsible';
+                    var summary = document.createElement('summary');
+                    // Pick a label that hints at the content
+                    if (parsed.nodes && parsed.connections) {
+                        summary.textContent = 'Vibe Schema JSON';
+                    } else if (Array.isArray(parsed)) {
+                        summary.textContent = 'Flow JSON (' + parsed.length + ' nodes)';
+                    } else {
+                        summary.textContent = 'JSON';
+                    }
+                    pre.parentNode.insertBefore(details, pre);
+                    details.appendChild(summary);
+                    details.appendChild(pre);
+                }
+            } catch (e) { /* not JSON — leave as-is */ }
+        }
+
         message.appendChild(messageContent);
+
+        if (!isUser) {
+            var meta = messageMeta && messageMeta.meta ? messageMeta.meta : null;
+            if (meta && typeof meta.elapsedMs === 'number' && isFinite(meta.elapsedMs)) {
+                var elapsed = document.createElement('div');
+                elapsed.className = 'message-elapsed';
+                var elapsedText = (meta.elapsedMs / 1000).toFixed(1) + 's';
+                if (meta.model && typeof meta.model === 'string') {
+                    elapsedText = meta.model + ' / ' + elapsedText;
+                }
+                elapsed.textContent = elapsedText;
+                message.appendChild(elapsed);
+            }
+        }
 
         if (!isUser && showActions) {
             var messageActions = document.createElement('div');
             messageActions.className = 'message-actions';
             var retryBtn = document.createElement('button');
             retryBtn.className = 'retry-btn';
-            retryBtn.innerHTML = '<i class="fa fa-redo" aria-hidden="true" style="color:#222;"></i>';
+            var retryIcon = document.createElement('i');
+            retryIcon.className = 'fa fa-redo';
+            retryIcon.setAttribute('aria-hidden', 'true');
+            retryIcon.style.color = '#222';
+            retryBtn.appendChild(retryIcon);
             retryBtn.title = 'Retry message';
             retryBtn.addEventListener('click', function() { UI.retryLastUserMessage(); });
             messageActions.appendChild(retryBtn);
@@ -80,16 +175,65 @@
                 var flowNodes = (window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.extractFlowNodes)
                     ? LLMPlugin.Importer.extractFlowNodes(content)
                     : null;
-                if (flowNodes && flowNodes.length > 0) {
+                var hasDirectivesOnly = !flowNodes || flowNodes.length === 0
+                    ? !!(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.hasFlowDirectives && LLMPlugin.Importer.hasFlowDirectives(content))
+                    : false;
+                if ((flowNodes && flowNodes.length > 0) || hasDirectivesOnly) {
                     var flowActions = document.createElement('div');
                     flowActions.className = 'flow-actions';
                     var importBtn = document.createElement('button');
                     importBtn.className = 'import-btn';
                     importBtn.textContent = 'Import Flow';
+                    
+                    var isAgent = messageMeta && messageMeta.meta && messageMeta.meta.mode === 'agent';
+                    if (isAgent) importBtn.style.display = 'none';
+
                     importBtn.addEventListener('click', function() {
-                        if (window.LLMPlugin && LLMPlugin.Importer) LLMPlugin.Importer.importFlowFromMessage(content);
+                        if (!(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.importFlowFromMessage)) return;
+                        importBtn.disabled = true;
+                        var chatId = (window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.getCurrentChatId)
+                            ? LLMPlugin.ChatManager.getCurrentChatId()
+                            : null;
+                        var selectedApplyMode = 'auto';
+                        if (messageMeta && messageMeta.meta && messageMeta.meta.applyMode) {
+                            selectedApplyMode = messageMeta.meta.applyMode;
+                        }
+
+                        LLMPlugin.Importer.importFlowFromMessage(content, {
+                            chatId: chatId,
+                            checkpointLabel: 'pre-import-' + new Date().toISOString(),
+                            mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
+                            applyMode: selectedApplyMode
+                        })
+                        .then(function(result) {
+                            if (!result || !result.ok) return;
+                            // Restore should target the flow state at this chat step (post-import snapshot).
+                            var checkpointId = result.postCheckpointId || result.checkpointId;
+                            if (checkpointId) {
+                                flowActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
+                                flowActions.appendChild(createRestoreCheckpointButton(checkpointId));
+                                if (messageMeta && messageMeta.id && window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.updateMessageMeta) {
+                                    LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
+                                        pluginEdited: true,
+                                        checkpointId: checkpointId
+                                    });
+                                }
+                            }
+                        })
+                        .finally(function() {
+                            importBtn.disabled = false;
+                        });
                     });
                     flowActions.appendChild(importBtn);
+
+                    // Rebuild restore button for previously edited plugin messages.
+                    var existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
+                        ? messageMeta.meta.checkpointId
+                        : null;
+                    if (existingCheckpointId) {
+                        flowActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
+                    }
+
                     message.appendChild(flowActions);
                 }
             } catch (e) {}
@@ -135,13 +279,44 @@
                 var nodes = RED.nodes.filterNodes({z: activeWorkspace});
                 if (!nodes || nodes.length === 0) return null;
 
+                // Collect config nodes referenced by workspace nodes.
+                // Dashboard nodes (ui_button, etc.) reference config nodes
+                // (ui-group, ui-tab, ui-base) that live outside any workspace.
+                // BFS follows transitive references (e.g. ui-group → ui-tab).
+                var configNodes = [];
+                var allConfigById = {};
+                if (RED.nodes.eachConfig) {
+                    RED.nodes.eachConfig(function(cn) {
+                        allConfigById[cn.id] = cn;
+                    });
+                }
+                if (Object.keys(allConfigById).length > 0) {
+                    var collected = {};
+                    var queue = nodes.slice();
+                    while (queue.length > 0) {
+                        var cur = queue.shift();
+                        if (!cur) continue;
+                        Object.keys(cur).forEach(function(key) {
+                            if (typeof cur[key] !== 'string') return;
+                            var cn = allConfigById[cur[key]];
+                            if (cn && !collected[cn.id]) {
+                                collected[cn.id] = cn;
+                                queue.push(cn);
+                            }
+                        });
+                    }
+                    configNodes = Object.keys(collected).map(function(id) { return collected[id]; });
+                }
+
+                var allNodes = nodes.concat(configNodes);
+
                 if (typeof RED.nodes.createExportableNodeSet === 'function') {
-                    return RED.nodes.createExportableNodeSet(nodes);
+                    return RED.nodes.createExportableNodeSet(allNodes);
                 }
 
                 // Fallback for older Node-RED versions
                 var exportArray = [];
-                nodes.forEach(function(node) {
+                allNodes.forEach(function(node) {
                     var nodeCopy = Object.assign({}, node);
                     delete nodeCopy._def;
                     delete nodeCopy.credentials;

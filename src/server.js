@@ -6,10 +6,51 @@ const http = require('http');
 const https = require('https');
 const { exec } = require('child_process');
 const { OpenAI } = require('openai');
+const Configurator = require('./core/flow_converter_core');
+
+// Load system prompt template once at startup
+const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(
+    path.join(__dirname, 'prompt_system.txt'), 'utf8'
+);
 
 function createLLMPluginServer(RED) {
     const logsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
+    const checkpointsDir = path.join(logsDir, 'checkpoints');
+    const clientEventsLog = path.join(logsDir, 'client-events.log');
     fs.ensureDirSync(logsDir);
+    fs.ensureDirSync(checkpointsDir);
+
+    function writeClientEvent(level, event, message, meta) {
+        const lv = String(level || 'info').toLowerCase();
+        const safeLevel = (lv === 'error' || lv === 'warn' || lv === 'warning') ? lv : 'info';
+        const payload = {
+            ts: new Date().toISOString(),
+            level: safeLevel,
+            event: String(event || 'client-event'),
+            message: redactSecrets(message || ''),
+            meta: meta && typeof meta === 'object' ? meta : {}
+        };
+
+        try {
+            fs.appendFileSync(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8');
+        } catch (e) {
+            // ignore log file errors to avoid breaking user flow
+        }
+
+        const metaPreview = (() => {
+            try {
+                const text = JSON.stringify(payload.meta);
+                return text && text.length > 0 ? ' meta=' + redactSecrets(text) : '';
+            } catch (e) {
+                return '';
+            }
+        })();
+
+        const line = `[LLM Plugin][Client][${payload.event}] ${payload.message}${metaPreview}`;
+        if (safeLevel === 'error') RED.log.error(line);
+        else if (safeLevel === 'warn' || safeLevel === 'warning') RED.log.warn(line);
+        else RED.log.info(line);
+    }
 
     // ------------------------------------------------------------------ //
     //  Settings persistence                                               //
@@ -28,6 +69,16 @@ function createLLMPluginServer(RED) {
     function maskApiKey(key) {
         if (!key || key.length < 8) return '';
         return key.substring(0, 5) + '...' + key.substring(key.length - 4);
+    }
+
+    function redactSecrets(input) {
+        let text = String(input || '');
+        text = text.replace(/sk-[A-Za-z0-9_-]{10,}/g, 'sk-***REDACTED***');
+        text = text.replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1***REDACTED***');
+        text = text.replace(/("openaiApiKey"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3');
+        text = text.replace(/https?:\/\/[^\s'"`]+/gi, '***URL_REDACTED***');
+        text = text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '***IP_REDACTED***');
+        return text;
     }
 
     // ------------------------------------------------------------------ //
@@ -134,10 +185,10 @@ function createLLMPluginServer(RED) {
             const date = new Date().toISOString().split('T')[0];
             const rawTitle = (chatData.title && typeof chatData.title === 'string') ? chatData.title : 'untitled';
             const sanitizedTitle = rawTitle.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
-            const filename = `${date}-${sanitizedTitle}-${chatId.substring(0, 8)}.json`;
+            const filename = `${date}-${sanitizedTitle}-${chatId}.json`;
             const filepath = path.join(logsDir, 'chats', filename);
             fs.ensureDirSync(path.dirname(filepath));
-            fs.writeFileSync(filepath, JSON.stringify(chatData, null, 2));
+            writeFileAtomic(filepath, JSON.stringify(chatData, null, 2));
         } catch (error) {
             console.error("[LLM Plugin] Error saving chat history:", error);
         }
@@ -178,12 +229,12 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
 
     // Build a flow context description for the prompt.
-    // Accepts either an object with {nodes, connections} or an array of nodes (export array).
-    // All nodes are passed through without truncation so the LLM sees the complete flow.
+    // Converts the Node-RED flow to Vibe Schema (intermediate JSON) so the LLM
+    // sees a clean, alias-based representation without random IDs or coordinates.
     function buildFlowContextDescription(flow) {
         if (!flow) return "No current flow context available.";
 
-        // normalize: if flow is an array, treat as nodes array
+        // Normalize input
         let nodes = [];
         if (Array.isArray(flow)) {
             nodes = flow.filter(n => n && n.type);
@@ -193,55 +244,200 @@ function createLLMPluginServer(RED) {
 
         if (!nodes || nodes.length === 0) return "No current flow context available.";
 
-        // Defensive credential stripping — never pass secrets to the LLM
+        // Defensive credential stripping
         nodes = nodes.map(n => {
             const out = Object.assign({}, n);
             delete out.credentials;
             return out;
         });
 
-        // Human-readable summary
-        let description = `Flow summary: ${nodes.length} node(s)`;
-        description += `\nTypes present: ${[...new Set(nodes.map(n => n.type))].join(', ')}`;
-        description += "\nNodes:\n";
-        nodes.forEach(n => {
-            const nm = n.name ? ` - ${String(n.name).slice(0,30)}` : '';
-            description += `- ${n.type}${nm} (id:${String(n.id).slice(0,8)})\n`;
-        });
-
-        // Full JSON representation — no node or size limits
-        description += `\nFlowJSON:\n` + JSON.stringify(nodes, null, 2) + '\n';
-        return description;
+        // Convert to Vibe Schema for the LLM
+        const intermediate = Configurator.toIntermediate(nodes);
+        return JSON.stringify(intermediate, null, 2);
     }
 
-    // Function to build enhanced prompt
-    function buildPrompt(userPrompt, flowContext) {
-        let prompt = `You are a Node-RED expert.\n\n`;
+    // Build the system prompt.
+    // Instructs the LLM to output Vibe Schema (intermediate JSON) instead of
+    // raw Node-RED JSON, which avoids the need for random IDs and coordinates.
+    function normalizeApplyMode(v) {
+        const m = String(v || '').trim().toLowerCase();
+        if (m === 'edit-only' || m === 'merge' || m === 'overwrite' || m === 'delete-only' || m === 'auto') return m;
+        return null;
+    }
 
-        prompt += "RULES:\n";
-        prompt += "- Detect language from user input.\n";
-        prompt += "- When explaining flows, analyze logic and data flow. Do NOT mention IDs or coordinates.\n";
-        prompt += "- To generate flows, output a single ```json``` array of node objects.\n";
-        prompt += "- Nodes must have: id, type, z, x, y, wires.\n";
-        prompt += "- Do NOT include `tab` nodes.\n";
-        prompt += "- Be concise.\n\n";
+    function detectApplyModeFromResponse(text) {
+        const payload = parseFlowPayloadFromText(text);
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+            const fromPayload = normalizeApplyMode(payload.applyMode || payload.mode || payload.strategy);
+            if (fromPayload) return fromPayload;
+        }
+        const marker = String(text || '').match(/APPLY[_\s-]*MODE\s*[:=]\s*(edit-only|merge|overwrite|delete-only|auto)/i);
+        return marker && marker[1] ? (normalizeApplyMode(marker[1]) || 'auto') : 'auto';
+    }
+
+    function buildMessages(userPrompt, flowContext) {
+        const settings = getPluginSettings();
+        const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
+            ? String(settings.systemPrompt).trim()
+            : '';
+
+        let system = '';
+        if (userSystemPrompt) {
+            system += userSystemPrompt + '\n\n';
+        }
+        system += SYSTEM_PROMPT_TEMPLATE + "\n";
+
+        system += 'APPLY MODE: auto\n';
+        system += '- Strategy: choose one of edit-only / merge / overwrite / delete-only yourself based on user intent.\n';
+        system += '- Include your choice as top-level JSON field: "applyMode".\n\n';
 
         if (flowContext) {
-            prompt += "FLOW CONTEXT SUMMARY:\n";
-            prompt += buildFlowContextDescription(flowContext) + "\n";
+            system += "CURRENT FLOW (Vibe Schema):\n";
+            system += buildFlowContextDescription(flowContext) + "\n\n";
         }
 
-        // Pass the raw user input through and let the model handle language/details
-        prompt += `USER REQUEST: ${userPrompt}\n\n`;
-        return prompt;
+        return [
+            { role: 'system', content: system },
+            { role: 'user', content: String(userPrompt || '') }
+        ];
+    }
+
+    function generateWithProvider(provider, settings, model, messages) {
+        if (provider === 'openai') {
+            if (!settings.openaiApiKey) {
+                return Promise.reject(new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.'));
+            }
+            return generateWithOpenAI(settings.openaiApiKey, model, messages);
+        }
+        return generateWithOllamaChat(model, messages);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Agent-mode validation helpers                                      //
+    // ------------------------------------------------------------------ //
+
+    function stripJsonComments(text) {
+        return String(text || '')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/(?:^|[^:"'])\s*\/\/.*$/gm, function(m) {
+                const idx = m.indexOf('//');
+                if (idx < 0) return m;
+                const before = m.substring(0, idx);
+                const quotes = (before.match(/(?<!\\)"/g) || []).length;
+                return quotes % 2 === 0 ? before : m;
+            });
+    }
+
+    function repairJsonQuotes(text) {
+        const result = [];
+        let i = 0;
+        const len = text.length;
+        let inString = false;
+        let isValueString = false;
+
+        while (i < len) {
+            const ch = text[i];
+            if (!inString) {
+                result.push(ch);
+                if (ch === '"') {
+                    inString = true;
+                    let j = result.length - 2;
+                    while (j >= 0 && /\s/.test(result[j])) j--;
+                    isValueString = (j >= 0 && result[j] === ':');
+                }
+                i++;
+            } else {
+                if (ch === '\\' && i + 1 < len) {
+                    result.push(ch, text[i + 1]);
+                    i += 2;
+                } else if (ch === '"') {
+                    const rest = text.substring(i + 1);
+                    const trimmed = rest.replace(/^\s+/, '');
+                    const isEnd = isValueString
+                        ? (trimmed.length === 0 || trimmed[0] === ',' || trimmed[0] === '}' || trimmed[0] === ']')
+                        : (trimmed.length === 0 || trimmed[0] === ':');
+                    if (isEnd) {
+                        result.push('"');
+                        inString = false;
+                        i++;
+                    } else {
+                        result.push('\\"');
+                        i++;
+                    }
+                } else {
+                    result.push(ch);
+                    i++;
+                }
+            }
+        }
+        return result.join('');
+    }
+
+    function parseFlowPayloadFromText(text) {
+        const candidates = [];
+        const codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
+        let m;
+        while ((m = codeBlockRegex.exec(String(text || ''))) !== null) {
+            candidates.push(m[1].trim());
+        }
+        if (candidates.length === 0) {
+            candidates.push(String(text || '').trim());
+        }
+
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            const cleaned = stripJsonComments(candidates[i]).trim();
+            try {
+                return JSON.parse(cleaned);
+            } catch (e1) {
+                try {
+                    return JSON.parse(repairJsonQuotes(cleaned));
+                } catch (e2) { /* keep trying */ }
+            }
+        }
+        return null;
+    }
+
+    function isExplanationOnlyRequest(userPrompt) {
+        const text = String(userPrompt || '').trim();
+        if (!text) return false;
+
+        const explainRe = /(explain|explanation|describe|summary|review|analy[sz]e|walk\s*through)/i;
+        const changeRe = /(create|generate|build|add|modify|update|edit|fix|implement|convert|refactor)/i;
+
+        return explainRe.test(text) && !changeRe.test(text);
+    }
+
+    function writeFileAtomic(filepath, content) {
+        const tmpPath = filepath + '.tmp';
+        fs.writeFileSync(tmpPath, content);
+        fs.renameSync(tmpPath, filepath);
+    }
+
+    function saveCheckpoint(chatId, label, flow, meta) {
+        const checkpointId = 'cp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+        const record = {
+            id: checkpointId,
+            chatId: chatId || null,
+            label: label || 'checkpoint',
+            created: new Date().toISOString(),
+            meta: meta || {},
+            flow: Array.isArray(flow) ? flow : []
+        };
+        try {
+            writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
+        } catch (e) {
+            console.error('[LLM Plugin] Failed to save checkpoint:', e && e.message ? e.message : e);
+            throw e;
+        }
+        return record;
     }
 
     // ------------------------------------------------------------------ //
     //  LLM provider adapters                                              //
     // ------------------------------------------------------------------ //
 
-    // Ollama generation (timeout 0 = wait indefinitely)
-    function generateWithOllama(model, prompt, timeout = 0) {
+    // Ollama chat generation (timeout 0 = wait indefinitely)
+    function generateWithOllamaChat(model, messages, timeout = 0) {
         const settings = getPluginSettings();
         const ollamaUrlStr = settings.ollamaUrl || 'http://localhost:11434';
         let ollamaUrl;
@@ -254,14 +450,14 @@ function createLLMPluginServer(RED) {
         return new Promise((resolve, reject) => {
             const data = JSON.stringify({
                 model: model,
-                prompt: prompt,
+                messages: Array.isArray(messages) ? messages : [],
                 stream: false
             });
             const isHttps = ollamaUrl.protocol === 'https:';
             const options = {
                 hostname: ollamaUrl.hostname,
                 port: ollamaUrl.port || (isHttps ? 443 : 80),
-                path: '/api/generate',
+                path: '/api/chat',
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -281,7 +477,13 @@ function createLLMPluginServer(RED) {
                     const responseData = Buffer.concat(chunks).toString();
                     try {
                         const response = JSON.parse(responseData);
-                        if (response.response) {
+                        const content = response && response.message && typeof response.message.content === 'string'
+                            ? response.message.content
+                            : null;
+                        if (content !== null) {
+                            resolve(content);
+                        } else if (response && typeof response.response === 'string') {
+                            // Compatibility fallback for mixed server versions.
                             resolve(response.response);
                         } else {
                             reject(new Error('No response from model'));
@@ -306,10 +508,10 @@ function createLLMPluginServer(RED) {
     }
 
     // OpenAI generation
-    async function generateWithOpenAI(apiKey, model, prompt) {
+    async function generateWithOpenAI(apiKey, model, messages) {
         const openai = new OpenAI({ apiKey });
         const completion = await openai.chat.completions.create({
-            messages: [{ role: 'system', content: prompt }],
+            messages: Array.isArray(messages) ? messages : [],
             model: model,
         });
         return completion.choices[0].message.content;
@@ -329,52 +531,79 @@ function createLLMPluginServer(RED) {
         const settings = getPluginSettings();
         const provider = settings.provider || 'ollama';
 
-        const enhancedPrompt = buildPrompt(prompt, currentFlow);
+        const enhancedMessages = buildMessages(prompt, currentFlow);
         saveRecentModel(model);
+        const genStart = Date.now();
 
         try {
-            let response;
-            if (provider === 'openai') {
-                if (!settings.openaiApiKey) {
-                    throw new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.');
-                }
-                try {
-                    response = await generateWithOpenAI(settings.openaiApiKey, model, enhancedPrompt);
-                } catch (openaiError) {
-                    // Provide detailed error messages based on OpenAI API error codes
-                    if (openaiError.status === 401 || openaiError.code === 'invalid_api_key') {
-                        throw new Error('Invalid OpenAI API key. Please check your API key in settings.');
-                    } else if (openaiError.status === 429) {
-                        throw new Error('OpenAI rate limit exceeded or quota exhausted. Please wait and try again, or check your billing.');
-                    } else if (openaiError.status === 503) {
-                        throw new Error('OpenAI service is temporarily unavailable. Please try again later.');
-                    } else if (openaiError.status === 404) {
-                        throw new Error('Model "' + model + '" not found on OpenAI. Please check the model name.');
-                    } else if (openaiError.status === 400) {
-                        throw new Error('Bad request to OpenAI: ' + (openaiError.message || 'Check your prompt and model settings.'));
-                    }
-                    // Re-throw with sanitized message (avoid leaking SDK internals)
-                    throw new Error('OpenAI error: ' + (openaiError.message || 'Unknown error'));
-                }
-            } else {
-                response = await generateWithOllama(model, enhancedPrompt);
-            }
-            res.json({ response: response });
+            const response = await generateWithProvider(provider, settings, model, enhancedMessages);
+            res.json({ response: response, elapsed: Date.now() - genStart, model: model, applyMode: detectApplyModeFromResponse(response) });
         } catch (error) {
             // Log only safe fields — never log the full error object which may contain sensitive headers
-            console.error("[LLM Plugin] Generation error:", error.message || error);
+            const safeErrorText = redactSecrets(error && error.message ? error.message : error);
+            console.error("[LLM Plugin] Generation error:", safeErrorText);
             let errorMessage = 'Generation failed';
             if (error.code === 'ECONNREFUSED') {
-                const ollamaUrl = settings.ollamaUrl || 'http://localhost:11434';
-                errorMessage = `Could not connect to Ollama at ${ollamaUrl}. Please ensure Ollama is running and accessible.`;
+                errorMessage = 'Could not connect to Ollama. Please ensure Ollama is running and accessible.';
             } else if (error.code === 'ECONNRESET') {
                 errorMessage = 'The connection to the LLM provider was unexpectedly closed. Please check if the Ollama server is running and stable.';
             } else if (error.message && error.message.includes('timeout')) {
                 errorMessage = 'Request timed out. The model may be too slow or not responding.';
             } else {
-                errorMessage = error.message;
+                errorMessage = redactSecrets(error && error.message ? error.message : error);
             }
             res.status(500).json({ error: errorMessage });
+        }
+    });
+
+    RED.httpAdmin.post('/llm-plugin/agent-generate', async function(req, res) {
+        const { model, prompt, currentFlow } = req.body || {};
+
+        if (!model || !prompt) {
+            return res.status(400).json({ error: 'Model and prompt are required' });
+        }
+
+        const settings = getPluginSettings();
+        const provider = settings.provider || 'ollama';
+        saveRecentModel(model);
+
+        try {
+            const enhancedMessages = buildMessages(prompt, currentFlow);
+            const totalStart = Date.now();
+
+            if (isExplanationOnlyRequest(prompt)) {
+                const response = await generateWithProvider(provider, settings, model, enhancedMessages);
+                return res.json({
+                    response,
+                    elapsed: Date.now() - totalStart,
+                    model: model,
+                    applyMode: detectApplyModeFromResponse(response),
+                    agent: {
+                        mode: 'agent',
+                        performed: 1,
+                        singlePass: true,
+                        reason: 'explanation-only'
+                    }
+                });
+            }
+
+            const response = await generateWithProvider(provider, settings, model, enhancedMessages);
+
+            return res.json({
+                response,
+                elapsed: Date.now() - totalStart,
+                model: model,
+                applyMode: detectApplyModeFromResponse(response),
+                agent: {
+                    mode: 'agent',
+                    performed: 1,
+                    singlePass: true
+                }
+            });
+        } catch (error) {
+            const safeErrorText = redactSecrets(error && error.message ? error.message : error);
+            console.error('[LLM Plugin] Agent generation error:', safeErrorText);
+            return res.status(500).json({ error: redactSecrets(error && error.message ? error.message : 'Agent generation failed') });
         }
     });
 
@@ -384,7 +613,10 @@ function createLLMPluginServer(RED) {
         // Never expose the full API key to the client
         const hasKey = !!(settings.openaiApiKey && settings.openaiApiKey.length > 0);
         settings.openaiApiKeyMasked = hasKey ? maskApiKey(settings.openaiApiKey) : '';
+        settings.ollamaUrlMasked = settings.ollamaUrl ? 'configured (hidden)' : '';
         delete settings.openaiApiKey;
+        delete settings.ollamaUrl;
+        // systemPrompt is safe to send to client (user-authored content)
         res.json(settings);
     });
 
@@ -393,20 +625,31 @@ function createLLMPluginServer(RED) {
             const body = req.body || {};
             // Whitelist: only persist known settings fields
             const newSettings = {
-                provider: body.provider || 'ollama',
-                ollamaUrl: body.ollamaUrl || 'http://localhost:11434'
+                provider: body.provider || 'ollama'
             };
+            const existing = getPluginSettings();
+            // If URL field is empty, preserve existing URL.
+            if (body.ollamaUrl && typeof body.ollamaUrl === 'string' && body.ollamaUrl.trim() !== '') {
+                newSettings.ollamaUrl = body.ollamaUrl.trim();
+            } else {
+                newSettings.ollamaUrl = existing.ollamaUrl || 'http://localhost:11434';
+            }
             // If API key field is empty, preserve the existing key (user didn't change it)
             if (body.openaiApiKey && typeof body.openaiApiKey === 'string' && body.openaiApiKey.trim() !== '') {
                 newSettings.openaiApiKey = body.openaiApiKey.trim();
             } else {
-                const existing = getPluginSettings();
                 newSettings.openaiApiKey = existing.openaiApiKey || '';
+            }
+            // System prompt (user-authored, always save as-is)
+            if (body.systemPrompt !== undefined && body.systemPrompt !== null) {
+                newSettings.systemPrompt = String(body.systemPrompt);
+            } else {
+                newSettings.systemPrompt = existing.systemPrompt || '';
             }
             savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
 
@@ -416,7 +659,7 @@ function createLLMPluginServer(RED) {
             const models = await listOllamaModels();
             res.json({ models });
         } catch (error) {
-            console.error('[LLM Plugin] Error fetching Ollama models:', error);
+            console.error('[LLM Plugin] Error fetching Ollama models:', redactSecrets(error && error.message ? error.message : error));
             res.status(500).json({ error: 'Failed to list Ollama models' });
         }
     });
@@ -428,7 +671,7 @@ function createLLMPluginServer(RED) {
             const chatHistories = loadAllChatHistories();
             res.json({ chatHistories: chatHistories });
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
 
@@ -441,7 +684,7 @@ function createLLMPluginServer(RED) {
             saveChatHistory(chatId, chatData);
             res.json({ success: true });
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
 
@@ -451,15 +694,42 @@ function createLLMPluginServer(RED) {
             const chatsDir = path.join(logsDir, 'chats');
             if (!fs.existsSync(chatsDir)) return res.json({ success: true });
 
+            function cleanupCheckpointsByChatId(targetChatId) {
+                if (!targetChatId) return;
+                try {
+                    const cpFiles = fs.readdirSync(checkpointsDir).filter(file => file.endsWith('.json'));
+                    cpFiles.forEach(file => {
+                        const fp = path.join(checkpointsDir, file);
+                        try {
+                            const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
+                            if (cp && cp.chatId === targetChatId) fs.unlinkSync(fp);
+                        } catch (e) {
+                            console.warn('[LLM Plugin] Failed to clean up checkpoint file:', file, e && e.message ? e.message : e);
+                        }
+                    });
+                } catch (e) { /* ignore cleanup issues */ }
+            }
+
             // If filename provided, only allow basename (no path traversal) and delete directly
             if (filename && typeof filename === 'string') {
-                if (filename.indexOf('..') !== -1) return res.status(400).json({ error: 'Invalid filename' });
-                const filepath = path.join(chatsDir, path.basename(filename));
+                const safeName = path.basename(filename);
+                const filepath = path.resolve(chatsDir, safeName);
+                if (!filepath.startsWith(path.resolve(chatsDir) + path.sep)) {
+                    return res.status(400).json({ error: 'Invalid filename' });
+                }
                 if (fs.existsSync(filepath)) {
+                    let targetChatId = null;
+                    try {
+                        const content = fs.readFileSync(filepath, 'utf8');
+                        const chatData = JSON.parse(content);
+                        if (chatData && chatData.id) targetChatId = chatData.id;
+                    } catch (e) { /* ignore parse issues */ }
                     fs.unlinkSync(filepath);
+                    cleanupCheckpointsByChatId(targetChatId || chatId || null);
                     return res.json({ success: true });
                 }
                 // Already gone -> idempotent success
+                cleanupCheckpointsByChatId(chatId || null);
                 return res.json({ success: true });
             }
 
@@ -481,10 +751,12 @@ function createLLMPluginServer(RED) {
                 }
             });
             // Always respond success if nothing found to keep idempotency
+            // Best-effort cleanup of checkpoints for this chat
+            cleanupCheckpointsByChatId(chatId);
             return res.json({ success: deleted });
         } catch (error) {
             console.error('[LLM Plugin] Error deleting chat file:', error);
-            return res.status(500).json({ error: error.message });
+            return res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
 
@@ -494,7 +766,56 @@ function createLLMPluginServer(RED) {
             const models = getRecentModels();
             res.json({ models: models });
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            res.status(500).json({ error: redactSecrets(error.message) });
+        }
+    });
+
+    // --- Checkpoint endpoints ---
+    RED.httpAdmin.post('/llm-plugin/checkpoint/save', function(req, res) {
+        try {
+            const body = req.body || {};
+            const chatId = body.chatId || null;
+            const label = body.label || 'checkpoint';
+            const flow = Array.isArray(body.flow) ? body.flow : [];
+            const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
+
+            if (flow.length === 0) {
+                return res.status(400).json({ error: 'flow array is required' });
+            }
+            const cp = saveCheckpoint(chatId, label, flow, meta);
+            return res.json({ checkpointId: cp.id, created: cp.created, label: cp.label });
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to save checkpoint') });
+        }
+    });
+
+    RED.httpAdmin.get('/llm-plugin/checkpoint/:id', function(req, res) {
+        try {
+            const id = path.basename(String(req.params.id || ''));
+            if (!id || !/^cp_\d+_[a-z0-9]+$/.test(id)) {
+                return res.status(400).json({ error: 'Invalid checkpoint id' });
+            }
+            const fp = path.resolve(checkpointsDir, id + '.json');
+            if (!fp.startsWith(path.resolve(checkpointsDir) + path.sep)) {
+                return res.status(400).json({ error: 'Invalid checkpoint id' });
+            }
+            if (!fs.existsSync(fp)) {
+                return res.status(404).json({ error: 'Checkpoint not found' });
+            }
+            const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            return res.json({ checkpoint: cp });
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to load checkpoint') });
+        }
+    });
+
+    RED.httpAdmin.post('/llm-plugin/client-log', function(req, res) {
+        try {
+            const body = req.body || {};
+            writeClientEvent(body.level, body.event, body.message, body.meta);
+            return res.json({ ok: true });
+        } catch (error) {
+            return res.status(500).json({ ok: false, error: redactSecrets(error.message || 'Failed to write client log') });
         }
     });
 
@@ -514,12 +835,19 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.get('/llm-plugin/src/:file', function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/src/*', function(req, res) {
         try {
-            const fileName = path.basename(req.params.file);
-            // Prevent path traversal
-            if (fileName.indexOf('..') !== -1 || fileName !== req.params.file) return res.status(400).send('Invalid file');
-            const filePath = path.join(__dirname, fileName);
+            const relPathRaw = String((req.params && req.params[0]) || '');
+            const normalized = path.normalize(relPathRaw).replace(/\\/g, '/');
+            // Prevent path traversal / absolute paths
+            if (!normalized || normalized.indexOf('..') !== -1 || normalized.startsWith('/')) {
+                return res.status(400).send('Invalid file');
+            }
+            const filePath = path.join(__dirname, normalized);
+            const srcRoot = path.join(__dirname) + path.sep;
+            if ((filePath + path.sep).indexOf(srcRoot) !== 0 && filePath.indexOf(srcRoot) !== 0) {
+                return res.status(400).send('Invalid file path');
+            }
             if (fs.existsSync(filePath)) {
                 const ext = path.extname(filePath).toLowerCase();
                 let contentType = 'application/octet-stream';
@@ -538,6 +866,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    console.log("[LLM Plugin] Server initialized successfully");
+    RED.log.info("[LLM Plugin] Server initialized successfully");
 }
 module.exports = { createLLMPluginServer };

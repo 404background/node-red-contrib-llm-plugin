@@ -1,6 +1,8 @@
 // Loader for modularized LLM Plugin client code
 (function() {
     var scripts = [
+        'llm-plugin/src/core/flow_converter_core.js',
+        'llm-plugin/src/core/llm_json_parser.js',
         'llm-plugin/src/chat_manager.js',
         'llm-plugin/src/importer.js',
         'llm-plugin/src/ui_core.js',
@@ -12,7 +14,7 @@
     function loadNext(i) {
         if (i >= scripts.length) return;
         var s = document.createElement('script');
-        s.src = scripts[i];
+        s.src = scripts[i] + '?v=' + Date.now();
         s.onload = function() { loadNext(i+1); };
         s.onerror = function() { console.error('Failed to load', scripts[i]); loadNext(i+1); };
         document.head.appendChild(s);

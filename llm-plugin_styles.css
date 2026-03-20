@@ -213,6 +213,11 @@
     opacity: 0.7;
     font-style: italic;
 }
+.message-elapsed {
+    margin-top: 4px;
+    font-size: 11px;
+    color: rgba(0, 0, 0, 0.45);
+}
 .message-content code {
     background: #e9ecef;
     padding: 2px 4px;
@@ -254,6 +259,19 @@
 .import-btn:hover {
     background: #218838;
 }
+.restore-btn {
+    background: #f59f00;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-right: 5px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.restore-btn:hover {
+    background: #d97706;
+}
 .raw-json {
     background: #2d3748;
     color: #e2e8f0;
@@ -265,6 +283,48 @@
     border: none;
     font-family: 'Courier New', monospace;
     font-size: 13px;
+}
+
+/* Collapsible JSON blocks */
+.json-collapsible {
+    margin: 10px 0;
+    border: 1px solid #4a5568;
+    border-radius: 5px;
+    overflow: hidden;
+}
+.json-collapsible summary {
+    cursor: pointer;
+    padding: 8px 12px;
+    background: #2d3748;
+    color: #a0aec0;
+    font-size: 12px;
+    font-family: Arial, sans-serif;
+    user-select: none;
+    outline: none;
+    list-style: none;
+}
+.json-collapsible summary::-webkit-details-marker {
+    display: none;
+}
+.json-collapsible summary::before {
+    content: '\25B6';
+    display: inline-block;
+    margin-right: 6px;
+    font-size: 10px;
+    transition: transform 0.15s;
+}
+.json-collapsible[open] > summary::before {
+    transform: rotate(90deg);
+}
+.json-collapsible summary:hover {
+    background: #3a4a5e;
+}
+.json-collapsible > pre {
+    margin: 0;
+    border-radius: 0;
+    border-top: 1px solid #4a5568;
+    max-height: 400px;
+    overflow-y: auto;
 }
 .llm-plugin-input {
     border-top: 1px solid #ddd;
@@ -278,6 +338,33 @@
     margin-bottom: 8px;
     font-size: 12px;
     color: #666;
+}
+.agent-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #666;
+}
+.agent-mode-row label {
+    font-size: 12px;
+    color: #666;
+}
+.mode-select {
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 4px 6px;
+    font-size: 12px;
+    background: #fff;
+}
+.agent-checks-input {
+    width: 62px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 4px 6px;
+    font-size: 12px;
+    background: #fff;
 }
 .model-input {
     width: 100%;

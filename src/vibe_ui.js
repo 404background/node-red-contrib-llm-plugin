@@ -24,6 +24,13 @@
                     '<input type="checkbox" id="llm-plugin-include-flow" checked>' +
                     '<label for="llm-plugin-include-flow"> Send current flow</label>' +
                 '</div>' +
+                '<div class="agent-mode-row">' +
+                    '<label for="llm-plugin-mode">Mode</label>' +
+                    '<select id="llm-plugin-mode" class="mode-select">' +
+                        '<option value="ask" selected>Ask</option>' +
+                        '<option value="agent">Agent</option>' +
+                    '</select>' +
+                '</div>' +
                 '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)">' +
                 '<div class="model-suggestions" id="llm-plugin-model-suggestions"></div>' +
                 '<div class="prompt-input-group">' +
@@ -80,6 +87,7 @@
         var promptInput       = document.getElementById('llm-plugin-prompt');
         var chatArea          = document.getElementById('llm-plugin-chat');
         var flowCheckbox      = document.getElementById('llm-plugin-include-flow');
+        var modeSelect        = document.getElementById('llm-plugin-mode');
         var settingsOverlay   = document.getElementById('llm-plugin-settings-overlay');
         var settingsDialog    = document.getElementById('llm-plugin-settings-dialog');
         var openSettingsBtn   = document.getElementById('llm-plugin-settings-button');
@@ -93,9 +101,7 @@
 
         // --- Chat history bootstrap ---
         if (window.LLMPlugin && LLMPlugin.ChatManager) {
-            LLMPlugin.ChatManager.loadChatHistoriesFromServer().then(function() {
-                console.log('Chat histories loaded from server');
-            });
+            LLMPlugin.ChatManager.loadChatHistoriesFromServer();
         }
 
         // --- Settings helpers ---
@@ -207,7 +213,7 @@
                 .then(function(data) {
                     if (data.models && data.models.length > 0) {
                         var container = document.getElementById('llm-plugin-model-suggestions');
-                        container.innerHTML = '';
+                        while (container.firstChild) container.removeChild(container.firstChild);
                         data.models.forEach(function(model) {
                             var chip = document.createElement('span');
                             chip.className = 'model-chip';
@@ -217,15 +223,14 @@
                         });
                     }
                 })
-                .catch(function() {
-                    console.log('Could not load recent models');
-                });
+                .catch(function() {});
         }
 
         // --- Core generation flow ---
         function handleGenerate() {
             var model  = modelInput.value.trim();
             var prompt = promptInput.value.trim();
+            var mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
             if (!model || !prompt) {
                 if (window.RED && RED.notify) RED.notify('Please enter both model and prompt', 'warning');
                 return;
@@ -250,10 +255,18 @@
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();
 
-            fetch('llm-plugin/generate', {
+            var endpoint = mode === 'agent' ? 'llm-plugin/agent-generate' : 'llm-plugin/generate';
+            var fetchStart = Date.now();
+
+            fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: model, prompt: prompt, currentFlow: currentFlow }),
+                body: JSON.stringify({
+                    model: model,
+                    prompt: prompt,
+                    currentFlow: currentFlow,
+                    mode: mode
+                }),
                 signal: currentAbortController.signal
             })
             .then(function(res) {
@@ -270,10 +283,22 @@
             })
             .then(function(data) {
                 if (loadingMsg) loadingMsg.remove();
+                var totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
+                var msgEl = null;
+                var resolvedApplyMode = data && data.applyMode ? data.applyMode : 'auto';
+                var usedModel = (data && data.model) ? data.model : model;
+                var metaOpts = { mode: mode, applyMode: resolvedApplyMode, elapsedMs: totalElapsed, model: usedModel };
                 if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                    LLMPlugin.ChatManager.addMessage(data.response, false);
+                    msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
                 } else if (window.LLMPlugin && LLMPlugin.UI) {
-                    LLMPlugin.UI.addMessageToUI(data.response, false, true);
+                    msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
+                }
+                
+                if (mode === 'agent' && msgEl) {
+                    var importBtn = msgEl.querySelector('.import-btn');
+                    if (importBtn) {
+                        importBtn.click();
+                    }
                 }
             })
             .catch(function(err) {

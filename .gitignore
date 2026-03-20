@@ -1,4 +1,6 @@
 .logs/
+test/
+.claude/
 
 # Logs
 logs
