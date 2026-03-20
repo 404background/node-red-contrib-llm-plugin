@@ -2,7 +2,8 @@
 
 LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/modifying flows, and importing results into the active tab.
 
-[![LLM Plugin screenshot](images/plugin.png)](https://youtu.be/DSk61QEyg0w)
+Click the image below to watch the video:
+[![LLM Plugin screenshot](images/plugin.png)](https://youtu.be/Z8nCtEs4Ows)
 
 ## Install
 
