@@ -15,4 +15,6 @@ RULES:
 - Node deletion: Use "nodes": { "alias": null } or removeNodes: []
 - Edge removal: Use "connections": [{ "remove": { "from": "...", "to": "..." } }]
 - Node specifics: Function { "func": "...", "outputs": N } (no require()); prefer Change nodes for simple tasks; define/link config nodes via alias
+- Config nodes (nodes that live outside the canvas such as broker, server, DB connection, dashboard group/tab): always set `"config": true` in the node definition
+- Connections: only create connections to nodes that have an input port; never connect TO source-only / listener / event-trigger nodes (they fire data but do not receive it)
 - Be concise

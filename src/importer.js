@@ -49,6 +49,85 @@
     }
 
     // ------------------------------------------------------------------ //
+    //  Runtime Node-Type Helpers (uses RED.nodes.getType when available) //
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Check whether a node type can accept incoming wires (has input ports).
+     * Uses RED.nodes.getType() at runtime, falls back to the static table
+     * exported by FlowConverterCore.
+     */
+    function nodeCanAcceptInput(type) {
+        if (!type || typeof type !== 'string') return true;
+        try {
+            if (window.RED && RED.nodes && typeof RED.nodes.getType === 'function') {
+                var def = RED.nodes.getType(type);
+                if (def && typeof def.inputs === 'number') {
+                    return def.inputs > 0;
+                }
+            }
+        } catch (e) { /* ignore */ }
+        var cfg = getConfigurator();
+        if (cfg && typeof cfg.isNoInputType === 'function') return !cfg.isNoInputType(type);
+        return true;
+    }
+
+    /**
+     * Check whether a node type is a config node (lives outside the canvas).
+     * Uses RED.nodes.getType() at runtime, falls back to the static table.
+     */
+    function isConfigNodeType(type) {
+        if (!type || typeof type !== 'string') return false;
+        try {
+            if (window.RED && RED.nodes && typeof RED.nodes.getType === 'function') {
+                var def = RED.nodes.getType(type);
+                if (def && def.category === 'config') return true;
+            }
+        } catch (e) { /* ignore */ }
+        var cfg = getConfigurator();
+        if (cfg && typeof cfg.isConfigType === 'function') return cfg.isConfigType(type);
+        return false;
+    }
+
+    /**
+     * Remove wires targeting nodes that cannot accept input.
+     * Iterates all nodes and prunes invalid wire entries.
+     */
+    function pruneInvalidInputWires(flowNodes) {
+        if (!Array.isArray(flowNodes)) return;
+        var noInputIds = {};
+        flowNodes.forEach(function(n) {
+            if (n && n.id && !nodeCanAcceptInput(n.type)) noInputIds[n.id] = true;
+        });
+        if (Object.keys(noInputIds).length === 0) return;
+        flowNodes.forEach(function(n) {
+            if (!n || !Array.isArray(n.wires)) return;
+            n.wires = n.wires.map(function(port) {
+                if (!Array.isArray(port)) return [];
+                return port.filter(function(tid) { return !noInputIds[tid]; });
+            });
+        });
+    }
+
+    /**
+     * Strip canvas properties (x, y, wires, z) from nodes that are detected
+     * as config nodes at runtime but were not caught by the static check.
+     */
+    function fixConfigNodeProperties(flowNodes) {
+        if (!Array.isArray(flowNodes)) return;
+        flowNodes.forEach(function(n) {
+            if (!n || !n.type) return;
+            if (!isConfigNodeType(n.type)) return;
+            if (typeof n.x === 'number' || typeof n.y === 'number') {
+                delete n.x;
+                delete n.y;
+                delete n.wires;
+                delete n.z;
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------ //
     //  Forwarders to LLMJsonParser (implementations in src/core)         //
     // ------------------------------------------------------------------ //
 
@@ -129,6 +208,9 @@
             var fromId = lookup.resolve(h.from);
             var toId = lookup.resolve(h.to);
             if (!fromId || !toId || !lookup.byId[fromId] || !lookup.byId[toId]) return;
+            // Skip connections targeting nodes that cannot accept input
+            var targetNode = lookup.byId[toId];
+            if (targetNode && !nodeCanAcceptInput(targetNode.type)) return;
             var port = (typeof h.fromPort === 'number' && h.fromPort >= 0) ? h.fromPort : 0;
             var key = fromId + '::' + port;
             if (!desiredByFromPort[key]) desiredByFromPort[key] = [];
@@ -353,6 +435,11 @@
             delete n._llmPreservePosition;
             delete n._llmAlias;
         });
+
+        // Prune wires targeting nodes that cannot accept input
+        pruneInvalidInputWires(rebuilt);
+        // Fix config nodes that were incorrectly given canvas properties
+        fixConfigNodeProperties(rebuilt);
 
         if (mode === 'overwrite' || Object.keys(baseIds).length === 0) {
             // No existing nodes to preserve — full re-layout

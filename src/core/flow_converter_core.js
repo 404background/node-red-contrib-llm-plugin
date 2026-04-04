@@ -26,10 +26,44 @@
     // canvas (no x, y, wires).  Detect them so we can handle them specially.
     var CONFIG_TYPE_SUFFIX = '-config';
 
+    // Well-known config node types that do NOT end in "-config".
+    // Examples: mqtt-broker, dashboard ui-group/ui-tab/ui-base, serial-port, etc.
+    // This list is intentionally conservative; runtime detection via
+    // RED.nodes.getType() (in importer.js) covers the rest.
+    var KNOWN_CONFIG_TYPES = {
+        'mqtt-broker': true,
+        'serial-port': true,
+        'websocket-listener': true,
+        'websocket-client': true,
+        'ui-group': true, 'ui-tab': true, 'ui-base': true,
+        'ui_group': true, 'ui_tab': true, 'ui_base': true
+    };
+
+    // Well-known node types that have 0 input ports (source-only / event nodes).
+    // Connections targeting these types are invalid and should be dropped.
+    var NO_INPUT_TYPES = {
+        'inject': true,
+        'catch': true,
+        'status': true,
+        'complete': true,
+        'http in': true,
+        'mqtt in': true,
+        'websocket in': true,
+        'tcp in': true,
+        'udp in': true
+    };
+
     function isConfigType(type) {
-        return typeof type === 'string' &&
-               type.length > CONFIG_TYPE_SUFFIX.length &&
-               type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX;
+        if (typeof type !== 'string') return false;
+        if (type.length > CONFIG_TYPE_SUFFIX.length &&
+            type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX) return true;
+        if (KNOWN_CONFIG_TYPES[type] === true) return true;
+        return false;
+    }
+
+    /** Check whether a node type is known to have zero input ports. */
+    function isNoInputType(type) {
+        return typeof type === 'string' && NO_INPUT_TYPES[type] === true;
     }
 
     // Keys that belong to the Node-RED runtime/editor and should NOT be treated
@@ -412,6 +446,9 @@
         var connections = intermediate.connections || [];
         connections.forEach(function(conn) {
             if (outgoing[conn.from] && incoming[conn.to]) {
+                // Skip connections targeting nodes that cannot accept input
+                var targetSpec = nodeSpecs[conn.to];
+                if (targetSpec && isNoInputType(targetSpec.type)) return;
                 outgoing[conn.from].push(conn.to);
                 incoming[conn.to].push(conn.from);
             }
@@ -426,6 +463,9 @@
 
         connections.forEach(function(conn) {
             if (!wiresMap[conn.from] || !aliasToId[conn.to]) return;
+            // Skip connections targeting nodes that cannot accept input
+            var targetSpec = nodeSpecs[conn.to];
+            if (targetSpec && isNoInputType(targetSpec.type)) return;
             var port = conn.fromPort || 0;
             while (wiresMap[conn.from].length <= port) {
                 wiresMap[conn.from].push([]);
@@ -843,6 +883,8 @@
     return {
         toIntermediate: toIntermediate,
         toNodeRed:      toNodeRed,
-        isVibeSchema:   isVibeSchema
+        isVibeSchema:   isVibeSchema,
+        isConfigType:   isConfigType,
+        isNoInputType:  isNoInputType
     };
 });
