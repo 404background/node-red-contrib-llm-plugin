@@ -19,6 +19,23 @@
         return (window.LLMPlugin && window.LLMPlugin.LLMJsonParser) || null;
     }
 
+    // Wire RED.nodes.getType into FlowConverterCore so that config-node
+    // detection and no-input checks work for community/custom nodes too.
+    function initRuntimeGetType() {
+        var cfg = getConfigurator();
+        if (!cfg || typeof cfg.setRuntimeGetType !== 'function') return;
+        if (window.RED && RED.nodes && typeof RED.nodes.getType === 'function') {
+            cfg.setRuntimeGetType(function(type) {
+                try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
+            });
+        }
+    }
+    // Try immediately; also retry on DOMContentLoaded in case RED isn't ready yet.
+    initRuntimeGetType();
+    if (typeof document !== 'undefined') {
+        document.addEventListener('DOMContentLoaded', initRuntimeGetType);
+    }
+
     // ================================================================== //
     //  Basic Utilities                                                    //
     // ================================================================== //

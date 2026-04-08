@@ -323,6 +323,15 @@
     // --- Sidebar registration ---
     function initializeWhenReady() {
         if (typeof RED !== 'undefined' && RED.sidebar) {
+            // Wire runtime type info into FlowConverterCore so community
+            // nodes are handled correctly (config detection, input checks).
+            var cfg = window.LLMPlugin && window.LLMPlugin.Configurator;
+            if (cfg && typeof cfg.setRuntimeGetType === 'function' &&
+                RED.nodes && typeof RED.nodes.getType === 'function') {
+                cfg.setRuntimeGetType(function(type) {
+                    try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
+                });
+            }
             RED.sidebar.addTab({
                 id: "llm-plugin-tab",
                 label: "LLM Plugin",

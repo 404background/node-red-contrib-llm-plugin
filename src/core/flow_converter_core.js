@@ -55,17 +55,44 @@
         'udp in': true
     };
 
+    /**
+     * Optional runtime type-info callback.  When set (typically by the browser
+     * environment), it is called with a node type string and should return the
+     * node definition object (same shape as RED.nodes.getType) or null.
+     * This allows non-core / community nodes to be detected correctly.
+     */
+    var _runtimeGetType = null;
+
+    function setRuntimeGetType(fn) {
+        _runtimeGetType = (typeof fn === 'function') ? fn : null;
+    }
+
     function isConfigType(type) {
         if (typeof type !== 'string') return false;
+        // Runtime detection first (covers all installed nodes)
+        if (_runtimeGetType) {
+            var def = _runtimeGetType(type);
+            if (def && def.category === 'config') return true;
+        }
+        // Static fallback (server-side / no RED available)
         if (type.length > CONFIG_TYPE_SUFFIX.length &&
             type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX) return true;
         if (KNOWN_CONFIG_TYPES[type] === true) return true;
         return false;
     }
 
-    /** Check whether a node type is known to have zero input ports. */
+    /** Check whether a node type has zero input ports. */
     function isNoInputType(type) {
-        return typeof type === 'string' && NO_INPUT_TYPES[type] === true;
+        if (typeof type !== 'string') return false;
+        // Runtime detection first (covers all installed nodes)
+        if (_runtimeGetType) {
+            var def = _runtimeGetType(type);
+            if (def && typeof def.inputs === 'number') {
+                return def.inputs === 0;
+            }
+        }
+        // Static fallback
+        return NO_INPUT_TYPES[type] === true;
     }
 
     // Keys that belong to the Node-RED runtime/editor and should NOT be treated
@@ -916,10 +943,11 @@
     // ------------------------------------------------------------------ //
 
     return {
-        toIntermediate: toIntermediate,
-        toNodeRed:      toNodeRed,
-        isVibeSchema:   isVibeSchema,
-        isConfigType:   isConfigType,
-        isNoInputType:  isNoInputType
+        toIntermediate:      toIntermediate,
+        toNodeRed:           toNodeRed,
+        isVibeSchema:        isVibeSchema,
+        isConfigType:        isConfigType,
+        isNoInputType:       isNoInputType,
+        setRuntimeGetType:   setRuntimeGetType
     };
 });
