@@ -35,8 +35,10 @@
         'serial-port': true,
         'websocket-listener': true,
         'websocket-client': true,
-        'ui-group': true, 'ui-tab': true, 'ui-base': true,
-        'ui_group': true, 'ui_tab': true, 'ui_base': true
+        'tls-config': true,
+        'http proxy': true,
+        'ui-group': true, 'ui-tab': true, 'ui-base': true, 'ui-page': true, 'ui-theme': true,
+        'ui_group': true, 'ui_tab': true, 'ui_base': true, 'ui_page': true, 'ui_theme': true
     };
 
     // Well-known node types that have 0 input ports (source-only / event nodes).
@@ -88,9 +90,17 @@
             .toLowerCase() || 'node';
     }
 
-    /** Pick a unique alias for a node, based on its name or type. */
+    /** Pick a unique alias for a node: {type}_{name} format, kept short. */
     function generateAlias(node, usedAliases) {
-        var base = sanitizeAlias(node.name && node.name.trim() ? node.name : node.type);
+        var typePart = sanitizeAlias(node.type || 'node');
+        var namePart = node.name && node.name.trim() ? sanitizeAlias(node.name) : '';
+        // Combine type and name; skip name if it duplicates the type
+        var base;
+        if (namePart && namePart !== typePart) {
+            base = typePart + '_' + namePart;
+        } else {
+            base = typePart;
+        }
         var alias = base;
         var counter = 2;
         while (usedAliases[alias]) {
@@ -164,13 +174,14 @@
 
             var entry = { type: node.type };
             if (node.name) entry.name = node.name;
-            // Mark nodes that lack canvas properties (x, y, wires) as config nodes.
-            // This covers both -config suffix types and non-standard config types
-            // like ui-group, ui-tab, ui-base used by dashboard nodes.
-            if (!isConfigType(node.type) &&
-                typeof node.x !== 'number' &&
-                typeof node.y !== 'number' &&
-                !Array.isArray(node.wires)) {
+            // Mark config nodes so the LLM knows they live outside the canvas.
+            // Covers: (a) known config types from the static list, (b) types
+            // ending in "-config", and (c) runtime-detected nodes that lack
+            // canvas properties (x, y, wires).
+            if (isConfigType(node.type) ||
+                (typeof node.x !== 'number' &&
+                 typeof node.y !== 'number' &&
+                 !Array.isArray(node.wires))) {
                 entry.config = true;
             }
             if (Object.keys(props).length > 0) entry.props = props;
@@ -414,18 +425,42 @@
         // --- Auto-create missing config nodes ---
         // LLMs sometimes reference config nodes by alias in props without
         // defining them.  Detect such dangling references and create stubs.
+        //
+        // Detection strategies:
+        //  1. Props keys ending in "config" (e.g. venvconfig → venv-config)
+        //  2. Props values that match a known config-type node alias pattern
+        //     (e.g. broker: "my_mqtt_broker" where a node named my_mqtt_broker
+        //      is defined with config: true)
+        //  3. Well-known reference keys that commonly point to config nodes
+        var CONFIG_REF_KEYS = {
+            'broker': 'mqtt-broker',
+            'server': null,          // type varies — skip auto-create
+            'group': 'ui-group',
+            'tab': 'ui-tab',
+            'base': 'ui-base',
+            'serialport': 'serial-port'
+        };
         Object.keys(nodeSpecs).forEach(function(alias) {
             var spec = nodeSpecs[alias];
             if (!spec || !spec.props) return;
             Object.keys(spec.props).forEach(function(key) {
-                if (!/config$/i.test(key)) return;
                 var refAlias = spec.props[key];
                 if (typeof refAlias !== 'string') return;
                 if (nodeSpecs[refAlias]) return;           // already defined
                 if (!/^[a-z][a-z0-9_]*$/i.test(refAlias)) return; // not alias-shaped
-                // Infer type: "venvconfig" → "venv-config"
-                var typeName = key.replace(/config$/i, '-config');
-                nodeSpecs[refAlias] = { type: typeName, name: refAlias, props: {} };
+
+                // Strategy 1: key ends in "config"
+                if (/config$/i.test(key)) {
+                    var typeName = key.replace(/config$/i, '-config');
+                    nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, props: {} };
+                    return;
+                }
+
+                // Strategy 3: well-known reference key
+                var lowerKey = key.toLowerCase();
+                if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey]) {
+                    nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, props: {} };
+                }
             });
         });
 

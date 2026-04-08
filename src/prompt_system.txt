@@ -7,11 +7,13 @@ RULES:
 - If explanation-only: Text only, no JSON
 - If creation/modification: Output exactly one fenced ```json``` block in Vibe Schema { "applyMode": "...", "description": "...", "nodes": {}, "connections": [] }
 - Naming: Keep node names short and concise
-- Use readable aliases (e.g., sensor_input); all aliases in "connections" must exist in "nodes"
+- Alias format: `{type}_{name}` — include node type and name (if set), keep short (e.g., inject_trigger, debug_result, venv_calc, function_parse); all aliases in "connections" must exist in "nodes"
 - For edit-only updates, alias keys are immutable identifiers from CURRENT FLOW; reuse aliases exactly and do not rename alias keys
-- Mode policy: edit-only (edit/delete existing), merge (minimal diffs), overwrite (full replacement), delete-only (removals only)
-- If CURRENT FLOW exists: Follow its style and properties; output diffs only
+- Mode policy: edit-only (edit/delete existing), merge (add new + edit existing), overwrite (full replacement), delete-only (removals only)
+- Default: Use `"applyMode": "merge"` to add new nodes alongside existing ones; only use `"applyMode": "edit-only"` when the user explicitly asks to modify/update existing nodes
+- If CURRENT FLOW exists: Follow its style and properties; use new unique aliases for new nodes (do not reuse existing aliases unless editing those nodes)
  - When proposing modifications: include `type` for every node; if updating an existing node, ensure `type` matches the current flow
+- Config node reuse: When CURRENT FLOW already contains a config node of the needed type (e.g., venv-config, mqtt-broker), reference its existing alias instead of defining a new one
 - Node deletion: Use "nodes": { "alias": null } or removeNodes: []
 - Edge removal: Use "connections": [{ "remove": { "from": "...", "to": "..." } }]
 - Node specifics: Function { "func": "...", "outputs": N } (no require()); prefer Change nodes for simple tasks; define/link config nodes via alias

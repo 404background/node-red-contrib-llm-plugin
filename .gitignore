@@ -1,6 +1,7 @@
 .logs/
 test/
 .claude/
+temp/
 
 # Logs
 logs

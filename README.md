@@ -33,6 +33,12 @@ Restart Node-RED after install.
 For custom/community nodes, keep a small sample flow in the active tab and enable **Send current flow**.
 The model then follows real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
 
+## Features
+
+- **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.
+- **Checkpoint / Restore**: flow snapshots are saved before and after each import, allowing rollback to any previous state.
+- **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
+
 ## Flow Import
 
 - Supports Vibe Schema and raw Node-RED JSON.

@@ -71,13 +71,13 @@ The converter core (`flow_converter_core.js`) implements a **bi-directional conv
 {
   "description": "Brief flow summary",
   "nodes": {
-    "sensor_input":   { "type": "inject",   "name": "Sensor",  "props": { "payload": "timestamp", "payloadType": "date" } },
-    "format_data":    { "type": "function", "name": "Format",  "props": { "func": "msg.payload = {ts: msg.payload}; return msg;" } },
-    "output_debug":   { "type": "debug",    "name": "Output",  "props": { "active": true } }
+    "inject_sensor":    { "type": "inject",   "name": "Sensor",  "props": { "payload": "timestamp", "payloadType": "date" } },
+    "function_format":  { "type": "function", "name": "Format",  "props": { "func": "msg.payload = {ts: msg.payload}; return msg;" } },
+    "debug_output":     { "type": "debug",    "name": "Output",  "props": { "active": true } }
   },
   "connections": [
-    { "from": "sensor_input", "to": "format_data" },
-    { "from": "format_data",  "to": "output_debug" }
+    { "from": "inject_sensor",   "to": "function_format" },
+    { "from": "function_format", "to": "debug_output" }
   ]
 }
 ```
@@ -212,6 +212,7 @@ Node.js module loaded by `llm_plugin.js`. Exports `createLLMPluginServer(RED)`.
 | POST | `/llm-plugin/checkpoint/save` | Save flow snapshot for restore |
 | GET | `/llm-plugin/checkpoint/:id` | Load saved checkpoint |
 | GET | `/llm-plugin/recent-models` | Get recently used model names |
+| POST | `/llm-plugin/client-log` | Write structured client event to server log |
 | GET | `/llm-plugin_styles.css` | Serve plugin stylesheet |
 | GET | `/llm-plugin/src/*` | Serve client JS modules |
 

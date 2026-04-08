@@ -807,18 +807,39 @@
             return { ok: false, error: 'Failed to clear current workspace: ' + (e.message || e) };
         }
 
+        // Separate config nodes that already exist (update in-place) from
+        // nodes that need to be imported fresh.
+        var configNodesToUpdate = [];
         var importNodes = (nodes || []).map(function(n) {
             var nn = JSON.parse(JSON.stringify(n));
             if (isCanvasNode(nn)) nn.z = workspaceId;
             return nn;
         }).filter(function(nn) {
-            // Config nodes that already exist in the editor should not be
-            // re-imported (generateIds would create duplicates).
-            // Only import truly new config nodes.
             if (!isCanvasNode(nn) && nn.type !== 'tab') {
-                return !RED.nodes.node(nn.id);
+                var existing = RED.nodes.node(nn.id);
+                if (existing) {
+                    // Config node already exists — collect for in-place update
+                    configNodesToUpdate.push(nn);
+                    return false;
+                }
             }
             return true;
+        });
+
+        // Update existing config nodes in-place (properties only; no re-import)
+        configNodesToUpdate.forEach(function(nn) {
+            try {
+                var existing = RED.nodes.node(nn.id);
+                if (!existing) return;
+                Object.keys(nn).forEach(function(key) {
+                    if (key === 'id' || key === 'type') return;
+                    existing[key] = nn[key];
+                });
+                existing.dirty = true;
+                existing.changed = true;
+            } catch (e) {
+                safeLog('[LLM Plugin] Failed to update config node:', nn.id, e);
+            }
         });
 
         try {
@@ -837,7 +858,7 @@
                 }
             }
             stabilizeView();
-            return { ok: true, count: importNodes.length };
+            return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
         } catch (e) {
             return { ok: false, error: 'Failed to import restored flow: ' + (e.message || e) };
         }
@@ -968,6 +989,7 @@
             var existingByTypeName = {};
             var existingByTypeNameToken = {};
             var existingByTypeNameTokenLoose = {};
+            var existingConfigByType = {};
             var claimedExistingIds = {};
             var remappedIds = {};
             var droppedPatchCandidates = 0;
@@ -1002,7 +1024,15 @@
 
                     // Register config nodes (they live outside workspaces)
                     if (RED.nodes.eachConfig) {
-                        RED.nodes.eachConfig(registerNodeInLookups);
+                        RED.nodes.eachConfig(function(n) {
+                            registerNodeInLookups(n);
+                            // Build type-only lookup for singleton config-node matching
+                            if (n && n.id && n.type) {
+                                var ct = String(n.type).trim().toLowerCase();
+                                if (!existingConfigByType[ct]) existingConfigByType[ct] = [];
+                                existingConfigByType[ct].push(n);
+                            }
+                        });
                     }
                 }
             }
@@ -1056,6 +1086,20 @@
                                 replacedExisting = byToken;
                             }
                         }
+                    }
+                }
+
+                // 4. Config node singleton matching: if a config node has no match
+                //    by alias or name, but exactly one existing config node of the
+                //    same type exists, reuse it rather than creating a duplicate.
+                if (!replacedExisting && canModifyExisting && isConfigNodeType(nn.type)) {
+                    var configTypeKey = String(nn.type).trim().toLowerCase();
+                    var sameTypeCandidates = existingConfigByType[configTypeKey] || [];
+                    var unclaimedCandidates = sameTypeCandidates.filter(function(c) {
+                        return !claimedExistingIds[c.id];
+                    });
+                    if (unclaimedCandidates.length === 1) {
+                        replacedExisting = unclaimedCandidates[0];
                     }
                 }
 
