@@ -19,23 +19,6 @@
         return (window.LLMPlugin && window.LLMPlugin.LLMJsonParser) || null;
     }
 
-    // Wire RED.nodes.getType into FlowConverterCore so that config-node
-    // detection and no-input checks work for community/custom nodes too.
-    function initRuntimeGetType() {
-        var cfg = getConfigurator();
-        if (!cfg || typeof cfg.setRuntimeGetType !== 'function') return;
-        if (window.RED && RED.nodes && typeof RED.nodes.getType === 'function') {
-            cfg.setRuntimeGetType(function(type) {
-                try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
-            });
-        }
-    }
-    // Try immediately; also retry on DOMContentLoaded in case RED isn't ready yet.
-    initRuntimeGetType();
-    if (typeof document !== 'undefined') {
-        document.addEventListener('DOMContentLoaded', initRuntimeGetType);
-    }
-
     // ================================================================== //
     //  Basic Utilities                                                    //
     // ================================================================== //
@@ -71,19 +54,11 @@
 
     /**
      * Check whether a node type can accept incoming wires (has input ports).
-     * Uses RED.nodes.getType() at runtime, falls back to the static table
-     * exported by FlowConverterCore.
+     * Delegates to FlowConverterCore which handles both runtime detection
+     * (via setRuntimeGetType) and static fallback.
      */
     function nodeCanAcceptInput(type) {
         if (!type || typeof type !== 'string') return true;
-        try {
-            if (window.RED && RED.nodes && typeof RED.nodes.getType === 'function') {
-                var def = RED.nodes.getType(type);
-                if (def && typeof def.inputs === 'number') {
-                    return def.inputs > 0;
-                }
-            }
-        } catch (e) { /* ignore */ }
         var cfg = getConfigurator();
         if (cfg && typeof cfg.isNoInputType === 'function') return !cfg.isNoInputType(type);
         return true;
@@ -91,16 +66,11 @@
 
     /**
      * Check whether a node type is a config node (lives outside the canvas).
-     * Uses RED.nodes.getType() at runtime, falls back to the static table.
+     * Delegates to FlowConverterCore which handles both runtime detection
+     * (via setRuntimeGetType) and static fallback.
      */
     function isConfigNodeType(type) {
         if (!type || typeof type !== 'string') return false;
-        try {
-            if (window.RED && RED.nodes && typeof RED.nodes.getType === 'function') {
-                var def = RED.nodes.getType(type);
-                if (def && def.category === 'config') return true;
-            }
-        } catch (e) { /* ignore */ }
         var cfg = getConfigurator();
         if (cfg && typeof cfg.isConfigType === 'function') return cfg.isConfigType(type);
         return false;

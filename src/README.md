@@ -94,7 +94,7 @@ Key properties:
 | `toIntermediate(nodeRedJson)` | Node-RED array → Vibe Schema object. Generates aliases from node names/types, extracts connections from wires, strips coordinates and IDs. |
 | `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED array. Generates real IDs, auto-layouts nodes (BFS topological), converts connections to wires. Options: `workspace`, `startX`, `startY`, `spacingX`, `spacingY`. |
 | `isVibeSchema(obj)` | Returns `true` if the object has `nodes` (object) + `connections` (array). Used by the importer to detect format. |
-| `setRuntimeGetType(fn)` | Register a runtime type-info callback (typically `RED.nodes.getType`). Enables config-node detection and no-input checks for community/custom nodes. Called automatically by the importer on init. |
+| `setRuntimeGetType(fn)` | Register a runtime type-info callback (typically `RED.nodes.getType`). Enables config-node detection and no-input checks for community/custom nodes. Called automatically on sidebar init. |
 
 #### Layout Engine
 
