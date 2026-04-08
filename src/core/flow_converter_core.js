@@ -479,14 +479,14 @@
                 // Strategy 1: key ends in "config"
                 if (/config$/i.test(key)) {
                     var typeName = key.replace(/config$/i, '-config');
-                    nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, props: {} };
+                    nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, _autoStub: true, props: {} };
                     return;
                 }
 
                 // Strategy 3: well-known reference key
                 var lowerKey = key.toLowerCase();
                 if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey]) {
-                    nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, props: {} };
+                    nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, _autoStub: true, props: {} };
                 }
             });
         });

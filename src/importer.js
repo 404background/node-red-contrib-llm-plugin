@@ -400,6 +400,8 @@
 
         updates.forEach(function(n) {
             if (!n || !n.id) return;
+            // Auto-created config stubs must not overwrite existing config nodes
+            if (n._autoStub && byId[n.id]) return;
             var existing = byId[n.id];
             if (existing && !isHintedSource(n) && !hasAnyOutgoing(n.wires) && hasAnyOutgoing(existing.wires)) {
                 n.wires = deepClone(existing.wires);
@@ -451,6 +453,7 @@
             if (!n) return;
             delete n._llmPreservePosition;
             delete n._llmAlias;
+            delete n._autoStub;
         });
 
         // Prune wires targeting nodes that cannot accept input
@@ -874,6 +877,8 @@
         // Update existing config nodes in-place (properties only; no re-import)
         configNodesToUpdate.forEach(function(nn) {
             try {
+                // Auto-created stubs have no real props — skip to preserve existing settings
+                if (nn._autoStub) return;
                 var existing = RED.nodes.node(nn.id);
                 if (!existing) return;
                 Object.keys(nn).forEach(function(key) {
@@ -1155,6 +1160,16 @@
                     if (originalId && originalId !== nn.id) {
                         remappedIds[originalId] = nn.id;
                     }
+
+                    // Auto-created config stubs (empty props) should not
+                    // overwrite the existing config node's real settings.
+                    // Keep the ID remap so canvas nodes point to the right
+                    // config, but drop the stub itself.
+                    if (nn._autoStub) {
+                        existingIds.add(nn.id);
+                        return null;
+                    }
+
                     if (replacedExisting.z) nn.z = replacedExisting.z;
                     if (replacedExisting.x !== undefined) nn.x = replacedExisting.x;
                     if (replacedExisting.y !== undefined) nn.y = replacedExisting.y;
