@@ -455,10 +455,7 @@
         //
         // Detection strategies:
         //  1. Props keys ending in "config" (e.g. venvconfig → venv-config)
-        //  2. Props values that match a known config-type node alias pattern
-        //     (e.g. broker: "my_mqtt_broker" where a node named my_mqtt_broker
-        //      is defined with config: true)
-        //  3. Well-known reference keys that commonly point to config nodes
+        //  2. Well-known reference keys that commonly point to config nodes
         var CONFIG_REF_KEYS = {
             'broker': 'mqtt-broker',
             'server': null,          // type varies — skip auto-create
@@ -483,7 +480,7 @@
                     return;
                 }
 
-                // Strategy 3: well-known reference key
+                // Strategy 2: well-known reference key
                 var lowerKey = key.toLowerCase();
                 if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey]) {
                     nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, _autoStub: true, props: {} };
@@ -883,8 +880,11 @@
                 mergedProps.props = spec.props;
             }
 
+            // Flatten spec root keys into mergedProps, skipping META_KEYS
+            // and Vibe-Schema-only keys (props, _llmAlias, config).
+            var SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config']);
             Object.keys(spec).forEach(function(key) {
-                if (['type', 'name', 'id', 'z', 'x', 'y', 'wires', 'props', '_llmAlias', 'config'].indexOf(key) === -1) {
+                if (SPEC_SKIP_KEYS.indexOf(key) === -1) {
                     mergedProps[key] = spec[key];
                 }
             });

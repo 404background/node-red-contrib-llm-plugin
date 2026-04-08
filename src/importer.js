@@ -25,6 +25,12 @@
 
     function genId() { return 'id_' + Math.random().toString(36).substr(2,9); }
 
+    function safeGetCurrentFlow() {
+        return (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)
+            ? LLMPlugin.UI.getCurrentFlow()
+            : null;
+    }
+
     /** Merge multiple wire ID arrays into one, deduplicating. */
     function mergeWireIds(/* ...arrays */) {
         var seen = {};
@@ -391,8 +397,7 @@
 
         // Remove specific connections
         if (Array.isArray(directives.removeConnections) && directives.removeConnections.length > 0) {
-            var cfg2 = getConfigurator();
-            var rcLookup = buildFlowLookup(rebuilt, cfg2);
+            var rcLookup = buildFlowLookup(rebuilt, getConfigurator());
 
             directives.removeConnections.forEach(function(rc) {
                 var fromId = rcLookup.resolve(rc.from);
@@ -426,7 +431,6 @@
 
         rebuilt.forEach(function(n) {
             if (!n) return;
-            delete n._llmPreservePosition;
             delete n._llmAlias;
             delete n._autoStub;
         });
@@ -444,7 +448,7 @@
         } else {
             // Preserve existing positions; only place new nodes near their neighbors
             placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, {
-                spacingX: 200, spacingY: 80, bandGap: 140
+                spacingX: 200, spacingY: 80, bandGap: 140, maxColumns: 5
             });
         }
 
@@ -529,6 +533,7 @@
         var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : 200;
         var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : 80;
         var bandGap = (typeof options.bandGap === 'number') ? options.bandGap : 140;
+        var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2) ? options.maxColumns : 5;
 
         var canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
         if (canvasNodes.length < 1) return nodes;
@@ -643,8 +648,8 @@
             if (!isFinite(minX)) minX = 200;
             var startY = maxY + bandGap;
             remaining.forEach(function(n, idx) {
-                n.x = Math.round(minX + (idx % 5) * spacingX);
-                n.y = Math.round(startY + Math.floor(idx / 5) * spacingY);
+                n.x = Math.round(minX + (idx % maxColumns) * spacingX);
+                n.y = Math.round(startY + Math.floor(idx / maxColumns) * spacingY);
             });
         }
 
@@ -774,9 +779,7 @@
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
         try {
-            var beforeFlow = (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)
-                ? LLMPlugin.UI.getCurrentFlow()
-                : null;
+            var beforeFlow = safeGetCurrentFlow();
 
             var requestedApplyMode = normalizeApplyMode(options.applyMode) || 'auto';
             var llmApplyMode = extractApplyModeFromMessage(messageContent);
@@ -1160,9 +1163,7 @@
 
             if (RED && RED.notify) RED.notify('Flow reloaded successfully', 'success');
 
-            var afterFlow = (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)
-                ? LLMPlugin.UI.getCurrentFlow()
-                : null;
+            var afterFlow = safeGetCurrentFlow();
             var postCheckpointId = await saveCheckpoint(
                 options.chatId || null,
                 options.postCheckpointLabel || ('post-import-' + new Date().toISOString()),
