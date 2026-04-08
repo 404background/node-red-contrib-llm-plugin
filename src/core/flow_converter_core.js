@@ -954,6 +954,7 @@
         isVibeSchema:        isVibeSchema,
         isConfigType:        isConfigType,
         isNoInputType:       isNoInputType,
-        setRuntimeGetType:   setRuntimeGetType
+        setRuntimeGetType:   setRuntimeGetType,
+        layoutNodes:         layoutNodes
     };
 });

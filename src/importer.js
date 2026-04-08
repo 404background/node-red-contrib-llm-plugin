@@ -25,6 +25,21 @@
 
     function genId() { return 'id_' + Math.random().toString(36).substr(2,9); }
 
+    /** Merge multiple wire ID arrays into one, deduplicating. */
+    function mergeWireIds(/* ...arrays */) {
+        var seen = {};
+        var out = [];
+        for (var i = 0; i < arguments.length; i++) {
+            var arr = arguments[i];
+            if (!Array.isArray(arr)) continue;
+            for (var j = 0; j < arr.length; j++) {
+                var id = String(arr[j] || '').trim();
+                if (id && !seen[id]) { seen[id] = true; out.push(id); }
+            }
+        }
+        return out;
+    }
+
     function safeLog() {
         try {
             if (window && window.console && window.console.log)
@@ -212,17 +227,7 @@
             if (!fromNode) return;
             if (!Array.isArray(fromNode.wires)) fromNode.wires = [];
             while (fromNode.wires.length <= port) fromNode.wires.push([]);
-            // Merge: keep existing connections and add new ones (deduplicated)
-            var existing = fromNode.wires[port];
-            var seen = {};
-            var merged = [];
-            existing.concat(desiredByFromPort[key]).forEach(function(tid) {
-                var id = String(tid || '').trim();
-                if (!id || seen[id]) return;
-                seen[id] = true;
-                merged.push(id);
-            });
-            fromNode.wires[port] = merged;
+            fromNode.wires[port] = mergeWireIds(fromNode.wires[port], desiredByFromPort[key]);
         });
 
         return flowNodes;
@@ -450,7 +455,14 @@
     //  Canvas Layout                                                      //
     // ================================================================== //
 
+    /**
+     * Reflow canvas nodes using FlowConverterCore's layoutNodes engine.
+     * Builds adjacency from wires, delegates layout, applies coordinates.
+     */
     function reflowCanvasNodes(nodes, opts) {
+        var cfg = getConfigurator();
+        if (!cfg || typeof cfg.layoutNodes !== 'function') return nodes;
+
         var options = opts || {};
         var startX = (typeof options.startX === 'number') ? options.startX : 60;
         var startY = (typeof options.startY === 'number') ? options.startY : 60;
@@ -458,18 +470,21 @@
         var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : 80;
         var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2)
             ? Math.floor(options.maxColumns) : 5;
+
         var canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
         if (canvasNodes.length < 2) return nodes;
 
         var byId = {};
-        canvasNodes.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+        var ids = [];
+        canvasNodes.forEach(function(n) {
+            if (n && n.id) { byId[n.id] = n; ids.push(n.id); }
+        });
 
-        // Build bidirectional adjacency
+        // Build bidirectional adjacency from wires
         var outgoing = {};
         var incoming = {};
-        Object.keys(byId).forEach(function(id) { outgoing[id] = []; incoming[id] = []; });
-
-        Object.keys(byId).forEach(function(id) {
+        ids.forEach(function(id) { outgoing[id] = []; incoming[id] = []; });
+        ids.forEach(function(id) {
             var n = byId[id];
             if (!Array.isArray(n.wires)) return;
             n.wires.forEach(function(port) {
@@ -482,147 +497,15 @@
             });
         });
 
-        // --- Step 1: discover connected components (undirected BFS) ---
-        var visited = {};
-        var components = [];
-        function discoverComponent(start) {
-            var comp = [];
-            var q = [start];
-            visited[start] = true;
-            while (q.length > 0) {
-                var cur = q.shift();
-                comp.push(cur);
-                var neighbors = (outgoing[cur] || []).concat(incoming[cur] || []);
-                for (var i = 0; i < neighbors.length; i++) {
-                    if (!visited[neighbors[i]]) {
-                        visited[neighbors[i]] = true;
-                        q.push(neighbors[i]);
-                    }
-                }
-            }
-            return comp;
-        }
-        Object.keys(byId).forEach(function(id) {
-            if (!visited[id]) components.push(discoverComponent(id));
-        });
+        // Delegate to shared layout engine
+        var positions = cfg.layoutNodes(ids, outgoing, incoming, maxColumns);
 
-        // --- Step 2: layout each component independently, stacked vertically ---
-        var globalRowOffset = 0;
-
-        components.forEach(function(comp) {
-            var compSet = {};
-            comp.forEach(function(id) { compSet[id] = true; });
-
-            // Topological sort within this component
-            var compIncoming = {};
-            comp.forEach(function(id) {
-                compIncoming[id] = (incoming[id] || []).filter(function(p) { return compSet[p]; }).length;
-            });
-
-            var roots = comp.filter(function(id) { return compIncoming[id] === 0; });
-            if (roots.length === 0) roots = [comp[0]];
-
-            // BFS to assign layers (columns)
-            var layerById = {};
-            var bfsQueue = roots.slice();
-            roots.forEach(function(id) { layerById[id] = 0; });
-
-            while (bfsQueue.length > 0) {
-                var cur = bfsQueue.shift();
-                (outgoing[cur] || []).forEach(function(nextId) {
-                    if (!compSet[nextId]) return;
-                    var nextLayer = layerById[cur] + 1;
-                    if (typeof layerById[nextId] !== 'number' || layerById[nextId] < nextLayer) {
-                        layerById[nextId] = nextLayer;
-                    }
-                    compIncoming[nextId] -= 1;
-                    if (compIncoming[nextId] === 0) bfsQueue.push(nextId);
-                });
-            }
-            // Handle any unvisited nodes (cycles)
-            comp.forEach(function(id) {
-                if (typeof layerById[id] !== 'number') layerById[id] = 0;
-            });
-
-            // Group by layer
-            var layers = {};
-            comp.forEach(function(id) {
-                var l = layerById[id];
-                if (!layers[l]) layers[l] = [];
-                layers[l].push(id);
-            });
-
-            // Assign rows: inherit parent row to keep chains horizontal
-            var rowMap = {};
-            var layerKeys = Object.keys(layers).map(Number).sort(function(a, b) { return a - b; });
-
-            layerKeys.forEach(function(layer) {
-                var ids = layers[layer];
-                if (layer === layerKeys[0]) {
-                    ids.forEach(function(id, idx) {
-                        rowMap[id] = globalRowOffset + idx;
-                    });
-                } else {
-                    var assignments = ids.map(function(id) {
-                        var parents = (incoming[id] || []).filter(function(p) {
-                            return compSet[p] && typeof rowMap[p] === 'number';
-                        });
-                        var target;
-                        if (parents.length > 0) {
-                            target = Math.round(
-                                parents.reduce(function(s, p) { return s + rowMap[p]; }, 0) / parents.length
-                            );
-                        } else {
-                            target = globalRowOffset;
-                        }
-                        return { id: id, target: target };
-                    });
-                    assignments.sort(function(a, b) { return a.target - b.target; });
-                    var usedRows = {};
-                    assignments.forEach(function(item) {
-                        var row = item.target;
-                        while (usedRows[row]) row++;
-                        usedRows[row] = true;
-                        rowMap[item.id] = row;
-                    });
-                }
-            });
-
-            // Wrap long chains
-            var compMaxCol = 0;
-            comp.forEach(function(id) { if (layerById[id] > compMaxCol) compMaxCol = layerById[id]; });
-
-            if (compMaxCol >= maxColumns) {
-                var rowSet = {};
-                comp.forEach(function(id) { rowSet[rowMap[id]] = true; });
-                var rowsPerFold = Object.keys(rowSet).length;
-                if (rowsPerFold < 1) rowsPerFold = 1;
-
-                comp.forEach(function(id) {
-                    var fold = Math.floor(layerById[id] / maxColumns);
-                    if (fold > 0) {
-                        layerById[id] = layerById[id] % maxColumns;
-                        rowMap[id] = rowMap[id] + fold * (rowsPerFold + 1);
-                    }
-                });
-            }
-
-            // Assign coordinates
-            comp.forEach(function(id) {
-                var node = byId[id];
-                if (!node) return;
-                var col = layerById[id] || 0;
-                var row = (typeof rowMap[id] === 'number') ? rowMap[id] : globalRowOffset;
-                node.x = Math.round(startX + col * spacingX);
-                node.y = Math.round(startY + row * spacingY);
-            });
-
-            // Update globalRowOffset for next component
-            var maxRow = globalRowOffset;
-            comp.forEach(function(id) {
-                if (typeof rowMap[id] === 'number' && rowMap[id] > maxRow) maxRow = rowMap[id];
-            });
-            globalRowOffset = maxRow + 2; // gap between components
+        // Apply col/row → pixel coordinates
+        ids.forEach(function(id) {
+            var node = byId[id];
+            var pos = positions[id] || { col: 0, row: 0 };
+            node.x = Math.round(startX + pos.col * spacingX);
+            node.y = Math.round(startY + pos.row * spacingY);
         });
 
         return nodes;
@@ -1146,19 +1029,10 @@
                     if ((!Array.isArray(nn.wires) || nn.wires.length === 0) && Array.isArray(replacedExisting.wires)) {
                         nn.wires = JSON.parse(JSON.stringify(replacedExisting.wires));
                     } else if (Array.isArray(nn.wires) && Array.isArray(replacedExisting.wires)) {
-                        var mergedWires = [];
                         var maxPorts = Math.max(nn.wires.length, replacedExisting.wires.length);
+                        var mergedWires = [];
                         for (var p = 0; p < maxPorts; p++) {
-                            var existingPort = Array.isArray(replacedExisting.wires[p]) ? replacedExisting.wires[p] : [];
-                            var proposedPort = Array.isArray(nn.wires[p]) ? nn.wires[p] : [];
-                            var seen = {};
-                            mergedWires[p] = [];
-                            existingPort.concat(proposedPort).forEach(function(tid) {
-                                var id = String(tid || '').trim();
-                                if (!id || seen[id]) return;
-                                seen[id] = true;
-                                mergedWires[p].push(id);
-                            });
+                            mergedWires[p] = mergeWireIds(replacedExisting.wires[p], nn.wires[p]);
                         }
                         nn.wires = mergedWires;
                     }
@@ -1186,19 +1060,11 @@
             if (Object.keys(remappedIds).length > 0) {
                 newNodes.forEach(function(n) {
                     if (!n) return;
-                    // Update wires
+                    // Update wires: remap IDs and deduplicate
                     if (Array.isArray(n.wires)) {
                         n.wires = n.wires.map(function(port) {
                             if (!Array.isArray(port)) return [];
-                            var seen = {};
-                            var out = [];
-                            port.forEach(function(tid) {
-                                var nextId = remappedIds[tid] || tid;
-                                if (!nextId || seen[nextId]) return;
-                                seen[nextId] = true;
-                                out.push(nextId);
-                            });
-                            return out;
+                            return mergeWireIds(port.map(function(tid) { return remappedIds[tid] || tid; }));
                         });
                     }
                     // Update string properties that reference remapped IDs
