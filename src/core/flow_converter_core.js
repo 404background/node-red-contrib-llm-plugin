@@ -500,10 +500,16 @@
             aliasToId[alias] = genId();
         });
 
+        // --- Separate config nodes from canvas nodes for layout ---
+        var canvasAliases = aliases.filter(function(a) {
+            var spec = nodeSpecs[a];
+            return !(isConfigType(spec.type) || spec.config === true);
+        });
+
         // --- Build adjacency lists (skip dangling references) ---
         var outgoing = {};
         var incoming = {};
-        aliases.forEach(function(a) { outgoing[a] = []; incoming[a] = []; });
+        canvasAliases.forEach(function(a) { outgoing[a] = []; incoming[a] = []; });
 
         var connections = intermediate.connections || [];
         connections.forEach(function(conn) {
@@ -516,8 +522,8 @@
             }
         });
 
-        // --- Layout ---
-        var layout = layoutNodes(aliases, outgoing, incoming, maxColumns);
+        // --- Layout (canvas nodes only; config nodes have no coordinates) ---
+        var layout = layoutNodes(canvasAliases, outgoing, incoming, maxColumns);
 
         // --- Build wires map (guard against dangling aliases) ---
         var wiresMap = {};

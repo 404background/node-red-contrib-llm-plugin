@@ -491,9 +491,10 @@
         var byId = {};
         canvasNodes.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
+        // Build bidirectional adjacency
         var outgoing = {};
-        var incomingCount = {};
-        Object.keys(byId).forEach(function(id) { outgoing[id] = []; incomingCount[id] = 0; });
+        var incoming = {};
+        Object.keys(byId).forEach(function(id) { outgoing[id] = []; incoming[id] = []; });
 
         Object.keys(byId).forEach(function(id) {
             var n = byId[id];
@@ -503,125 +504,152 @@
                 port.forEach(function(toId) {
                     if (!byId[toId]) return;
                     outgoing[id].push(toId);
-                    incomingCount[toId] += 1;
+                    incoming[toId].push(id);
                 });
             });
         });
 
-        function sortByOriginalPos(aId, bId) {
-            var a = byId[aId] || {};
-            var b = byId[bId] || {};
-            var ax = (typeof a.x === 'number') ? a.x : 0;
-            var bx = (typeof b.x === 'number') ? b.x : 0;
-            if (ax !== bx) return ax - bx;
-            var ay = (typeof a.y === 'number') ? a.y : 0;
-            var by = (typeof b.y === 'number') ? b.y : 0;
-            if (ay !== by) return ay - by;
-            return String(aId).localeCompare(String(bId));
-        }
-
-        var queue = Object.keys(incomingCount)
-            .filter(function(id) { return incomingCount[id] === 0; })
-            .sort(sortByOriginalPos);
-
-        var layerById = {};
-        var visitedCount = 0;
-        while (queue.length > 0) {
-            var current = queue.shift();
-            visitedCount += 1;
-            if (typeof layerById[current] !== 'number') layerById[current] = 0;
-            (outgoing[current] || []).forEach(function(nextId) {
-                var nextLayer = layerById[current] + 1;
-                if (typeof layerById[nextId] !== 'number' || layerById[nextId] < nextLayer) {
-                    layerById[nextId] = nextLayer;
-                }
-                incomingCount[nextId] -= 1;
-                if (incomingCount[nextId] === 0) queue.push(nextId);
-            });
-            queue.sort(sortByOriginalPos);
-        }
-
-        if (visitedCount < canvasNodes.length) {
-            var unresolved = Object.keys(byId).filter(function(id) {
-                return typeof layerById[id] !== 'number';
-            }).sort(sortByOriginalPos);
-            unresolved.forEach(function(id, idx) { layerById[id] = idx; });
-        }
-
-        var layers = {};
-        Object.keys(layerById).forEach(function(id) {
-            var l = layerById[id];
-            if (!layers[l]) layers[l] = [];
-            layers[l].push(id);
-        });
-
-        var rowById = {};
-        var rowInLayerById = {};
-        var layerRowCount = {};
-        var layerKeys = Object.keys(layers)
-            .map(function(v) { return parseInt(v, 10); })
-            .sort(function(a, b) { return a - b; });
-
-        layerKeys.forEach(function(layer) {
-            var ids = layers[layer].slice();
-            if (layer === layerKeys[0]) {
-                ids.sort(sortByOriginalPos);
-            } else {
-                ids.sort(function(aId, bId) {
-                    function avgParentRow(nodeId) {
-                        var parentRows = [];
-                        Object.keys(outgoing).forEach(function(fromId) {
-                            if ((outgoing[fromId] || []).indexOf(nodeId) >= 0 && typeof rowById[fromId] === 'number') {
-                                parentRows.push(rowById[fromId]);
-                            }
-                        });
-                        if (parentRows.length === 0) return Number.POSITIVE_INFINITY;
-                        var sum = 0;
-                        parentRows.forEach(function(r) { sum += r; });
-                        return sum / parentRows.length;
+        // --- Step 1: discover connected components (undirected BFS) ---
+        var visited = {};
+        var components = [];
+        function discoverComponent(start) {
+            var comp = [];
+            var q = [start];
+            visited[start] = true;
+            while (q.length > 0) {
+                var cur = q.shift();
+                comp.push(cur);
+                var neighbors = (outgoing[cur] || []).concat(incoming[cur] || []);
+                for (var i = 0; i < neighbors.length; i++) {
+                    if (!visited[neighbors[i]]) {
+                        visited[neighbors[i]] = true;
+                        q.push(neighbors[i]);
                     }
-                    var aAvg = avgParentRow(aId);
-                    var bAvg = avgParentRow(bId);
-                    if (aAvg !== bAvg) return aAvg - bAvg;
-                    return sortByOriginalPos(aId, bId);
+                }
+            }
+            return comp;
+        }
+        Object.keys(byId).forEach(function(id) {
+            if (!visited[id]) components.push(discoverComponent(id));
+        });
+
+        // --- Step 2: layout each component independently, stacked vertically ---
+        var globalRowOffset = 0;
+
+        components.forEach(function(comp) {
+            var compSet = {};
+            comp.forEach(function(id) { compSet[id] = true; });
+
+            // Topological sort within this component
+            var compIncoming = {};
+            comp.forEach(function(id) {
+                compIncoming[id] = (incoming[id] || []).filter(function(p) { return compSet[p]; }).length;
+            });
+
+            var roots = comp.filter(function(id) { return compIncoming[id] === 0; });
+            if (roots.length === 0) roots = [comp[0]];
+
+            // BFS to assign layers (columns)
+            var layerById = {};
+            var bfsQueue = roots.slice();
+            roots.forEach(function(id) { layerById[id] = 0; });
+
+            while (bfsQueue.length > 0) {
+                var cur = bfsQueue.shift();
+                (outgoing[cur] || []).forEach(function(nextId) {
+                    if (!compSet[nextId]) return;
+                    var nextLayer = layerById[cur] + 1;
+                    if (typeof layerById[nextId] !== 'number' || layerById[nextId] < nextLayer) {
+                        layerById[nextId] = nextLayer;
+                    }
+                    compIncoming[nextId] -= 1;
+                    if (compIncoming[nextId] === 0) bfsQueue.push(nextId);
                 });
             }
-            ids.forEach(function(id, rowIdx) {
-                rowById[id] = rowIdx;
-                rowInLayerById[id] = rowIdx;
+            // Handle any unvisited nodes (cycles)
+            comp.forEach(function(id) {
+                if (typeof layerById[id] !== 'number') layerById[id] = 0;
             });
-            layerRowCount[layer] = ids.length;
-        });
 
-        var foldBandMaxRows = {};
-        layerKeys.forEach(function(layer) {
-            var fold = Math.floor(layer / maxColumns);
-            var rows = layerRowCount[layer] || 0;
-            if (!foldBandMaxRows[fold] || foldBandMaxRows[fold] < rows) {
-                foldBandMaxRows[fold] = rows;
+            // Group by layer
+            var layers = {};
+            comp.forEach(function(id) {
+                var l = layerById[id];
+                if (!layers[l]) layers[l] = [];
+                layers[l].push(id);
+            });
+
+            // Assign rows: inherit parent row to keep chains horizontal
+            var rowMap = {};
+            var layerKeys = Object.keys(layers).map(Number).sort(function(a, b) { return a - b; });
+
+            layerKeys.forEach(function(layer) {
+                var ids = layers[layer];
+                if (layer === layerKeys[0]) {
+                    ids.forEach(function(id, idx) {
+                        rowMap[id] = globalRowOffset + idx;
+                    });
+                } else {
+                    var assignments = ids.map(function(id) {
+                        var parents = (incoming[id] || []).filter(function(p) {
+                            return compSet[p] && typeof rowMap[p] === 'number';
+                        });
+                        var target;
+                        if (parents.length > 0) {
+                            target = Math.round(
+                                parents.reduce(function(s, p) { return s + rowMap[p]; }, 0) / parents.length
+                            );
+                        } else {
+                            target = globalRowOffset;
+                        }
+                        return { id: id, target: target };
+                    });
+                    assignments.sort(function(a, b) { return a.target - b.target; });
+                    var usedRows = {};
+                    assignments.forEach(function(item) {
+                        var row = item.target;
+                        while (usedRows[row]) row++;
+                        usedRows[row] = true;
+                        rowMap[item.id] = row;
+                    });
+                }
+            });
+
+            // Wrap long chains
+            var compMaxCol = 0;
+            comp.forEach(function(id) { if (layerById[id] > compMaxCol) compMaxCol = layerById[id]; });
+
+            if (compMaxCol >= maxColumns) {
+                var rowSet = {};
+                comp.forEach(function(id) { rowSet[rowMap[id]] = true; });
+                var rowsPerFold = Object.keys(rowSet).length;
+                if (rowsPerFold < 1) rowsPerFold = 1;
+
+                comp.forEach(function(id) {
+                    var fold = Math.floor(layerById[id] / maxColumns);
+                    if (fold > 0) {
+                        layerById[id] = layerById[id] % maxColumns;
+                        rowMap[id] = rowMap[id] + fold * (rowsPerFold + 1);
+                    }
+                });
             }
-        });
 
-        var foldBandRowOffset = {};
-        var maxFold = layerKeys.length > 0
-            ? Math.floor(layerKeys[layerKeys.length - 1] / maxColumns) : 0;
-        var runningOffset = 0;
-        for (var f = 0; f <= maxFold; f++) {
-            foldBandRowOffset[f] = runningOffset;
-            var bandRows = foldBandMaxRows[f] || 0;
-            runningOffset += bandRows + 1;
-        }
+            // Assign coordinates
+            comp.forEach(function(id) {
+                var node = byId[id];
+                if (!node) return;
+                var col = layerById[id] || 0;
+                var row = (typeof rowMap[id] === 'number') ? rowMap[id] : globalRowOffset;
+                node.x = Math.round(startX + col * spacingX);
+                node.y = Math.round(startY + row * spacingY);
+            });
 
-        Object.keys(layerById).forEach(function(id) {
-            var layer = layerById[id];
-            var fold = Math.floor(layer / maxColumns);
-            var colInFold = layer % maxColumns;
-            var localRow = rowInLayerById[id] || 0;
-            var globalRow = (foldBandRowOffset[fold] || 0) + localRow;
-            var node = byId[id];
-            if (!node) return;
-            node.x = Math.round(startX + (colInFold * spacingX));
-            node.y = Math.round(startY + (globalRow * spacingY));
+            // Update globalRowOffset for next component
+            var maxRow = globalRowOffset;
+            comp.forEach(function(id) {
+                if (typeof rowMap[id] === 'number' && rowMap[id] > maxRow) maxRow = rowMap[id];
+            });
+            globalRowOffset = maxRow + 2; // gap between components
         });
 
         return nodes;
