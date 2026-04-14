@@ -22,6 +22,19 @@
 })(function() {
     'use strict';
 
+    // Layout defaults — shared between toNodeRed() and callers that
+    // override via options.  Importers should reference these values so
+    // there is a single source of truth for spacing / gap constants.
+    var LAYOUT_DEFAULTS = {
+        startX:       60,
+        startY:       60,
+        spacingX:     180,   // 3 grid squares (60 px) between node edges
+        spacingY:      80,   // row height
+        componentGap:  80,   // gap between disconnected flow components (center-to-center)
+                             // 80 px = ~40 px visible gap + ~40 px node height ≈ 2 grid squares
+        maxColumns:     5
+    };
+
     // Node-RED config node types end with "-config" and live outside the
     // canvas (no x, y, wires).  Detect them so we can handle them specially.
     var CONFIG_TYPE_SUFFIX = '-config';
@@ -35,7 +48,6 @@
         'serial-port': true,
         'websocket-listener': true,
         'websocket-client': true,
-        'tls-config': true,
         'http proxy': true,
         'ui-group': true, 'ui-tab': true, 'ui-base': true, 'ui-page': true, 'ui-theme': true,
         'ui_group': true, 'ui_tab': true, 'ui_base': true, 'ui_page': true, 'ui_theme': true
@@ -79,6 +91,30 @@
             type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX) return true;
         if (KNOWN_CONFIG_TYPES[type] === true) return true;
         return false;
+    }
+
+    /**
+     * Determine whether a node object is a config node by combining
+     * type-based detection (runtime + static) with structural detection.
+     * In a valid Node-RED flow, config nodes lack x, y, and wires because
+     * they live outside the canvas.  This structural check serves as a
+     * reliable fallback when the runtime type registry is unavailable and
+     * the type name does not match a known config-type pattern.
+     */
+    function isConfigNode(node) {
+        if (!node || typeof node !== 'object') return false;
+        var type = node.type;
+        if (typeof type !== 'string' || !type.trim()) return false;
+        // Type-based detection (runtime + static suffix/list)
+        if (isConfigType(type)) return true;
+        // Structural detection: config nodes have no canvas properties.
+        // Exclude tab and subflow definitions which also lack x/y/wires.
+        if (type === 'tab' || type.indexOf('subflow:') === 0) return false;
+        var hasZ = typeof node.z === 'string' && node.z.length > 0;
+        var hasXY = typeof node.x === 'number' || typeof node.y === 'number';
+        var hasWires = Array.isArray(node.wires);
+        var hasGroup = typeof node.g === 'string' && node.g.length > 0;
+        return !hasZ && !hasXY && !hasWires && !hasGroup;
     }
 
     /** Check whether a node type has zero input ports. */
@@ -202,13 +238,7 @@
             var entry = { type: node.type };
             if (node.name) entry.name = node.name;
             // Mark config nodes so the LLM knows they live outside the canvas.
-            // Covers: (a) known config types from the static list, (b) types
-            // ending in "-config", and (c) runtime-detected nodes that lack
-            // canvas properties (x, y, wires).
-            if (isConfigType(node.type) ||
-                (typeof node.x !== 'number' &&
-                 typeof node.y !== 'number' &&
-                 !Array.isArray(node.wires))) {
+            if (isConfigNode(node)) {
                 entry.config = true;
             }
             if (Object.keys(props).length > 0) entry.props = props;
@@ -300,6 +330,7 @@
 
         // --- Step 2: layout each component, stacked vertically ---
         var globalRowOffset = 0;
+        var componentIndex = 0;
 
         components.forEach(function(comp) {
             var compSet = {};
@@ -408,11 +439,13 @@
             comp.forEach(function(a) {
                 positions[a] = {
                     col: colMap[a] || 0,
-                    row: rowMap[a] !== undefined ? rowMap[a] : 0
+                    row: rowMap[a] !== undefined ? rowMap[a] : 0,
+                    comp: componentIndex
                 };
             });
 
-            globalRowOffset = maxRow + 1; // compact vertical gap between components
+            globalRowOffset = maxRow + 1; // compact row packing; pixel gap added by caller
+            componentIndex++;
         });
 
         return positions;
@@ -424,11 +457,11 @@
      * @param  {Object} intermediate  Vibe Schema object.
      * @param  {Object} [options]     Optional overrides.
      * @param  {string} [options.workspace]  Tab ID to assign (z).
-     * @param  {number} [options.startX=100]
-     * @param  {number} [options.startY=100]
-     * @param  {number} [options.spacingX=200]
-     * @param  {number} [options.spacingY=80]
-     * @param  {number} [options.maxColumns=8]  Wrap chains longer than this.
+     * @param  {number} [options.startX]    Defaults to LAYOUT_DEFAULTS.startX.
+     * @param  {number} [options.startY]    Defaults to LAYOUT_DEFAULTS.startY.
+     * @param  {number} [options.spacingX]  Defaults to LAYOUT_DEFAULTS.spacingX.
+     * @param  {number} [options.spacingY]  Defaults to LAYOUT_DEFAULTS.spacingY.
+     * @param  {number} [options.maxColumns] Defaults to LAYOUT_DEFAULTS.maxColumns.
      * @return {Array}  Node-RED JSON nodes array.
      */
     function toNodeRed(intermediate, options) {
@@ -436,11 +469,11 @@
 
         var opts = options || {};
         var workspace      = opts.workspace      || '';
-        var startX         = opts.startX         || 60;
-        var startY         = opts.startY         || 60;
-        var spacingX       = opts.spacingX       || 200;
-        var spacingY       = opts.spacingY       || 80;
-        var maxColumns     = opts.maxColumns     || 5;
+        var startX         = opts.startX         || LAYOUT_DEFAULTS.startX;
+        var startY         = opts.startY         || LAYOUT_DEFAULTS.startY;
+        var spacingX       = opts.spacingX       || LAYOUT_DEFAULTS.spacingX;
+        var spacingY       = opts.spacingY       || LAYOUT_DEFAULTS.spacingY;
+        var maxColumns     = opts.maxColumns     || LAYOUT_DEFAULTS.maxColumns;
         var preserveAlias  = !!opts.preserveAlias;
 
         // --- Work on a shallow copy so we never mutate the caller's object ---
@@ -531,7 +564,7 @@
             // Skip connections targeting nodes that cannot accept input
             var targetSpec = nodeSpecs[conn.to];
             if (targetSpec && isNoInputType(targetSpec.type)) return;
-            var port = conn.fromPort || 0;
+            var port = Math.max(0, Math.min(conn.fromPort || 0, 32));
             while (wiresMap[conn.from].length <= port) {
                 wiresMap[conn.from].push([]);
             }
@@ -804,49 +837,34 @@
             if (node.field === undefined) node.field = 'payload';
         }
 
-        // Keep large generated flows visually compact in the editor.
-        // This preserves relative ordering while capping total Y spread.
-        function compactNodePositions(nodes) {
-            var positioned = (nodes || []).filter(function(n) {
-                return n && !isConfigType(n.type) && typeof n.y === 'number';
+        // Compute per-component Y offsets so disconnected flows stack with
+        // Gap between disconnected flows: 2 grid squares (40px) visible gap.
+        // Node effective height ≈ 40px, so center-to-center = 40 + 40 = 80px.
+        var componentGapPx = LAYOUT_DEFAULTS.componentGap;
+        function buildComponentYOffsets(layoutMap, aliases) {
+            var compInfo = {};  // comp → { minRow, maxRow }
+            aliases.forEach(function(a) {
+                var pos = layoutMap[a];
+                if (!pos || pos.comp === undefined) return;
+                var ci = pos.comp;
+                if (!compInfo[ci]) compInfo[ci] = { minRow: pos.row, maxRow: pos.row };
+                if (pos.row < compInfo[ci].minRow) compInfo[ci].minRow = pos.row;
+                if (pos.row > compInfo[ci].maxRow) compInfo[ci].maxRow = pos.row;
             });
-            if (positioned.length === 0) return;
-
-            var minY = Infinity;
-            var maxY = -Infinity;
-            positioned.forEach(function(n) {
-                if (n.y < minY) minY = n.y;
-                if (n.y > maxY) maxY = n.y;
+            var compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
+            var offsets = {};
+            var nextY = startY;
+            compKeys.forEach(function(ci) {
+                var info = compInfo[ci];
+                // Offset so this component's minRow maps to nextY
+                offsets[ci] = nextY - info.minRow * spacingY;
+                // Next component starts after this one's maxRow + gap
+                nextY = nextY + (info.maxRow - info.minRow) * spacingY + componentGapPx;
             });
-
-            var span = maxY - minY;
-            var targetSpan = Math.max(700, spacingY * 10);
-            var factor = span > targetSpan ? (targetSpan / span) : 1;
-
-            positioned.forEach(function(n) {
-                n.y = Math.round(startY + ((n.y - minY) * factor));
-            });
-
-            // After compaction, ensure no two nodes at the same X overlap vertically
-            var minGap = Math.round(spacingY * 0.6);
-            var byX = {};
-            positioned.forEach(function(n) {
-                var xKey = Math.round((n.x || 0) / (spacingX * 0.5));
-                if (!byX[xKey]) byX[xKey] = [];
-                byX[xKey].push(n);
-            });
-            Object.keys(byX).forEach(function(xKey) {
-                var group = byX[xKey];
-                if (group.length < 2) return;
-                group.sort(function(a, b) { return a.y - b.y; });
-                for (var gi = 1; gi < group.length; gi++) {
-                    var gap = group[gi].y - group[gi - 1].y;
-                    if (gap < minGap) {
-                        group[gi].y = group[gi - 1].y + minGap;
-                    }
-                }
-            });
+            return offsets;
         }
+
+        var compYOffsets = buildComponentYOffsets(layout, canvasAliases);
 
         // --- Assemble Node-RED nodes ---
         var result = [];
@@ -866,7 +884,9 @@
             // Config nodes don't appear on the canvas — skip coordinates
             if (!isConfig) {
                 node.x = startX + pos.col * spacingX;
-                node.y = startY + pos.row * spacingY;
+                var yOff = (pos.comp !== undefined && compYOffsets[pos.comp] !== undefined)
+                    ? compYOffsets[pos.comp] : 0;
+                node.y = Math.round(pos.row * spacingY + yOff);
             }
 
             // Flatten type-specific props (from both spec.props and root spec)
@@ -921,8 +941,6 @@
             result.push(node);
         });
 
-        compactNodePositions(result);
-
         return result;
     }
 
@@ -949,10 +967,12 @@
     // ------------------------------------------------------------------ //
 
     return {
+        LAYOUT_DEFAULTS:     LAYOUT_DEFAULTS,
         toIntermediate:      toIntermediate,
         toNodeRed:           toNodeRed,
         isVibeSchema:        isVibeSchema,
         isConfigType:        isConfigType,
+        isConfigNode:        isConfigNode,
         isNoInputType:       isNoInputType,
         setRuntimeGetType:   setRuntimeGetType,
         layoutNodes:         layoutNodes

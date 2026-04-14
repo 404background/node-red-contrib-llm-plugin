@@ -18,8 +18,17 @@
                 try {
                     var parsedRaw = JSON.parse(raw);
                     if (parsedRaw && typeof parsedRaw === 'object') {
-                        return '<pre><code class="language-json">' +
-                            escapeHtml(JSON.stringify(parsedRaw, null, 2)) +
+                        var descHtml = '';
+                        var displayObj = parsedRaw;
+                        // Vibe Schema with description: show description as text
+                        if (parsedRaw.nodes && parsedRaw.connections &&
+                            parsedRaw.description && typeof parsedRaw.description === 'string') {
+                            descHtml = '<p>' + escapeHtml(parsedRaw.description) + '</p>';
+                            displayObj = JSON.parse(JSON.stringify(parsedRaw));
+                            delete displayObj.description;
+                        }
+                        return descHtml + '<pre><code class="language-json">' +
+                            escapeHtml(JSON.stringify(displayObj, null, 2)) +
                             '</code></pre>';
                     }
                 } catch (e) { /* not raw JSON */ }
@@ -123,9 +132,21 @@
                     var details = document.createElement('details');
                     details.className = 'json-collapsible';
                     var summary = document.createElement('summary');
-                    // Pick a label that hints at the content
-                    if (parsed.nodes && parsed.connections) {
+
+                    var isVibeSchema = parsed.nodes && parsed.connections;
+                    if (isVibeSchema) {
                         summary.textContent = 'Vibe Schema JSON';
+                        // If the LLM included a description inside the JSON,
+                        // show it as a text paragraph and strip from the JSON display.
+                        if (parsed.description && typeof parsed.description === 'string') {
+                            var descPara = document.createElement('p');
+                            descPara.textContent = parsed.description;
+                            pre.parentNode.insertBefore(descPara, pre);
+                            // Re-render the code block without the description field
+                            var display = JSON.parse(JSON.stringify(parsed));
+                            delete display.description;
+                            codeEl.textContent = JSON.stringify(display, null, 2);
+                        }
                     } else if (Array.isArray(parsed)) {
                         summary.textContent = 'Flow JSON (' + parsed.length + ' nodes)';
                     } else {

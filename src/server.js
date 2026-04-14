@@ -7,6 +7,7 @@ const https = require('https');
 const { exec } = require('child_process');
 const { OpenAI } = require('openai');
 const Configurator = require('./core/flow_converter_core');
+const LLMJsonParser = require('./core/llm_json_parser');
 
 // Load system prompt template once at startup
 const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(
@@ -316,63 +317,6 @@ function createLLMPluginServer(RED) {
     //  Agent-mode validation helpers                                      //
     // ------------------------------------------------------------------ //
 
-    function stripJsonComments(text) {
-        return String(text || '')
-            .replace(/\/\*[\s\S]*?\*\//g, '')
-            .replace(/(?:^|[^:"'])\s*\/\/.*$/gm, function(m) {
-                const idx = m.indexOf('//');
-                if (idx < 0) return m;
-                const before = m.substring(0, idx);
-                const quotes = (before.match(/(?<!\\)"/g) || []).length;
-                return quotes % 2 === 0 ? before : m;
-            });
-    }
-
-    function repairJsonQuotes(text) {
-        const result = [];
-        let i = 0;
-        const len = text.length;
-        let inString = false;
-        let isValueString = false;
-
-        while (i < len) {
-            const ch = text[i];
-            if (!inString) {
-                result.push(ch);
-                if (ch === '"') {
-                    inString = true;
-                    let j = result.length - 2;
-                    while (j >= 0 && /\s/.test(result[j])) j--;
-                    isValueString = (j >= 0 && result[j] === ':');
-                }
-                i++;
-            } else {
-                if (ch === '\\' && i + 1 < len) {
-                    result.push(ch, text[i + 1]);
-                    i += 2;
-                } else if (ch === '"') {
-                    const rest = text.substring(i + 1);
-                    const trimmed = rest.replace(/^\s+/, '');
-                    const isEnd = isValueString
-                        ? (trimmed.length === 0 || trimmed[0] === ',' || trimmed[0] === '}' || trimmed[0] === ']')
-                        : (trimmed.length === 0 || trimmed[0] === ':');
-                    if (isEnd) {
-                        result.push('"');
-                        inString = false;
-                        i++;
-                    } else {
-                        result.push('\\"');
-                        i++;
-                    }
-                } else {
-                    result.push(ch);
-                    i++;
-                }
-            }
-        }
-        return result.join('');
-    }
-
     function parseFlowPayloadFromText(text) {
         const candidates = [];
         const codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
@@ -385,12 +329,12 @@ function createLLMPluginServer(RED) {
         }
 
         for (let i = candidates.length - 1; i >= 0; i--) {
-            const cleaned = stripJsonComments(candidates[i]).trim();
+            const cleaned = LLMJsonParser.stripJsonComments(candidates[i]).trim();
             try {
                 return JSON.parse(cleaned);
             } catch (e1) {
                 try {
-                    return JSON.parse(repairJsonQuotes(cleaned));
+                    return JSON.parse(LLMJsonParser.repairJsonQuotes(cleaned));
                 } catch (e2) { /* keep trying */ }
             }
         }

@@ -5,7 +5,22 @@
 // implemented in src/core/llm_json_parser.js and accessed via LLMPlugin.LLMJsonParser.
 (function(){
     var Importer = {};
-    var LAST_SANITIZED = null;
+
+    // ================================================================== //
+    //  Layout Constants                                                   //
+    // ================================================================== //
+    // Single source of truth for all spacing / gap values used by the
+    // layout functions below.  Changing a value here updates every path
+    // (overwrite, merge, and orphan placement) at once.
+    var LAYOUT = {
+        startX:       200,   // canvas origin X (px)
+        startY:       200,   // canvas origin Y (px)
+        spacingX:     180,   // horizontal gap between node centres (3 grid squares between edges)
+        spacingY:      80,   // vertical gap between node centres within a component
+        componentGap:  80,   // gap between disconnected flow components (center-to-center)
+                             // 80 px = 40 px visible gap + ~40 px node height ≈ 2 grid squares
+        maxColumns:     5    // wrap long chains after this many columns
+    };
 
     // ================================================================== //
     //  Module References                                                  //
@@ -98,6 +113,18 @@
     }
 
     /**
+     * Check whether a node object is a config node using both type-based
+     * and structural detection.  Falls back to type-only check if the
+     * core function is unavailable.
+     */
+    function isConfigNodeObj(node) {
+        if (!node || typeof node !== 'object') return false;
+        var cfg = getConfigurator();
+        if (cfg && typeof cfg.isConfigNode === 'function') return cfg.isConfigNode(node);
+        return isConfigNodeType(node.type);
+    }
+
+    /**
      * Remove wires targeting nodes that cannot accept input.
      * Iterates all nodes and prunes invalid wire entries.
      */
@@ -134,6 +161,7 @@
             }
         });
     }
+
 
     // ------------------------------------------------------------------ //
     //  Forwarders to LLMJsonParser (implementations in src/core)         //
@@ -349,10 +377,6 @@
                 if (!t) return;
                 var id = lookup.resolve(t, { minLen: 8 });
                 if (id) removeIdSet[id] = true;
-                // Also try direct ID match
-                nodes.forEach(function(n) {
-                    if (n && n.id === t) removeIdSet[n.id] = true;
-                });
             });
 
             if (Object.keys(removeIdSet).length === 0) return nodes;
@@ -443,12 +467,15 @@
         if (mode === 'overwrite' || Object.keys(baseIds).length === 0) {
             // No existing nodes to preserve — full re-layout
             reflowCanvasNodes(rebuilt, {
-                startX: 200, startY: 200, spacingX: 200, spacingY: 80, maxColumns: 5
+                startX: LAYOUT.startX, startY: LAYOUT.startY,
+                spacingX: LAYOUT.spacingX, spacingY: LAYOUT.spacingY,
+                maxColumns: LAYOUT.maxColumns
             });
         } else {
             // Preserve existing positions; only place new nodes near their neighbors
             placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, {
-                spacingX: 200, spacingY: 80, bandGap: 140, maxColumns: 5
+                spacingX: LAYOUT.spacingX, spacingY: LAYOUT.spacingY,
+                bandGap: LAYOUT.componentGap, maxColumns: LAYOUT.maxColumns
             });
         }
 
@@ -468,12 +495,12 @@
         if (!cfg || typeof cfg.layoutNodes !== 'function') return nodes;
 
         var options = opts || {};
-        var startX = (typeof options.startX === 'number') ? options.startX : 60;
-        var startY = (typeof options.startY === 'number') ? options.startY : 60;
-        var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : 200;
-        var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : 80;
+        var startX = (typeof options.startX === 'number') ? options.startX : LAYOUT.startX;
+        var startY = (typeof options.startY === 'number') ? options.startY : LAYOUT.startY;
+        var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : LAYOUT.spacingX;
+        var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : LAYOUT.spacingY;
         var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2)
-            ? Math.floor(options.maxColumns) : 5;
+            ? Math.floor(options.maxColumns) : LAYOUT.maxColumns;
 
         var canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
         if (canvasNodes.length < 2) return nodes;
@@ -504,12 +531,30 @@
         // Delegate to shared layout engine
         var positions = cfg.layoutNodes(ids, outgoing, incoming, maxColumns);
 
-        // Apply col/row → pixel coordinates
+        // Apply col/row → pixel coordinates with per-component stacking
+        var compGapPx = LAYOUT.componentGap;
+        var compInfo = {};
+        ids.forEach(function(id) {
+            var pos = positions[id] || { col: 0, row: 0 };
+            var ci = pos.comp || 0;
+            if (!compInfo[ci]) compInfo[ci] = { minRow: pos.row, maxRow: pos.row };
+            if (pos.row < compInfo[ci].minRow) compInfo[ci].minRow = pos.row;
+            if (pos.row > compInfo[ci].maxRow) compInfo[ci].maxRow = pos.row;
+        });
+        var compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
+        var compOffsets = {};
+        var nextYR = startY;
+        compKeys.forEach(function(ci) {
+            var info = compInfo[ci];
+            compOffsets[ci] = nextYR - info.minRow * spacingY;
+            nextYR = nextYR + (info.maxRow - info.minRow) * spacingY + compGapPx;
+        });
         ids.forEach(function(id) {
             var node = byId[id];
             var pos = positions[id] || { col: 0, row: 0 };
+            var ci = pos.comp || 0;
             node.x = Math.round(startX + pos.col * spacingX);
-            node.y = Math.round(startY + pos.row * spacingY);
+            node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
         });
 
         return nodes;
@@ -530,10 +575,10 @@
      */
     function placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, opts) {
         var options = opts || {};
-        var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : 200;
-        var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : 80;
-        var bandGap = (typeof options.bandGap === 'number') ? options.bandGap : 140;
-        var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2) ? options.maxColumns : 5;
+        var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : LAYOUT.spacingX;
+        var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : LAYOUT.spacingY;
+        var bandGap = (typeof options.bandGap === 'number') ? options.bandGap : LAYOUT.componentGap;
+        var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2) ? options.maxColumns : LAYOUT.maxColumns;
 
         var canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
         if (canvasNodes.length < 1) return nodes;
@@ -636,21 +681,75 @@
         }
 
         // Step 4: Orphan new nodes — no path to any existing node — place below
+        //   Use the layout engine to respect connections among orphan nodes
+        //   (e.g. 10 disconnected inject→venv→debug chains should stack vertically,
+        //    not collapse into a flat grid).
         if (remaining.length > 0) {
+            // Find the bottom-most Y among ALL positioned nodes (existing +
+            // Step-3-placed) so orphans never overlap with anything above.
             var maxY = Number.NEGATIVE_INFINITY;
             var minX = Number.POSITIVE_INFINITY;
             canvasNodes.forEach(function(n) {
-                if (!existingIdMap[n.id]) return;
+                if (!positioned[n.id] && !existingIdMap[n.id]) return;
                 if ((n.y || 0) > maxY) maxY = n.y;
                 if ((n.x || 0) < minX) minX = n.x;
             });
             if (!isFinite(maxY)) maxY = 200;
             if (!isFinite(minX)) minX = 200;
-            var startY = maxY + bandGap;
-            remaining.forEach(function(n, idx) {
-                n.x = Math.round(minX + (idx % maxColumns) * spacingX);
-                n.y = Math.round(startY + Math.floor(idx / maxColumns) * spacingY);
-            });
+            var orphanStartY = maxY + bandGap;
+
+            var cfg = getConfigurator();
+            if (cfg && typeof cfg.layoutNodes === 'function') {
+                // Build adjacency for orphan nodes only
+                var orphanIds = [];
+                var orphanOut = {};
+                var orphanIn = {};
+                remaining.forEach(function(n) {
+                    orphanIds.push(n.id);
+                    orphanOut[n.id] = [];
+                    orphanIn[n.id] = [];
+                });
+                var orphanSet = {};
+                remaining.forEach(function(n) { orphanSet[n.id] = true; });
+                remaining.forEach(function(n) {
+                    (outgoing[n.id] || []).forEach(function(toId) {
+                        if (orphanSet[toId]) {
+                            orphanOut[n.id].push(toId);
+                            orphanIn[toId].push(n.id);
+                        }
+                    });
+                });
+                var orphanPositions = cfg.layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
+                // Per-component stacking with 40px gap
+                var oCompInfo = {};
+                remaining.forEach(function(n) {
+                    var pos = orphanPositions[n.id] || { col: 0, row: 0 };
+                    var ci = pos.comp || 0;
+                    if (!oCompInfo[ci]) oCompInfo[ci] = { minRow: pos.row, maxRow: pos.row };
+                    if (pos.row < oCompInfo[ci].minRow) oCompInfo[ci].minRow = pos.row;
+                    if (pos.row > oCompInfo[ci].maxRow) oCompInfo[ci].maxRow = pos.row;
+                });
+                var oCompKeys = Object.keys(oCompInfo).map(Number).sort(function(a, b) { return a - b; });
+                var oCompOff = {};
+                var oNextY = orphanStartY;
+                oCompKeys.forEach(function(ci) {
+                    var info = oCompInfo[ci];
+                    oCompOff[ci] = oNextY - info.minRow * spacingY;
+                    oNextY = oNextY + (info.maxRow - info.minRow) * spacingY + LAYOUT.componentGap;
+                });
+                remaining.forEach(function(n) {
+                    var pos = orphanPositions[n.id] || { col: 0, row: 0 };
+                    var ci = pos.comp || 0;
+                    n.x = Math.round(minX + pos.col * spacingX);
+                    n.y = Math.round(pos.row * spacingY + (oCompOff[ci] || 0));
+                });
+            } else {
+                // Fallback: simple grid
+                remaining.forEach(function(n, idx) {
+                    n.x = Math.round(minX + (idx % maxColumns) * spacingX);
+                    n.y = Math.round(orphanStartY + Math.floor(idx / maxColumns) * spacingY);
+                });
+            }
         }
 
         return nodes;
@@ -998,7 +1097,7 @@
                 // 4. Config node singleton matching: if a config node has no match
                 //    by alias or name, but exactly one existing config node of the
                 //    same type exists, reuse it rather than creating a duplicate.
-                if (!replacedExisting && canModifyExisting && isConfigNodeType(nn.type)) {
+                if (!replacedExisting && canModifyExisting && isConfigNodeObj(nn)) {
                     var configTypeKey = String(nn.type).trim().toLowerCase();
                     var sameTypeCandidates = existingConfigByType[configTypeKey] || [];
                     var unclaimedCandidates = sameTypeCandidates.filter(function(c) {
@@ -1131,8 +1230,6 @@
                 } catch(e) {}
             }
 
-            try { LAST_SANITIZED = JSON.parse(JSON.stringify(newNodes)); } catch(e) { LAST_SANITIZED = null; }
-
             var hasDirectives = (flowDirectives.removeTokens || []).length > 0 ||
                                 (flowDirectives.removeConnections || []).length > 0 ||
                                 (connectionHints || []).length > 0;
@@ -1247,5 +1344,4 @@
                (directives.removeConnections || []).length > 0 ||
                hints.length > 0;
     };
-    Importer.getLastSanitized = function() { return LAST_SANITIZED; };
 })();
