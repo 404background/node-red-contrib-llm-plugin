@@ -77,6 +77,13 @@
         Object.keys(source).forEach(function(rawKey) {
             var nk = normalizeToken(rawKey);
             if (!nk || nk === k) return;
+            // Reject matches where one token is much shorter than the other.
+            // e.g. "venv" (4) vs "venv_square" (11) → ratio 0.36 → skip.
+            // Legitimate fuzzy: "inject_trigger" vs "inject_trigger_1" → 0.875 → ok.
+            var shorter = Math.min(nk.length, k.length);
+            var longer  = Math.max(nk.length, k.length);
+            if (shorter / longer < 0.5) return;
+
             var boundaryHit = ('_' + nk + '_').indexOf('_' + k + '_') >= 0 ||
                               ('_' + k + '_').indexOf('_' + nk + '_') >= 0;
             var prefixHit = nk.indexOf(k) === 0 || k.indexOf(nk) === 0;
