@@ -11,6 +11,7 @@
         var apiKeyInput       = root.querySelector('#openai-api-key');
         var systemPromptInput = root.querySelector('#llm-system-prompt');
         var resetPromptBtn    = root.querySelector('#llm-system-prompt-reset');
+        var maxPromptLenInput = root.querySelector('#llm-max-prompt-length');
 
         function updateVisibleSettings() {
             var isOllama = providerSelect.value === 'ollama';
@@ -39,6 +40,9 @@
                     var saved = data.systemPrompt;
                     systemPromptInput.value = (saved !== undefined && saved !== null) ? saved : DEFAULT_SYSTEM_PROMPT;
                 }
+                if (maxPromptLenInput) {
+                    maxPromptLenInput.value = data.maxPromptLength || 10000;
+                }
                 updateVisibleSettings();
             },
             save: function() {
@@ -46,7 +50,8 @@
                     provider: providerSelect.value,
                     ollamaUrl: ollamaUrlInput.value,
                     openaiApiKey: apiKeyInput.value,
-                    systemPrompt: systemPromptInput ? systemPromptInput.value : ''
+                    systemPrompt: systemPromptInput ? systemPromptInput.value : '',
+                    maxPromptLength: maxPromptLenInput ? maxPromptLenInput.value : 10000
                 };
             },
             updateVisibility: updateVisibleSettings
