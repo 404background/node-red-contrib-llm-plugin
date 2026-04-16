@@ -56,7 +56,7 @@ Handles the ambiguity that LLMs produce when generating JSON:
 
 | Category | Functions |
 |---|---|
-| Token normalization | `normalizeToken`, `normalizeTokenLoose`, `resolveUniqueApprox` |
+| Token normalization | `normalizeToken`, `normalizeTokenLoose`, `putUniqueToken`, `resolveUniqueApprox` |
 | JSON repair | `stripJsonComments`, `repairJsonQuotes`, `collectBalancedJsonSnippets` |
 | Vibe Schema extraction | `extractVibeSchema`, `extractConnectionHints`, `extractFlowDirectives` |
 | Flow lookup | `buildFlowLookup` — alias/name/ID → node ID resolution with fuzzy fallback |
@@ -94,6 +94,10 @@ Key properties:
 | `toIntermediate(nodeRedJson)` | Node-RED array → Vibe Schema object. Generates aliases from node names/types, extracts connections from wires, strips coordinates and IDs. |
 | `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED array. Generates real IDs, auto-layouts nodes (BFS topological), converts connections to wires. Options: `workspace`, `startX`, `startY`, `spacingX`, `spacingY`. |
 | `isVibeSchema(obj)` | Returns `true` if the object has `nodes` (object) + `connections` (array). Used by the importer to detect format. |
+| `isConfigType(type)` | Returns `true` if the type string is a known config node type (static list + runtime check). |
+| `isConfigNode(node)` | Returns `true` if the node object is a config node (structural + type-based detection). |
+| `isNoInputType(type)` | Returns `true` if the type cannot accept incoming wires (e.g., inject, catch, status). |
+| `layoutNodes(ids, outgoing, incoming, maxColumns)` | BFS layout engine. Returns `{ id: { col, row, comp } }` positions. Used by both `toNodeRed()` and the importer. |
 | `setRuntimeGetType(fn)` | Register a runtime type-info callback (typically `RED.nodes.getType`). Enables config-node detection and no-input checks for community/custom nodes. Called automatically on sidebar init. |
 
 #### Layout Engine
@@ -103,7 +107,7 @@ The built-in layout engine assigns coordinates via BFS:
 2. BFS to assign column indices.
 3. Within each column, assign sequential row indices.
 4. Disconnected nodes are placed in column 0.
-5. Default spacing: 250px horizontal, 80px vertical.
+5. Default spacing: 180px horizontal, 80px vertical.
 
 ### chat_manager.js
 
@@ -112,6 +116,7 @@ Manages the chat session lifecycle.
 | API | Description |
 |-----|-------------|
 | `ChatManager.getCurrentChatId()` | Returns (or creates) the active chat ID |
+| `ChatManager.getChatHistory()` | Returns the in-memory chat history object |
 | `ChatManager.startNewChat()` | Creates a fresh chat session, clears UI |
 | `ChatManager.addMessage(content, isUser, meta?)` | Appends message + metadata to history/UI and persists |
 | `ChatManager.saveChatToServer(chatId)` | `POST /llm-plugin/save-chat` |
@@ -120,6 +125,7 @@ Manages the chat session lifecycle.
 | `ChatManager.showChatList()` | Builds and shows the chat history modal |
 | `ChatManager.deleteChat(chatId, cb)` | `POST /llm-plugin/delete-chat` |
 | `ChatManager.ensureBaselineCheckpoint(chatId?)` | Saves pre-edit checkpoint at chat start |
+| `ChatManager.getBaselineCheckpointId(chatId?)` | Returns the baseline checkpoint ID for a chat |
 | `ChatManager.updateMessageMeta(messageId, patch)` | Patches stored message metadata |
 
 Uses **`fetch`** for all server calls. DOM manipulation uses plain `document.createElement` / `document.getElementById`.
@@ -142,6 +148,10 @@ Extracts Node-RED flow JSON from LLM responses and imports it into the editor.
 3. Collect connection/deletion directives and rebuild a full workspace snapshot.
 4. Enforce mode policy (`edit-only`, `merge`, `overwrite`, `delete-only`) with safe fallback to `edit-only`.
 5. Replace active workspace flow atomically, then save post-import checkpoint.
+
+**`restoreCheckpoint(checkpointId)`** — Loads a saved checkpoint from the server and replaces the active workspace flow.
+
+**`hasFlowDirectives(messageContent)`** — Returns `true` if the message contains connection hints or deletion directives (used to show the Import button even when no nodes are extracted).
 
 ### ui_core.js
 
@@ -236,7 +246,8 @@ At runtime, `buildMessages()` builds chat messages with optional flow context (V
 ```
 messages[0] = {
   role: "system",
-  content: <contents of prompt_system.txt>
+  content: <user system prompt (from settings), if set>
+           + <contents of prompt_system.txt>
            + "APPLY MODE: auto"
            + optional "CURRENT FLOW (Vibe Schema): ..."
 }
@@ -296,7 +307,7 @@ User types prompt
 ## Development Notes
 
 - **No jQuery**: All client modules use vanilla DOM APIs and the `fetch` API. jQuery is available in the Node-RED editor environment but is intentionally not used.
-- **Module communication**: Via `window.LLMPlugin` namespace (`ChatManager`, `UI`, `Importer`, `Configurator`).
+- **Module communication**: Via `window.LLMPlugin` namespace (`ChatManager`, `UI`, `Importer`, `Configurator`, `LLMJsonParser`).
 - **Vibe Schema**: The Configurator module provides bi-directional conversion. It is loaded first by `client.js` and required by `server.js`.
 - **Backward compatibility**: The importer auto-detects both Vibe Schema and raw Node-RED JSON. If an LLM outputs the old format, it still works.
 - **Adding a new endpoint**: Add the route in the *HTTP admin endpoints* section of `server.js`. Restart Node-RED to apply.
