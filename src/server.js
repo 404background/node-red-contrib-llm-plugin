@@ -83,18 +83,6 @@ function createLLMPluginServer(RED) {
     }
 
     // ------------------------------------------------------------------ //
-    //  Localhost-only middleware                                           //
-    // ------------------------------------------------------------------ //
-
-    function localhostOnly(req, res, next) {
-        const addr = req.socket && req.socket.remoteAddress;
-        if (addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1') {
-            return next();
-        }
-        return res.status(403).json({ error: 'Access denied: localhost only' });
-    }
-
-    // ------------------------------------------------------------------ //
     //  Ollama model discovery                                             //
     // ------------------------------------------------------------------ //
 
@@ -478,7 +466,7 @@ function createLLMPluginServer(RED) {
     //  HTTP admin endpoints                                               //
     // ------------------------------------------------------------------ //
 
-    RED.httpAdmin.post('/llm-plugin/generate', localhostOnly, async function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
         const { model, prompt, currentFlow } = req.body;
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
@@ -516,7 +504,7 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/agent-generate', localhostOnly, async function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/agent-generate', async function(req, res) {
         const { model, prompt, currentFlow } = req.body || {};
 
         if (!model || !prompt) {
@@ -584,7 +572,7 @@ function createLLMPluginServer(RED) {
         res.json(settings);
     });
 
-    RED.httpAdmin.post('/llm-plugin/settings', localhostOnly, function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/settings', function(req, res) {
         try {
             const body = req.body || {};
             // Whitelist: only persist known settings fields
@@ -646,7 +634,7 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/save-chat', localhostOnly, function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/save-chat', function(req, res) {
         try {
             const { chatId, chatData } = req.body;
             if (!chatId || !chatData) {
@@ -659,7 +647,7 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/delete-chat', localhostOnly, function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/delete-chat', function(req, res) {
         try {
             const { chatId, filename } = req.body || {};
             const chatsDir = path.join(logsDir, 'chats');
@@ -742,7 +730,7 @@ function createLLMPluginServer(RED) {
     });
 
     // --- Checkpoint endpoints ---
-    RED.httpAdmin.post('/llm-plugin/checkpoint/save', localhostOnly, function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/checkpoint/save', function(req, res) {
         try {
             const body = req.body || {};
             const chatId = body.chatId || null;
@@ -780,7 +768,7 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/client-log', localhostOnly, function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/client-log', function(req, res) {
         try {
             const body = req.body || {};
             writeClientEvent(body.level, body.event, body.message, body.meta);
