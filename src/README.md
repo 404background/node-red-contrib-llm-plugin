@@ -161,6 +161,7 @@ Small controller that binds to the settings form defined in `llm_plugin.html`.
 - Returns `{ load, save, updateVisibility }`.
 - Provider toggle: shows/hides Ollama URL vs OpenAI API key fields.
 - API key is never pre-filled; a masked placeholder is shown instead.
+- Max Prompt Length: configurable limit (100 - 100,000 characters) enforced server-side.
 
 ### vibe_ui.js
 
@@ -190,7 +191,7 @@ Node.js module loaded by `llm_plugin.js`. Exports `createLLMPluginServer(RED)`.
 
 | Section | Key functions |
 |---------|--------------|
-| Settings persistence | `getPluginSettings()`, `savePluginSettings()`, `maskApiKey()` |
+| Settings persistence | `getPluginSettings()`, `savePluginSettings()`, `maskApiKey()`, `redactSecrets()` |
 | Ollama model discovery | `listOllamaModels()` (CLI + HTTP), `listOllamaModelsFromApi()` |
 | Recent-model tracking | `saveRecentModel()`, `getRecentModels()` — file-based JSON |
 | Chat history persistence | `saveChatHistory()`, `loadAllChatHistories()` — per-chat JSON files |
@@ -219,9 +220,11 @@ Node.js module loaded by `llm_plugin.js`. Exports `createLLMPluginServer(RED)`.
 
 ### Security measures
 
+- **Authentication**: all endpoints are registered on `RED.httpAdmin`, which applies Node-RED's `adminAuth` middleware when configured. No plugin-level access control is added to avoid conflicting with Node-RED's built-in security model.
 - **API key**: never returned to the client; masked via `maskApiKey()`. POST whitelist prevents field injection.
-- **Path traversal**: `path.basename()` + equality check on file-serving routes.
-- **Error sanitisation**: OpenAI SDK errors wrapped in clean `Error` objects; only `.message` logged.
+- **Prompt length limit**: configurable `maxPromptLength` setting (default 10,000 characters) enforced server-side on both `/generate` and `/agent-generate`.
+- **Path traversal**: `path.basename()` + `startsWith()` containment check on file-serving and deletion routes.
+- **Error sanitisation**: `redactSecrets()` strips API keys, URLs, and IP addresses from all error messages and client logs before output.
 - **Credentials**: stripped from flow context before sending to the LLM.
 
 ### Prompt structure
@@ -261,19 +264,19 @@ User types prompt
       │  optionally calls UI.getCurrentFlow()
       │
       ▼
-  fetch POST /llm-plugin/generate or /llm-plugin/agent-generate  ──►  server.js
-      │                                     │
-      │                          Configurator.toIntermediate(flow)
-      │                                     │
-      │                               buildMessages(prompt, currentFlow)
-      │                              (system+user messages with APPLY MODE:auto)
-      │                                     │
-      │                         ┌───────────┴──────────┐
-      │                 Ollama chat adapter      OpenAI adapter
-      │                  (/api/chat HTTP)        (openai SDK)
-      │                         └───────────┬──────────┘
-      │                                     │
-      ◄─────── JSON { response: "…", elapsed, applyMode, agent? } ◄────┘
+  fetch POST /llm-plugin/generate  ──────────────────►  server.js
+  (or /llm-plugin/agent-generate)                           │
+      │                                          Configurator.toIntermediate(flow)
+      │                                                     │
+      │                                               buildMessages(prompt, currentFlow)
+      │                                              (system+user messages with APPLY MODE:auto)
+      │                                                     │
+      │                                         ┌───────────┴──────────┐
+      │                                 Ollama chat adapter      OpenAI adapter
+      │                                  (/api/chat HTTP)        (openai SDK)
+      │                                         └───────────┬──────────┘
+      │                                                     │
+      ◄──────── JSON { response, elapsed, applyMode, agent? }
       │
       ▼
   ChatManager.addMessage(response, false)
@@ -281,9 +284,9 @@ User types prompt
       │  calls UI.addMessageToUI(response, …)
       │     └── Importer.extractFlowNodes(response)
       │            → detects Vibe Schema → Configurator.toNodeRed()
-        │            → or parses raw JSON object/array from mixed text (backward compatible)
+      │            → or parses raw JSON object/array from mixed text (backward compatible)
       │            → shows "Import Flow" button if nodes found
-        │            → Agent mode auto-imports extracted flow
+      │            → Agent mode auto-imports extracted flow
       ▼
   Chat area updated
 ```
