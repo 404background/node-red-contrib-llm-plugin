@@ -161,7 +161,8 @@ Rendering and utility layer.
 - **`formatMessage(text)`** — Uses `marked.parse()` when available; otherwise falls back to a simple regex-based Markdown→HTML converter.
 - **`addMessageToUI(content, isUser, showActions)`** — Creates the message DOM element, attaches retry/import buttons.
 - **`retryLastUserMessage()`** — Finds the last user message and re-triggers generation.
-- **`getCurrentFlow()`** — Exports all nodes on the **active tab** via `RED.nodes.filterNodes({z: activeWorkspace})`.  Uses `RED.nodes.createExportableNodeSet` to strip credentials. Falls back to manual cloning on older Node-RED versions.
+- **`getFlowsByIds(flowIds)`** — Exports all nodes on the given workspace tabs (deduped) plus their referenced config nodes (BFS, e.g. `ui_button` → `ui-group` → `ui-tab`). Uses `RED.nodes.createExportableNodeSet` to strip credentials; falls back to manual cloning on older Node-RED versions.
+- **`getCurrentFlow()`** — Convenience wrapper that calls `getFlowsByIds([RED.workspaces.active()])`.
 
 ### settings.js
 

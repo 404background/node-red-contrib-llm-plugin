@@ -353,63 +353,9 @@
     }
 
     UI.getCurrentFlow = function() {
-        try {
-            if (window.RED && RED.nodes && RED.workspaces) {
-                var activeWorkspace = RED.workspaces.active();
-                if (!activeWorkspace) return null;
-
-                var nodes = RED.nodes.filterNodes({z: activeWorkspace});
-                if (!nodes || nodes.length === 0) return null;
-
-                // Collect config nodes referenced by workspace nodes.
-                // Dashboard nodes (ui_button, etc.) reference config nodes
-                // (ui-group, ui-tab, ui-base) that live outside any workspace.
-                // BFS follows transitive references (e.g. ui-group → ui-tab).
-                var configNodes = [];
-                var allConfigById = {};
-                if (RED.nodes.eachConfig) {
-                    RED.nodes.eachConfig(function(cn) {
-                        allConfigById[cn.id] = cn;
-                    });
-                }
-                if (Object.keys(allConfigById).length > 0) {
-                    var collected = {};
-                    var queue = nodes.slice();
-                    while (queue.length > 0) {
-                        var cur = queue.shift();
-                        if (!cur) continue;
-                        Object.keys(cur).forEach(function(key) {
-                            if (typeof cur[key] !== 'string') return;
-                            var cn = allConfigById[cur[key]];
-                            if (cn && !collected[cn.id]) {
-                                collected[cn.id] = cn;
-                                queue.push(cn);
-                            }
-                        });
-                    }
-                    configNodes = Object.keys(collected).map(function(id) { return collected[id]; });
-                }
-
-                var allNodes = nodes.concat(configNodes);
-
-                if (typeof RED.nodes.createExportableNodeSet === 'function') {
-                    return RED.nodes.createExportableNodeSet(allNodes);
-                }
-
-                // Fallback for older Node-RED versions
-                var exportArray = [];
-                allNodes.forEach(function(node) {
-                    var nodeCopy = Object.assign({}, node);
-                    delete nodeCopy._def;
-                    delete nodeCopy.credentials;
-                    exportArray.push(nodeCopy);
-                });
-                return exportArray;
-            }
-        } catch (error) {
-            console.error('Error getting current flow:', error);
-        }
-        return null;
+        if (!window.RED || !RED.workspaces) return null;
+        var active = RED.workspaces.active();
+        return active ? UI.getFlowsByIds([active]) : null;
     };
 
     window.LLMPlugin = window.LLMPlugin || {};

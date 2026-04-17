@@ -406,6 +406,11 @@
 .flow-selector-current {
     font-weight: 600;
 }
+.flow-selector-current span::after {
+    content: '  (current)';
+    color: #666;
+    font-weight: 400;
+}
 .flow-selector-empty {
     padding: 6px 8px;
     color: #999;

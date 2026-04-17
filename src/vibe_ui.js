@@ -219,24 +219,20 @@
         // --- Flow selector ---
         function listWorkspaces() {
             var out = [];
-            try {
-                if (window.RED && RED.nodes && typeof RED.nodes.eachWorkspace === 'function') {
-                    RED.nodes.eachWorkspace(function(ws) {
-                        if (ws && ws.id && ws.type === 'tab') {
-                            out.push({ id: ws.id, label: ws.label || ws.id });
-                        }
-                    });
-                }
-            } catch (e) { /* ignore */ }
+            if (window.RED && RED.nodes && typeof RED.nodes.eachWorkspace === 'function') {
+                RED.nodes.eachWorkspace(function(ws) {
+                    if (ws && ws.id && ws.type === 'tab') {
+                        out.push({ id: ws.id, label: ws.label || ws.id });
+                    }
+                });
+            }
             return out;
         }
 
         function getActiveWorkspaceId() {
-            try {
-                if (window.RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
-                    return RED.workspaces.active() || null;
-                }
-            } catch (e) { /* ignore */ }
+            if (window.RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
+                return RED.workspaces.active() || null;
+            }
             return null;
         }
 
@@ -249,8 +245,7 @@
             }
         }
 
-        function updateFlowLabel() {
-            ensureDefaultSelection();
+        function updateFlowLabel(workspaces) {
             var ids = Object.keys(selectedFlowIds);
             var active = getActiveWorkspaceId();
             if (ids.length === 0) {
@@ -261,9 +256,9 @@
                 flowLabel.textContent = 'Current Open Flow';
                 return;
             }
-            var workspaces = listWorkspaces();
+            var ws = workspaces || listWorkspaces();
             var byId = {};
-            workspaces.forEach(function(ws) { byId[ws.id] = ws.label; });
+            ws.forEach(function(w) { byId[w.id] = w.label; });
             var names = ids.map(function(id) { return byId[id] || id; });
             if (names.length <= 2) {
                 flowLabel.textContent = names.join(', ');
@@ -273,7 +268,6 @@
         }
 
         function renderFlowPanel() {
-            ensureDefaultSelection();
             while (flowPanel.firstChild) flowPanel.removeChild(flowPanel.firstChild);
 
             var workspaces = listWorkspaces();
@@ -288,14 +282,13 @@
             var active = getActiveWorkspaceId();
             workspaces.forEach(function(ws) {
                 var row = buildFlowOption({
-                    id: ws.id,
-                    label: ws.label + (ws.id === active ? '  (current)' : ''),
+                    label: ws.label,
                     checked: !!selectedFlowIds[ws.id],
                     isActive: ws.id === active,
                     onToggle: function(checked) {
                         if (checked) selectedFlowIds[ws.id] = true;
                         else delete selectedFlowIds[ws.id];
-                        updateFlowLabel();
+                        updateFlowLabel(workspaces);
                     }
                 });
                 flowPanel.appendChild(row);
@@ -338,16 +331,25 @@
             }
         }
 
+        // Listeners attached only while the panel is open, so they don't
+        // run on every chat-area scroll during LLM streaming.
+        var repositionOnScroll = function() { if (isPanelOpen()) positionPanel(); };
+        var repositionOnResize = function() { if (isPanelOpen()) positionPanel(); };
+
         function openFlowPanel() {
             renderFlowPanel();
             flowPanel.classList.add('is-open');
             positionPanel();
             flowToggleBtn.setAttribute('aria-expanded', 'true');
+            window.addEventListener('resize', repositionOnResize);
+            window.addEventListener('scroll', repositionOnScroll, true);
         }
 
         function closeFlowPanel() {
             flowPanel.classList.remove('is-open');
             flowToggleBtn.setAttribute('aria-expanded', 'false');
+            window.removeEventListener('resize', repositionOnResize);
+            window.removeEventListener('scroll', repositionOnScroll, true);
         }
 
         function initFlowSelector() {
@@ -363,22 +365,20 @@
                     closeFlowPanel();
                 }
             });
-            window.addEventListener('resize', function() { if (isPanelOpen()) positionPanel(); });
-            window.addEventListener('scroll', function() { if (isPanelOpen()) positionPanel(); }, true);
             if (window.RED && RED.events && typeof RED.events.on === 'function') {
                 RED.events.on('workspace:change', function() {
                     ensureDefaultSelection();
                     updateFlowLabel();
                 });
                 RED.events.on('flows:change', function() {
+                    var workspaces = listWorkspaces();
                     if (isPanelOpen()) renderFlowPanel();
-                    updateFlowLabel();
+                    updateFlowLabel(workspaces);
                 });
             }
         }
 
         function getSelectedFlowIds() {
-            ensureDefaultSelection();
             return Object.keys(selectedFlowIds);
         }
 
