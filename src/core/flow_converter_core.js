@@ -39,20 +39,6 @@
     // canvas (no x, y, wires).  Detect them so we can handle them specially.
     var CONFIG_TYPE_SUFFIX = '-config';
 
-    // Well-known config node types that do NOT end in "-config".
-    // Examples: mqtt-broker, dashboard ui-group/ui-tab/ui-base, serial-port, etc.
-    // This list is intentionally conservative; runtime detection via
-    // RED.nodes.getType() (in importer.js) covers the rest.
-    var KNOWN_CONFIG_TYPES = {
-        'mqtt-broker': true,
-        'serial-port': true,
-        'websocket-listener': true,
-        'websocket-client': true,
-        'http proxy': true,
-        'ui-group': true, 'ui-tab': true, 'ui-base': true, 'ui-page': true, 'ui-theme': true,
-        'ui_group': true, 'ui_tab': true, 'ui_base': true, 'ui_page': true, 'ui_theme': true
-    };
-
     // Well-known node types that have 0 input ports (source-only / event nodes).
     // Connections targeting these types are invalid and should be dropped.
     var NO_INPUT_TYPES = {
@@ -81,15 +67,16 @@
 
     function isConfigType(type) {
         if (typeof type !== 'string') return false;
-        // Runtime detection first (covers all installed nodes)
+        // Runtime detection first (covers every installed node — core,
+        // community, custom — via RED.nodes.getType().category).
         if (_runtimeGetType) {
             var def = _runtimeGetType(type);
             if (def && def.category === 'config') return true;
         }
-        // Static fallback (server-side / no RED available)
+        // Static fallback: the "-config" suffix is the Node-RED convention
+        // for config node types (e.g. venv-config, mongodb-config).
         if (type.length > CONFIG_TYPE_SUFFIX.length &&
             type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX) return true;
-        if (KNOWN_CONFIG_TYPES[type] === true) return true;
         return false;
     }
 
