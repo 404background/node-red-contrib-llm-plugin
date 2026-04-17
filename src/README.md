@@ -203,7 +203,6 @@ Node.js module loaded by `llm_plugin.js`. Exports `createLLMPluginServer(RED)`.
 |---------|--------------|
 | Settings persistence | `getPluginSettings()`, `savePluginSettings()`, `maskApiKey()`, `redactSecrets()` |
 | Ollama model discovery | `listOllamaModels()` (CLI + HTTP), `listOllamaModelsFromApi()` |
-| Recent-model tracking | `saveRecentModel()`, `getRecentModels()` — file-based JSON |
 | Chat history persistence | `saveChatHistory()`, `loadAllChatHistories()` — per-chat JSON files |
 | Prompt construction | `buildFlowContextDescription()`, `buildMessages()` — loads `prompt_system.txt`, uses Configurator |
 | LLM adapters | `generateWithOllamaChat()` (`/api/chat`), `generateWithOpenAI()` (SDK) |
@@ -223,7 +222,6 @@ Node.js module loaded by `llm_plugin.js`. Exports `createLLMPluginServer(RED)`.
 | POST | `/llm-plugin/delete-chat` | Delete by filename or ID |
 | POST | `/llm-plugin/checkpoint/save` | Save flow snapshot for restore |
 | GET | `/llm-plugin/checkpoint/:id` | Load saved checkpoint |
-| GET | `/llm-plugin/recent-models` | Get recently used model names |
 | POST | `/llm-plugin/client-log` | Write structured client event to server log |
 | GET | `/llm-plugin_styles.css` | Serve plugin stylesheet |
 | GET | `/llm-plugin/src/*` | Serve client JS modules |

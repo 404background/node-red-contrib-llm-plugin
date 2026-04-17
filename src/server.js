@@ -143,41 +143,6 @@ function createLLMPluginServer(RED) {
     }
 
     // ------------------------------------------------------------------ //
-    //  Recent-model tracking                                              //
-    // ------------------------------------------------------------------ //
-
-    function saveRecentModel(model) {
-        try {
-            const modelsFile = path.join(logsDir, 'recent-models.json');
-            let recentModels = [];
-            if (fs.existsSync(modelsFile)) {
-                const content = fs.readFileSync(modelsFile, 'utf8');
-                recentModels = JSON.parse(content);
-            }
-            recentModels = recentModels.filter(m => m !== model);
-            recentModels.unshift(model);
-            recentModels = recentModels.slice(0, 10);
-            fs.writeFileSync(modelsFile, JSON.stringify(recentModels, null, 2));
-        } catch (error) {
-            console.error("[LLM Plugin] Error saving recent model:", error);
-        }
-    }
-
-    // Utility function to get recent models
-    function getRecentModels() {
-        try {
-            const modelsFile = path.join(logsDir, 'recent-models.json');
-            if (fs.existsSync(modelsFile)) {
-                const content = fs.readFileSync(modelsFile, 'utf8');
-                return JSON.parse(content);
-            }
-        } catch (error) {
-            console.error("[LLM Plugin] Error reading recent models:", error);
-        }
-        return [];
-    }
-
-    // ------------------------------------------------------------------ //
     //  Chat history persistence                                           //
     // ------------------------------------------------------------------ //
 
@@ -480,7 +445,6 @@ function createLLMPluginServer(RED) {
         const provider = settings.provider || 'ollama';
 
         const enhancedMessages = buildMessages(prompt, currentFlow);
-        saveRecentModel(model);
         const genStart = Date.now();
 
         try {
@@ -517,7 +481,6 @@ function createLLMPluginServer(RED) {
             return res.status(400).json({ error: 'Prompt exceeds maximum length (' + maxLen + ' characters)' });
         }
         const provider = settings.provider || 'ollama';
-        saveRecentModel(model);
 
         try {
             const enhancedMessages = buildMessages(prompt, currentFlow);
@@ -716,16 +679,6 @@ function createLLMPluginServer(RED) {
         } catch (error) {
             console.error('[LLM Plugin] Error deleting chat file:', error);
             return res.status(500).json({ error: redactSecrets(error.message) });
-        }
-    });
-
-    // --- Static asset endpoints ---
-    RED.httpAdmin.get('/llm-plugin/recent-models', function(req, res) {
-        try {
-            const models = getRecentModels();
-            res.json({ models: models });
-        } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
 

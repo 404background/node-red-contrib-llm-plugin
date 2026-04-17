@@ -20,9 +20,12 @@
             '</div>' +
             '<div class="llm-plugin-chat" id="llm-plugin-chat"></div>' +
             '<div class="llm-plugin-input">' +
-                '<div class="flow-context-option">' +
-                    '<input type="checkbox" id="llm-plugin-include-flow" checked>' +
-                    '<label for="llm-plugin-include-flow"> Send current flow</label>' +
+                '<div class="flow-selector" id="llm-plugin-flow-selector">' +
+                    '<button type="button" class="flow-selector-toggle" id="llm-plugin-flow-toggle" aria-haspopup="listbox" aria-expanded="false">' +
+                        '<span class="flow-selector-label" id="llm-plugin-flow-label">Current Open Flow</span>' +
+                        '<i class="fa fa-caret-down flow-selector-caret" aria-hidden="true"></i>' +
+                    '</button>' +
+                    '<div class="flow-selector-panel" id="llm-plugin-flow-panel" role="listbox"></div>' +
                 '</div>' +
                 '<div class="agent-mode-row">' +
                     '<label for="llm-plugin-mode">Mode</label>' +
@@ -31,8 +34,7 @@
                         '<option value="agent">Agent</option>' +
                     '</select>' +
                 '</div>' +
-                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)">' +
-                '<div class="model-suggestions" id="llm-plugin-model-suggestions"></div>' +
+                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">' +
                 '<div class="prompt-input-group">' +
                     '<textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>' +
                     '<button id="llm-plugin-generate" class="generate-btn">Send</button>' +
@@ -86,7 +88,10 @@
         var modelInput        = document.getElementById('llm-plugin-model');
         var promptInput       = document.getElementById('llm-plugin-prompt');
         var chatArea          = document.getElementById('llm-plugin-chat');
-        var flowCheckbox      = document.getElementById('llm-plugin-include-flow');
+        var flowSelector      = document.getElementById('llm-plugin-flow-selector');
+        var flowToggleBtn     = document.getElementById('llm-plugin-flow-toggle');
+        var flowPanel         = document.getElementById('llm-plugin-flow-panel');
+        var flowLabel         = document.getElementById('llm-plugin-flow-label');
         var modeSelect        = document.getElementById('llm-plugin-mode');
         var settingsOverlay   = document.getElementById('llm-plugin-settings-overlay');
         var settingsDialog    = document.getElementById('llm-plugin-settings-dialog');
@@ -98,6 +103,11 @@
         var cachedSettings = null;
         var settingsSaving = false;
         var lastFocusedBeforeSettings = null;
+        // Selected workspace IDs to send as flow context. Initialized lazily to
+        // the active tab on first use so the "Current Open Flow" default works
+        // even before RED is fully ready.
+        var selectedFlowIds = {};
+        var selectionInitialized = false;
 
         // --- Chat history bootstrap ---
         if (window.LLMPlugin && LLMPlugin.ChatManager) {
@@ -179,7 +189,7 @@
 
         // --- Initial data fetch ---
         fetchSettings();
-        loadRecentModels();
+        initFlowSelector();
 
         // --- Generate / Stop toggle (single handler) ---
         generateBtn.addEventListener('click', function() {
@@ -206,24 +216,170 @@
             generateBtn.textContent = 'Send';
         }
 
-        // --- Model suggestions ---
-        function loadRecentModels() {
-            fetch('llm-plugin/recent-models')
-                .then(function(res) { return res.json(); })
-                .then(function(data) {
-                    if (data.models && data.models.length > 0) {
-                        var container = document.getElementById('llm-plugin-model-suggestions');
-                        while (container.firstChild) container.removeChild(container.firstChild);
-                        data.models.forEach(function(model) {
-                            var chip = document.createElement('span');
-                            chip.className = 'model-chip';
-                            chip.textContent = model;
-                            chip.addEventListener('click', function() { modelInput.value = model; });
-                            container.appendChild(chip);
-                        });
+        // --- Flow selector ---
+        function listWorkspaces() {
+            var out = [];
+            try {
+                if (window.RED && RED.nodes && typeof RED.nodes.eachWorkspace === 'function') {
+                    RED.nodes.eachWorkspace(function(ws) {
+                        if (ws && ws.id && ws.type === 'tab') {
+                            out.push({ id: ws.id, label: ws.label || ws.id });
+                        }
+                    });
+                }
+            } catch (e) { /* ignore */ }
+            return out;
+        }
+
+        function getActiveWorkspaceId() {
+            try {
+                if (window.RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
+                    return RED.workspaces.active() || null;
+                }
+            } catch (e) { /* ignore */ }
+            return null;
+        }
+
+        function ensureDefaultSelection() {
+            if (selectionInitialized) return;
+            var active = getActiveWorkspaceId();
+            if (active) {
+                selectedFlowIds[active] = true;
+                selectionInitialized = true;
+            }
+        }
+
+        function updateFlowLabel() {
+            ensureDefaultSelection();
+            var ids = Object.keys(selectedFlowIds);
+            var active = getActiveWorkspaceId();
+            if (ids.length === 0) {
+                flowLabel.textContent = 'No flow context';
+                return;
+            }
+            if (ids.length === 1 && ids[0] === active) {
+                flowLabel.textContent = 'Current Open Flow';
+                return;
+            }
+            var workspaces = listWorkspaces();
+            var byId = {};
+            workspaces.forEach(function(ws) { byId[ws.id] = ws.label; });
+            var names = ids.map(function(id) { return byId[id] || id; });
+            if (names.length <= 2) {
+                flowLabel.textContent = names.join(', ');
+            } else {
+                flowLabel.textContent = names[0] + ' +' + (names.length - 1);
+            }
+        }
+
+        function renderFlowPanel() {
+            ensureDefaultSelection();
+            while (flowPanel.firstChild) flowPanel.removeChild(flowPanel.firstChild);
+
+            var workspaces = listWorkspaces();
+            if (workspaces.length === 0) {
+                var empty = document.createElement('div');
+                empty.className = 'flow-selector-empty';
+                empty.textContent = 'No flows available';
+                flowPanel.appendChild(empty);
+                return;
+            }
+
+            var active = getActiveWorkspaceId();
+            workspaces.forEach(function(ws) {
+                var row = buildFlowOption({
+                    id: ws.id,
+                    label: ws.label + (ws.id === active ? '  (current)' : ''),
+                    checked: !!selectedFlowIds[ws.id],
+                    isActive: ws.id === active,
+                    onToggle: function(checked) {
+                        if (checked) selectedFlowIds[ws.id] = true;
+                        else delete selectedFlowIds[ws.id];
+                        updateFlowLabel();
                     }
-                })
-                .catch(function() {});
+                });
+                flowPanel.appendChild(row);
+            });
+        }
+
+        function buildFlowOption(opts) {
+            var row = document.createElement('label');
+            row.className = 'flow-selector-option';
+            if (opts.isActive) row.classList.add('flow-selector-current');
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!opts.checked;
+            cb.addEventListener('change', function() { opts.onToggle(cb.checked); });
+            var span = document.createElement('span');
+            span.textContent = opts.label;
+            row.appendChild(cb);
+            row.appendChild(span);
+            return row;
+        }
+
+        function isPanelOpen() {
+            return flowPanel.classList.contains('is-open');
+        }
+
+        // Position the panel using fixed coordinates so it escapes any
+        // overflow:hidden ancestor from Node-RED's sidebar/flex layout.
+        function positionPanel() {
+            var rect = flowToggleBtn.getBoundingClientRect();
+            var panelHeight = flowPanel.offsetHeight || 220;
+            var spaceAbove = rect.top;
+            var spaceBelow = window.innerHeight - rect.bottom;
+            var openUp = spaceBelow < panelHeight && spaceAbove > spaceBelow;
+            flowPanel.style.left = rect.left + 'px';
+            flowPanel.style.width = rect.width + 'px';
+            if (openUp) {
+                flowPanel.style.top = Math.max(4, rect.top - panelHeight - 2) + 'px';
+            } else {
+                flowPanel.style.top = (rect.bottom + 2) + 'px';
+            }
+        }
+
+        function openFlowPanel() {
+            renderFlowPanel();
+            flowPanel.classList.add('is-open');
+            positionPanel();
+            flowToggleBtn.setAttribute('aria-expanded', 'true');
+        }
+
+        function closeFlowPanel() {
+            flowPanel.classList.remove('is-open');
+            flowToggleBtn.setAttribute('aria-expanded', 'false');
+        }
+
+        function initFlowSelector() {
+            ensureDefaultSelection();
+            updateFlowLabel();
+            flowToggleBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (isPanelOpen()) closeFlowPanel(); else openFlowPanel();
+            });
+            flowPanel.addEventListener('click', function(e) { e.stopPropagation(); });
+            document.addEventListener('click', function(e) {
+                if (isPanelOpen() && !flowSelector.contains(e.target) && !flowPanel.contains(e.target)) {
+                    closeFlowPanel();
+                }
+            });
+            window.addEventListener('resize', function() { if (isPanelOpen()) positionPanel(); });
+            window.addEventListener('scroll', function() { if (isPanelOpen()) positionPanel(); }, true);
+            if (window.RED && RED.events && typeof RED.events.on === 'function') {
+                RED.events.on('workspace:change', function() {
+                    ensureDefaultSelection();
+                    updateFlowLabel();
+                });
+                RED.events.on('flows:change', function() {
+                    if (isPanelOpen()) renderFlowPanel();
+                    updateFlowLabel();
+                });
+            }
+        }
+
+        function getSelectedFlowIds() {
+            ensureDefaultSelection();
+            return Object.keys(selectedFlowIds);
         }
 
         // --- Core generation flow ---
@@ -248,9 +404,12 @@
             generateBtn.classList.add('stop-btn');
             generateBtn.innerHTML = '<i class="fa fa-stop" aria-hidden="true"></i>';
 
-            var currentFlow = flowCheckbox.checked
-                ? (window.LLMPlugin && LLMPlugin.UI ? LLMPlugin.UI.getCurrentFlow() : null)
-                : null;
+            var flowIdsToSend = getSelectedFlowIds();
+            var currentFlow = null;
+            if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI &&
+                typeof LLMPlugin.UI.getFlowsByIds === 'function') {
+                currentFlow = LLMPlugin.UI.getFlowsByIds(flowIdsToSend);
+            }
 
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();

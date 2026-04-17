@@ -24,13 +24,13 @@ Restart Node-RED after install.
 - Ollama: set URL (default `http://localhost:11434`)
 - OpenAI: set API key
 3. Enter model and prompt.
-4. Enable **Send current flow** to include active-tab context.
+4. Pick which flow tabs to include via the **flow selector** (defaults to *Current Open Flow*; check additional tabs in the dropdown to send them too).
 5. Use **Agent** mode for auto-apply, or **Ask** mode for manual import.
 6. Apply strategy is decided by the model (`applyMode`) and enforced by the importer (safe fallback: `edit-only`).
 
 ## Recommended Usage
 
-For custom/community nodes, keep a small sample flow in the active tab and enable **Send current flow**.
+For custom/community nodes, keep a small sample flow in the active tab so it is sent as *Current Open Flow*.
 The model then follows real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
 
 ## Features

@@ -291,6 +291,67 @@
         }
     };
 
+    UI.getFlowsByIds = function(flowIds) {
+        try {
+            if (!window.RED || !RED.nodes || typeof RED.nodes.filterNodes !== 'function') return null;
+            var ids = Array.isArray(flowIds) ? flowIds.filter(Boolean) : [];
+            if (ids.length === 0) return null;
+
+            var seenIds = {};
+            var nodes = [];
+            ids.forEach(function(zid) {
+                var n = RED.nodes.filterNodes({z: zid}) || [];
+                n.forEach(function(node) {
+                    if (node && node.id && !seenIds[node.id]) {
+                        seenIds[node.id] = true;
+                        nodes.push(node);
+                    }
+                });
+            });
+            if (nodes.length === 0) return null;
+
+            var configNodes = collectReferencedConfigs(nodes, seenIds);
+            var allNodes = nodes.concat(configNodes);
+
+            if (typeof RED.nodes.createExportableNodeSet === 'function') {
+                return RED.nodes.createExportableNodeSet(allNodes);
+            }
+            return allNodes.map(function(node) {
+                var copy = Object.assign({}, node);
+                delete copy._def;
+                delete copy.credentials;
+                return copy;
+            });
+        } catch (error) {
+            console.error('Error getting flows by ids:', error);
+            return null;
+        }
+    };
+
+    function collectReferencedConfigs(nodes, seenIds) {
+        var configNodes = [];
+        var allConfigById = {};
+        if (RED.nodes.eachConfig) {
+            RED.nodes.eachConfig(function(cn) { allConfigById[cn.id] = cn; });
+        }
+        if (Object.keys(allConfigById).length === 0) return configNodes;
+        var collected = {};
+        var queue = nodes.slice();
+        while (queue.length > 0) {
+            var cur = queue.shift();
+            if (!cur) continue;
+            Object.keys(cur).forEach(function(key) {
+                if (typeof cur[key] !== 'string') return;
+                var cn = allConfigById[cur[key]];
+                if (cn && !collected[cn.id] && !(seenIds && seenIds[cn.id])) {
+                    collected[cn.id] = cn;
+                    queue.push(cn);
+                }
+            });
+        }
+        return Object.keys(collected).map(function(id) { return collected[id]; });
+    }
+
     UI.getCurrentFlow = function() {
         try {
             if (window.RED && RED.nodes && RED.workspaces) {
