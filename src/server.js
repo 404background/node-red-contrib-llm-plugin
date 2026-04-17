@@ -198,7 +198,8 @@ function createLLMPluginServer(RED) {
     // Converts the Node-RED flow to Vibe Schema (intermediate JSON) so the LLM
     // sees a clean, alias-based representation without random IDs or coordinates.
     function buildFlowContextDescription(flow) {
-        if (!flow) return "No current flow context available.";
+        const empty = { header: 'CURRENT FLOW (Vibe Schema):', body: 'No current flow context available.' };
+        if (!flow) return empty;
 
         // Normalize input
         let nodes = [];
@@ -208,7 +209,7 @@ function createLLMPluginServer(RED) {
             nodes = (flow.nodes || []);
         }
 
-        if (!nodes || nodes.length === 0) return "No current flow context available.";
+        if (!nodes || nodes.length === 0) return empty;
 
         // Defensive credential stripping
         nodes = nodes.map(n => {
@@ -217,9 +218,72 @@ function createLLMPluginServer(RED) {
             return out;
         });
 
-        // Convert to Vibe Schema for the LLM
-        const intermediate = Configurator.toIntermediate(nodes);
-        return JSON.stringify(intermediate, null, 2);
+        // Index tab labels and split nodes by category.
+        const tabLabelById = {};
+        const canvasNodes = [];
+        const configById = {};
+        for (const n of nodes) {
+            if (n.type === 'tab') {
+                tabLabelById[n.id] = n.label || n.id;
+            } else if (n.z) {
+                canvasNodes.push(n);
+            } else {
+                configById[n.id] = n;
+            }
+        }
+
+        // Group canvas nodes by their workspace (z).
+        const byTab = {};
+        for (const n of canvasNodes) {
+            (byTab[n.z] = byTab[n.z] || []).push(n);
+        }
+        const tabIds = Object.keys(byTab);
+
+        // Single-flow case: keep the original single-schema output for prompt
+        // continuity (existing prompt template references "CURRENT FLOW").
+        if (tabIds.length <= 1) {
+            return {
+                header: 'CURRENT FLOW (Vibe Schema):',
+                body: JSON.stringify(Configurator.toIntermediate(nodes), null, 2)
+            };
+        }
+
+        // Multi-flow case: emit an object keyed by tab label so the LLM
+        // can tell which nodes belong to which flow tab. Each tab's schema
+        // includes only the config nodes it actually references (BFS over
+        // string-valued props), so unrelated configs don't leak.
+        const result = {};
+        for (const z of tabIds) {
+            const flowNodes = byTab[z];
+            const referencedConfigs = collectReferencedConfigsServer(flowNodes, configById);
+            const label = tabLabelById[z] || z;
+            const key = result[label] === undefined ? label : (label + ' (' + z + ')');
+            result[key] = Configurator.toIntermediate(flowNodes.concat(referencedConfigs));
+        }
+        return {
+            header: 'CURRENT FLOWS (Vibe Schema, keyed by tab name — each entry is one flow tab):',
+            body: JSON.stringify(result, null, 2)
+        };
+    }
+
+    function collectReferencedConfigsServer(flowNodes, configById) {
+        if (!configById || Object.keys(configById).length === 0) return [];
+        const collected = {};
+        const queue = flowNodes.slice();
+        while (queue.length > 0) {
+            const cur = queue.shift();
+            if (!cur) continue;
+            for (const key of Object.keys(cur)) {
+                const v = cur[key];
+                if (typeof v !== 'string') continue;
+                const cn = configById[v];
+                if (cn && !collected[cn.id]) {
+                    collected[cn.id] = cn;
+                    queue.push(cn);
+                }
+            }
+        }
+        return Object.values(collected);
     }
 
     // Build the system prompt.
@@ -258,8 +322,9 @@ function createLLMPluginServer(RED) {
         system += '- Include your choice as top-level JSON field: "applyMode".\n\n';
 
         if (flowContext) {
-            system += "CURRENT FLOW (Vibe Schema):\n";
-            system += buildFlowContextDescription(flowContext) + "\n\n";
+            const ctx = buildFlowContextDescription(flowContext);
+            system += ctx.header + "\n";
+            system += ctx.body + "\n\n";
         }
 
         return [

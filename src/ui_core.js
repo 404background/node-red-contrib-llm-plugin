@@ -299,6 +299,17 @@
 
             var seenIds = {};
             var nodes = [];
+            // Include tab definition nodes so the server can resolve
+            // flow names when grouping multi-flow context for the LLM.
+            if (typeof RED.nodes.workspace === 'function') {
+                ids.forEach(function(zid) {
+                    var ws = RED.nodes.workspace(zid);
+                    if (ws && ws.id && !seenIds[ws.id]) {
+                        seenIds[ws.id] = true;
+                        nodes.push(ws);
+                    }
+                });
+            }
             ids.forEach(function(zid) {
                 var n = RED.nodes.filterNodes({z: zid}) || [];
                 n.forEach(function(node) {
