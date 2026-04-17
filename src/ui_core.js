@@ -222,14 +222,17 @@
 
                         LLMPlugin.Importer.importFlowFromMessage(content, {
                             chatId: chatId,
-                            checkpointLabel: 'pre-import-' + new Date().toISOString(),
                             mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
                             applyMode: selectedApplyMode
                         })
                         .then(function(result) {
                             if (!result || !result.ok) return;
-                            // Restore should target the flow state at this chat step (post-import snapshot).
-                            var checkpointId = result.postCheckpointId || result.checkpointId;
+                            // Restore targets the pre-send snapshot saved by
+                            // ChatManager.savePreSendCheckpoint when this message
+                            // was dispatched; no post-apply checkpoint exists.
+                            var checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.preSendCheckpointId
+                                ? messageMeta.meta.preSendCheckpointId
+                                : null;
                             if (checkpointId) {
                                 flowActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
                                 flowActions.appendChild(createRestoreCheckpointButton(checkpointId));

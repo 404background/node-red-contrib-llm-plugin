@@ -127,6 +127,36 @@
         return chat ? (chat.baselineCheckpointId || null) : null;
     };
 
+    /**
+     * Snapshot the current flow as a Restore Checkpoint at chat-send time.
+     * Returns a promise resolving to the checkpoint ID (or null on failure).
+     * The ID is attached to the upcoming assistant message so the per-message
+     * Restore button can rewind to the pre-send state without needing a
+     * separate post-apply checkpoint.
+     */
+    ChatManager.savePreSendCheckpoint = function(chatId) {
+        var id = chatId || ChatManager.getCurrentChatId();
+        if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) {
+            return Promise.resolve(null);
+        }
+        var flow = LLMPlugin.UI.getCurrentFlow();
+        if (!Array.isArray(flow) || flow.length === 0) return Promise.resolve(null);
+
+        return fetch('llm-plugin/checkpoint/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chatId: id,
+                label: 'pre-send-' + new Date().toISOString(),
+                flow: flow,
+                meta: { source: 'chat-send' }
+            })
+        })
+        .then(function(res) { return res.json(); })
+        .then(function(data) { return (data && data.checkpointId) || null; })
+        .catch(function() { return null; });
+    };
+
     ChatManager.saveChatToServer = function(chatId) {
         var chat = chatHistory[chatId];
         if (chat) {

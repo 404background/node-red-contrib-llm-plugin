@@ -980,18 +980,13 @@
                 });
             }
 
-            // Save pre-import checkpoint
-            var checkpointId = null;
+            // Track existing IDs for downstream edit-only/patch-only checks.
+            // Checkpoints are saved at chat-send time by ChatManager.savePreSendCheckpoint,
+            // not here — the import path no longer produces its own checkpoints.
             var beforeIdSet = new Set();
             (beforeFlow || []).forEach(function(n) {
                 if (n && n.id) beforeIdSet.add(n.id);
             });
-            checkpointId = await saveCheckpoint(
-                options.chatId || null,
-                options.checkpointLabel || 'pre-import',
-                beforeFlow,
-                { source: 'plugin-import' }
-            );
 
             // Build type+name lookup from live editor state
             var existingIds = new Set();
@@ -1082,8 +1077,18 @@
                     // match; skip any existing IDs already claimed by the
                     // pre-pass or a prior proposal.
                     if (!aliasId) {
-                        var fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
-                        if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
+                        // New-node signal: alias ends with _N and stripping
+                        // that suffix yields an existing exact alias. Treat
+                        // as new rather than letting loose/fuzzy replace the
+                        // existing node (common when the LLM proposes a
+                        // second inject alongside an existing inject_trigger).
+                        var stripped = nn._llmAlias.replace(/_\d+$/, '');
+                        var isNewNodeSignal = (stripped !== nn._llmAlias) &&
+                            lookup.aliasToId && !!lookup.aliasToId[stripped];
+                        if (!isNewNodeSignal) {
+                            var fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
+                            if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
+                        }
                     }
                     if (aliasId) {
                         var byAlias = RED.nodes.node(aliasId);
@@ -1224,12 +1229,12 @@
                 }).length;
                 if (matchedCount === 0) {
                     postTerminalLog('error', 'patch-only-no-match', 'No reliable existing-node match for patch-only update', {
-                        applyMode: applyMode, checkpointId: checkpointId, droppedPatchCandidates: droppedPatchCandidates
+                        applyMode: applyMode, droppedPatchCandidates: droppedPatchCandidates
                     });
                     if (window.RED && RED.notify) {
                         RED.notify('Patch update applied safely: no reliable node match found, skipped adding new nodes', 'warning');
                     }
-                    return { ok: false, error: 'No reliable existing-node match for patch-only update', checkpointId: checkpointId, applyMode: applyMode };
+                    return { ok: false, error: 'No reliable existing-node match for patch-only update', applyMode: applyMode };
                 }
             }
 
@@ -1271,14 +1276,14 @@
                     if (window && window.RED && RED.notify)
                         RED.notify('Import aborted: no valid nodes found (removed tab/blank nodes)', 'warning');
                 } catch(e) {}
-                return { ok: false, error: 'No valid nodes after sanitization', checkpointId: checkpointId };
+                return { ok: false, error: 'No valid nodes after sanitization' };
             }
 
             var bad = newNodes.find(function(n) { return typeof n.type !== 'string' || n.type.length === 0; });
             if (bad) {
                 if (RED && RED.notify) RED.notify('Import aborted: invalid node shape', 'error');
                 safeLog('bad node', bad);
-                return { ok: false, error: 'Invalid node shape', checkpointId: checkpointId };
+                return { ok: false, error: 'Invalid node shape' };
             }
 
             var rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives, applyMode);
@@ -1286,20 +1291,11 @@
             if (!rebuiltResult || !rebuiltResult.ok) {
                 return {
                     ok: false,
-                    error: (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot',
-                    checkpointId: checkpointId
+                    error: (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot'
                 };
             }
 
             if (RED && RED.notify) RED.notify('Flow reloaded successfully', 'success');
-
-            var afterFlow = safeGetCurrentFlow();
-            var postCheckpointId = await saveCheckpoint(
-                options.chatId || null,
-                options.postCheckpointLabel || ('post-import-' + new Date().toISOString()),
-                afterFlow,
-                { source: 'plugin-import-post' }
-            );
 
             var addedNodes = rebuiltFlow.filter(function(n) {
                 return !!(n && n.id) && !beforeIdSet.has(n.id);
@@ -1318,9 +1314,6 @@
             return {
                 ok: true,
                 importedCount: rebuiltFlow.length,
-                checkpointId: postCheckpointId || checkpointId,
-                preCheckpointId: checkpointId,
-                postCheckpointId: postCheckpointId,
                 applyMode: applyMode,
                 addedNodeCount: addedNodes.length,
                 addedNodes: addedNodes,
