@@ -197,7 +197,7 @@ function createLLMPluginServer(RED) {
     // Build a flow context description for the prompt.
     // Converts the Node-RED flow to Vibe Schema (intermediate JSON) so the LLM
     // sees a clean, alias-based representation without random IDs or coordinates.
-    function buildFlowContextDescription(flow) {
+    function buildFlowContextDescription(flow, activeWorkspaceId) {
         const empty = { header: 'CURRENT FLOW (Vibe Schema):', body: 'No current flow context available.' };
         if (!flow) return empty;
 
@@ -253,15 +253,21 @@ function createLLMPluginServer(RED) {
         // includes only the config nodes it actually references (BFS over
         // string-valued props), so unrelated configs don't leak.
         const result = {};
+        let activeKey = null;
         for (const z of tabIds) {
             const flowNodes = byTab[z];
             const referencedConfigs = collectReferencedConfigsServer(flowNodes, configById);
             const label = tabLabelById[z] || z;
             const key = result[label] === undefined ? label : (label + ' (' + z + ')');
             result[key] = Configurator.toIntermediate(flowNodes.concat(referencedConfigs));
+            if (activeWorkspaceId && z === activeWorkspaceId) activeKey = key;
+        }
+        let header = 'CURRENT FLOWS (Vibe Schema, keyed by tab name — each entry is one flow tab):';
+        if (activeKey) {
+            header += '\nACTIVE FLOW: ' + activeKey;
         }
         return {
-            header: 'CURRENT FLOWS (Vibe Schema, keyed by tab name — each entry is one flow tab):',
+            header: header,
             body: JSON.stringify(result, null, 2)
         };
     }
@@ -305,7 +311,7 @@ function createLLMPluginServer(RED) {
         return marker && marker[1] ? (normalizeApplyMode(marker[1]) || 'auto') : 'auto';
     }
 
-    function buildMessages(userPrompt, flowContext) {
+    function buildMessages(userPrompt, flowContext, activeWorkspaceId) {
         const settings = getPluginSettings();
         const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
             ? String(settings.systemPrompt).trim()
@@ -322,7 +328,7 @@ function createLLMPluginServer(RED) {
         system += '- Include your choice as top-level JSON field: "applyMode".\n\n';
 
         if (flowContext) {
-            const ctx = buildFlowContextDescription(flowContext);
+            const ctx = buildFlowContextDescription(flowContext, activeWorkspaceId);
             system += ctx.header + "\n";
             system += ctx.body + "\n\n";
         }
@@ -497,7 +503,7 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
 
     RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
-        const { model, prompt, currentFlow } = req.body;
+        const { model, prompt, currentFlow, activeWorkspaceId } = req.body;
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
@@ -509,7 +515,7 @@ function createLLMPluginServer(RED) {
         }
         const provider = settings.provider || 'ollama';
 
-        const enhancedMessages = buildMessages(prompt, currentFlow);
+        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId);
         const genStart = Date.now();
 
         try {
@@ -534,7 +540,7 @@ function createLLMPluginServer(RED) {
     });
 
     RED.httpAdmin.post('/llm-plugin/agent-generate', async function(req, res) {
-        const { model, prompt, currentFlow } = req.body || {};
+        const { model, prompt, currentFlow, activeWorkspaceId } = req.body || {};
 
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
@@ -548,7 +554,7 @@ function createLLMPluginServer(RED) {
         const provider = settings.provider || 'ollama';
 
         try {
-            const enhancedMessages = buildMessages(prompt, currentFlow);
+            const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId);
             const totalStart = Date.now();
 
             if (isExplanationOnlyRequest(prompt)) {

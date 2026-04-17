@@ -424,6 +424,7 @@
                     model: model,
                     prompt: prompt,
                     currentFlow: currentFlow,
+                    activeWorkspaceId: getActiveWorkspaceId(),
                     mode: mode
                 }),
                 signal: currentAbortController.signal
