@@ -814,13 +814,17 @@
 
         // Separate config nodes that already exist (update in-place) from
         // nodes that need to be imported fresh.
+        // Drop tab definitions: generateIds would regenerate their ID and
+        // RED.nodes.import would create a duplicate workspace with the same
+        // label; canvas nodes should instead land on the active workspace.
         var configNodesToUpdate = [];
         var importNodes = (nodes || []).map(function(n) {
             var nn = JSON.parse(JSON.stringify(n));
             if (isCanvasNode(nn)) nn.z = workspaceId;
             return nn;
         }).filter(function(nn) {
-            if (!isCanvasNode(nn) && nn.type !== 'tab') {
+            if (nn.type === 'tab') return false;
+            if (!isCanvasNode(nn)) {
                 var existing = RED.nodes.node(nn.id);
                 if (existing) {
                     // Config node already exists — collect for in-place update
@@ -1042,8 +1046,30 @@
                 }
             }
 
+            // ---- Pre-pass: exact-alias claims ----
+            // Run exact-only resolution for every proposed node first, so that
+            // strong matches reserve their existing IDs before any fuzzy/loose
+            // match in the main pass can steal them. This prevents a new node
+            // with alias "inject_trigger_1" from loose-matching an existing
+            // "inject_trigger" when the LLM also (intentionally) references
+            // "inject_trigger" as an edit target.
+            var preResolvedAlias = {};
+            if (canModifyExisting) {
+                nodes.forEach(function(n, idx) {
+                    if (!n || !n._llmAlias) return;
+                    var exactId = lookup.resolve(n._llmAlias, { exactOnly: true });
+                    if (!exactId || claimedExistingIds[exactId]) return;
+                    var existing = RED.nodes.node(exactId);
+                    if (!existing) return;
+                    if (!currentWorkspace || existing.z === currentWorkspace || !existing.z) {
+                        preResolvedAlias[idx] = exactId;
+                        claimedExistingIds[exactId] = true;
+                    }
+                });
+            }
+
             // ---- Map each proposed node to existing or new ----
-            var newNodes = nodes.map(function(n) {
+            var newNodes = nodes.map(function(n, idx) {
                 var nn = JSON.parse(JSON.stringify(n));
                 nn.type = String(nn.type || '').trim();
 
@@ -1051,8 +1077,15 @@
 
                 // 1. Alias-based matching (primary — uses _llmAlias from Vibe Schema conversion)
                 if (canModifyExisting && nn._llmAlias) {
-                    var aliasId = lookup.resolve(nn._llmAlias, { minLen: 4 });
-                    if (aliasId && !claimedExistingIds[aliasId]) {
+                    var aliasId = preResolvedAlias[idx] || null;
+                    // Fallback to fuzzy/loose only when this node had no exact
+                    // match; skip any existing IDs already claimed by the
+                    // pre-pass or a prior proposal.
+                    if (!aliasId) {
+                        var fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
+                        if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
+                    }
+                    if (aliasId) {
                         var byAlias = RED.nodes.node(aliasId);
                         // Allow matching for: same workspace nodes, OR config nodes
                         // (config nodes have no z / empty z — they live outside workspaces)

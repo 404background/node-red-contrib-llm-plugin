@@ -407,6 +407,11 @@
             if (_normAlias[k]) return _normAlias[k];
             if (nameToId[k]) return nameToId[k];
 
+            // exactOnly: stop before loose/fuzzy tiers. Used by the importer's
+            // pre-pass so that strong matches can claim existing IDs before
+            // weaker fuzzy matches are considered for other proposed nodes.
+            if (o.exactOnly) return null;
+
             var lk = normalizeTokenLoose(t);
             if (lk) {
                 if (_looseAlias[lk]) return _looseAlias[lk];
