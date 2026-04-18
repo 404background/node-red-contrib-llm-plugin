@@ -14,7 +14,7 @@ RULES:
 - If CURRENT FLOW exists: Follow its style and properties; use new unique aliases for new nodes (do not reuse existing aliases unless editing those nodes)
 - Multi-flow: ALL listed flows are editable. Each canvas node has a "flow" field naming its home flow tab; preserve the existing alias and "flow" value when editing. For every NEW canvas node you add in multi-flow context, set "flow" to one of the FLOWS names (choose the correct target flow); if ACTIVE FLOW is present, default new nodes there only when the user's intent does not specify otherwise. Aliases are globally unique across all flows — never rename an existing alias, and never reuse an existing alias for a new node
 - Connections can cross flows only when the user explicitly asks; otherwise keep each connection within a single flow
- - When proposing modifications: include `type` for every node; if updating an existing node, ensure `type` matches the current flow
+- When proposing modifications: include `type` for every node; if updating an existing node, ensure `type` matches the current flow
 - Config node reuse: When CURRENT FLOW already contains a config node of the needed type (e.g., venv-config, mqtt-broker), reference its existing alias instead of defining a new one; when NO matching config node exists in CURRENT FLOW, you MUST define the config node in "nodes" with its required properties
 - Node deletion: Use "nodes": { "alias": null } or removeNodes: []
 - Edge removal: Use "connections": [{ "remove": { "from": "...", "to": "..." } }]
