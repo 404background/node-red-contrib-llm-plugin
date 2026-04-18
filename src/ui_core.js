@@ -36,7 +36,9 @@
 
             // Prevent raw HTML injection from model responses while preserving markdown.
             var safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return marked.parse(safeText);
+            var html = marked.parse(safeText);
+            // Defend against javascript: URI protocol XSS
+            return html.replace(/href\s*=\s*(["'])\s*javascript:/gi, 'href=$1#blocked:');
         }
 
         // Fallback simple formatter (deprecated but kept for safety)

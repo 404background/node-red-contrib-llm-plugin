@@ -33,7 +33,11 @@ function createLLMPluginServer(RED) {
         };
 
         try {
-            fs.appendFileSync(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8');
+            fs.appendFile(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8', (err) => {
+                if (err) {
+                    // silently ignore log write errors
+                }
+            });
         } catch (e) {
             // ignore log file errors to avoid breaking user flow
         }
@@ -119,12 +123,16 @@ function createLLMPluginServer(RED) {
     function listOllamaModelsFromApi(baseUrl) {
         return new Promise((resolve) => {
             try {
-                const url = new URL('/api/tags', baseUrl);
+                let base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+                const url = new URL(base + '/api/tags');
                 const httpModule = url.protocol === 'https:' ? https : http;
                 const req = httpModule.request(url.toString(), { method: 'GET', timeout: 5000 }, (res) => {
                     let data = '';
                     res.on('data', chunk => data += chunk);
                     res.on('end', () => {
+                        if (res.statusCode && res.statusCode >= 400) {
+                            return resolve([]);
+                        }
                         try {
                             const parsed = JSON.parse(data);
                             if (parsed && parsed.models) {
@@ -457,10 +465,12 @@ function createLLMPluginServer(RED) {
                 stream: false
             });
             const isHttps = ollamaUrl.protocol === 'https:';
+            let basePath = ollamaUrl.pathname === '/' ? '' : ollamaUrl.pathname;
+            if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
             const options = {
                 hostname: ollamaUrl.hostname,
                 port: ollamaUrl.port || (isHttps ? 443 : 80),
-                path: '/api/chat',
+                path: basePath + '/api/chat',
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -478,6 +488,9 @@ function createLLMPluginServer(RED) {
                 });
                 res.on('end', () => {
                     const responseData = Buffer.concat(chunks).toString();
+                    if (res.statusCode && res.statusCode >= 400) {
+                        return reject(new Error(`Ollama API error (${res.statusCode}): ${responseData.substring(0, 200)}`));
+                    }
                     try {
                         const response = JSON.parse(responseData);
                         const content = response && response.message && typeof response.message.content === 'string'
@@ -850,11 +863,12 @@ function createLLMPluginServer(RED) {
                 return res.status(400).send('Invalid file');
             }
             const filePath = path.join(__dirname, normalized);
-            const srcRoot = path.join(__dirname) + path.sep;
-            if ((filePath + path.sep).indexOf(srcRoot) !== 0 && filePath.indexOf(srcRoot) !== 0) {
+            const srcRoot = path.join(__dirname);
+            const relativePath = path.relative(srcRoot, filePath);
+            if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
                 return res.status(400).send('Invalid file path');
             }
-            if (fs.existsSync(filePath)) {
+            if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
                 const ext = path.extname(filePath).toLowerCase();
                 let contentType = 'application/octet-stream';
                 if (ext === '.js') contentType = 'application/javascript';

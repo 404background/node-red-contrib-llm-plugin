@@ -10,14 +10,23 @@
         'llm-plugin/src/vibe_ui.js'
     ];
 
-    // Dynamically load scripts sequentially
-    function loadNext(i) {
-        if (i >= scripts.length) return;
-        var s = document.createElement('script');
-        s.src = scripts[i] + '?v=' + Date.now();
-        s.onload = function() { loadNext(i+1); };
-        s.onerror = function() { console.error('Failed to load', scripts[i]); loadNext(i+1); };
-        document.head.appendChild(s);
-    }
-    loadNext(0);
+    // Fetch scripts in parallel but execute sequentially to preserve dependencies
+    Promise.all(scripts.map(function(src) {
+        return fetch(src + '?v=' + Date.now()).then(function(res) {
+            if (!res.ok) throw new Error('Failed to fetch ' + src);
+            return res.text();
+        });
+    }))
+    .then(function(codes) {
+        codes.forEach(function(code, index) {
+            var s = document.createElement('script');
+            // Execute script contents immediately and synchronously in order.
+            // Add a sourceURL comment so devtools correctly name the dynamically loaded files.
+            s.textContent = code + '\n//# sourceURL=' + encodeURI(scripts[index]);
+            document.head.appendChild(s);
+        });
+    })
+    .catch(function(err) {
+        console.error('[LLM Plugin] Client load error:', err);
+    });
 })();
