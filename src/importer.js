@@ -1082,9 +1082,7 @@
                     var targetLabel = flowLabels[0];
                     var onlyWs = resolveFlowLabelToWorkspace(targetLabel);
                     if (onlyWs) {
-                        if (onlyWs !== getActiveWorkspaceId()) {
-                            options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
-                        }
+                        options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
                     } else {
                         if (window.RED && RED.notify) {
                             RED.notify('Target flow "' + targetLabel + '" not found. Import aborted to prevent modifying the current flow.', 'error');
