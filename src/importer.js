@@ -79,6 +79,12 @@
           if (byId) return byId;
           if (byLabel.length === 1) return byLabel[0];
           if (byLabel.length === 0 && byFuzzy.length === 1) return byFuzzy[0];
+        return null;
+    }
+
+    /** Merge multiple wire ID arrays into one, deduplicating. */
+    function mergeWireIds(/* ...arrays */) {
+        var seen = {};
         var out = [];
         for (var i = 0; i < arguments.length; i++) {
             var arr = arguments[i];
