@@ -900,7 +900,7 @@
         });
 
         try {
-            var importResult = RED.nodes.import(importNodes, { generateIds: true, addFlow: false });
+            var importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
             if (importResult && RED.history) {
                 var newIds = (importResult.nodes || []).map(function(n) { return n.id; });
                 if (newIds.length > 0) {
