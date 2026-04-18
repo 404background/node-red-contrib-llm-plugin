@@ -833,29 +833,20 @@
             } catch (e) { /* ignore */ }
         }
 
+        var importIds = {};
+        (nodes || []).forEach(function(n) { if (n && n.id) importIds[n.id] = true; });
+
         try {
-            var nodesToDelete = collectWorkspaceEntities();
+            var allEntities = collectWorkspaceEntities();
+            var nodesToDelete = allEntities.filter(function(n) { return !importIds[n.id]; });
+
             if (nodesToDelete.length > 0) {
-                if (RED.view && typeof RED.view.select === 'function') {
-                    RED.view.select({ nodes: nodesToDelete });
-                    if (RED.actions && typeof RED.actions.invoke === 'function') {
-                        RED.actions.invoke('core:delete-selection');
-                    }
-                } else {
-                    nodesToDelete.forEach(function(n) {
-                        try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ }
-                    });
-                }
-            }
-            var remaining = collectWorkspaceEntities();
-            if (remaining.length > 0) {
-                remaining.forEach(function(n) {
+                nodesToDelete.forEach(function(n) {
                     try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ }
                 });
             }
-            stabilizeView();
         } catch (e) {
-            return { ok: false, error: 'Failed to clear current workspace: ' + (e.message || e) };
+            return { ok: false, error: 'Failed to clear obsolete nodes: ' + (e.message || e) };
         }
 
         // Separate config nodes that already exist (update in-place) from
