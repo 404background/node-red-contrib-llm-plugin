@@ -245,13 +245,19 @@ function createLLMPluginServer(RED) {
         for (const n of canvasNodes) {
             (byTab[n.z] = byTab[n.z] || []).push(n);
         }
-        const tabIds = Object.keys(byTab);
+        const tabIdSet = new Set(Object.keys(tabLabelById));
+        Object.keys(byTab).forEach(z => tabIdSet.add(z));
+        const tabIds = Array.from(tabIdSet);
 
         // Single-flow case: keep the original single-schema output for prompt
         // continuity (existing prompt template references "CURRENT FLOW").
         if (tabIds.length <= 1) {
+            let flowDisplay = 'Vibe Schema';
+            if (tabIds.length === 1) {
+                flowDisplay += ' - ' + JSON.stringify(tabLabelById[tabIds[0]] || tabIds[0]);
+            }
             return {
-                header: 'CURRENT FLOW (Vibe Schema):',
+                header: 'CURRENT FLOW (' + flowDisplay + '):',
                 body: JSON.stringify(Configurator.toIntermediate(nodes), null, 2)
             };
         }
@@ -266,8 +272,9 @@ function createLLMPluginServer(RED) {
         const allCanvas = [];
         const neededConfigs = {};
         for (const z of tabIds) {
-            for (const n of byTab[z]) allCanvas.push(n);
-            const refs = collectReferencedConfigsServer(byTab[z], configById);
+            const flowNodes = byTab[z] || [];
+            for (const n of flowNodes) allCanvas.push(n);
+            const refs = collectReferencedConfigsServer(flowNodes, configById);
             for (const cn of refs) if (cn && cn.id) neededConfigs[cn.id] = cn;
         }
         const allNodes = allCanvas.concat(Object.values(neededConfigs));
