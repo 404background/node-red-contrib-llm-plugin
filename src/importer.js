@@ -833,20 +833,21 @@
             } catch (e) { /* ignore */ }
         }
 
-        var importIds = {};
-        (nodes || []).forEach(function(n) { if (n && n.id) importIds[n.id] = true; });
-
+        var backupEntitiesJSON = [];
         try {
-            var allEntities = collectWorkspaceEntities();
-            var nodesToDelete = allEntities.filter(function(n) { return !importIds[n.id]; });
+            var allEntities = collectWorkspaceEntities().filter(isCanvasNode);
+            backupEntitiesJSON = allEntities.map(function(n) { return JSON.parse(JSON.stringify(n)); });
 
-            if (nodesToDelete.length > 0) {
-                nodesToDelete.forEach(function(n) {
-                    try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ }
+            if (allEntities.length > 0) {
+                allEntities.forEach(function(n) {
+                    try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ } 
                 });
             }
+            if (RED.view && typeof RED.view.redraw === 'function') {
+                try { RED.view.redraw(true, true); } catch (e) {}
+            }
         } catch (e) {
-            return { ok: false, error: 'Failed to clear obsolete nodes: ' + (e.message || e) };
+            return { ok: false, error: 'Failed to clear current workspace nodes: ' + (e.message || e) };
         }
 
         // Separate config nodes that already exist (update in-place) from
@@ -892,22 +893,17 @@
 
         try {
             var importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
-            if (importResult && RED.history) {
-                var newIds = (importResult.nodes || []).map(function(n) { return n.id; });
-                if (newIds.length > 0) {
-                    RED.history.push({
-                        t: "add",
-                        nodes: newIds,
-                        links: importResult.links || [],
-                        workspaces: importResult.workspaces || [],
-                        subflows: importResult.subflows || [],
-                        groups: importResult.groups || []
-                    });
-                }
-            }
+            // Intentionally bypass RED.history.push to avoid the user doing Ctrl+Z 
+            // and wiping their entire flow. Use plugin checkpoints to revert.
             stabilizeView();
             return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
         } catch (e) {
+            try {
+                if (backupEntitiesJSON && backupEntitiesJSON.length > 0) {
+                    RED.nodes.import(backupEntitiesJSON, { generateIds: false, reimport: true, addFlow: false });
+                    stabilizeView();
+                }
+            } catch (e2) { /* ignore */ }
             return { ok: false, error: 'Failed to import restored flow: ' + (e.message || e) };
         }
     }
