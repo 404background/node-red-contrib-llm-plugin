@@ -18,7 +18,7 @@
         spacingX:     180,   // horizontal gap between node centres (3 grid squares between edges)
         spacingY:      80,   // vertical gap between node centres within a component
         componentGap:  80,   // gap between disconnected flow components (center-to-center)
-                             // 80 px = 40 px visible gap + ~40 px node height ≈ 2 grid squares
+                             // 80 px = 40 px visible gap + ~40 px node height  - 2 grid squares
         maxColumns:     5    // wrap long chains after this many columns
     };
 
@@ -58,23 +58,27 @@
         var target = label.trim();
         if (!target) return null;
         var byLabel = [];
-        var byId = null;
-        if (typeof RED.nodes.eachWorkspace === 'function') {
-            RED.nodes.eachWorkspace(function(ws) {
-                if (!ws || !ws.id || ws.type !== 'tab') return;
-                if (ws.id === target) byId = ws.id;
-                var lbl = String(ws.label || '').trim();
-                if (lbl && lbl === target) byLabel.push(ws.id);
-            });
-        }
-        if (byId) return byId;
-        if (byLabel.length === 1) return byLabel[0];
-        return null;
-    }
+          var byFuzzy = [];
+          var byId = null;
+          
+          var fuzzyTarget = target.replace(/[\s\u3000]+/g, '').toLowerCase();
 
-    /** Merge multiple wire ID arrays into one, deduplicating. */
-    function mergeWireIds(/* ...arrays */) {
-        var seen = {};
+          if (typeof RED.nodes.eachWorkspace === 'function') {
+              RED.nodes.eachWorkspace(function(ws) {
+                  if (!ws || !ws.id || ws.type !== 'tab') return;
+                  if (ws.id === target) byId = ws.id;
+                  var lbl = String(ws.label || '').trim();
+                  if (lbl === target) {
+                      byLabel.push(ws.id);
+                  } else {
+                      var fuzzyLbl = lbl.replace(/[\s\u3000]+/g, '').toLowerCase();
+                      if (fuzzyLbl === fuzzyTarget) byFuzzy.push(ws.id);
+                  }
+              });
+          }
+          if (byId) return byId;
+          if (byLabel.length === 1) return byLabel[0];
+          if (byLabel.length === 0 && byFuzzy.length === 1) return byFuzzy[0];
         var out = [];
         for (var i = 0; i < arguments.length; i++) {
             var arr = arguments[i];
@@ -268,7 +272,7 @@
         var desiredByFromPort = {};
         hints.forEach(function(h) {
             // exactOnly: a hint's alias must match a real alias/name/ID
-            // exactly. Fuzzy matching here is unsafe — a new-node alias
+            // exactly. Fuzzy matching here is unsafe  - a new-node alias
             // like "inject_py_1" can prefix-match an existing "inject"
             // and silently reroute every connection to the wrong node.
             // New-to-new wires are already baked into node.wires by
@@ -499,7 +503,7 @@
         fixConfigNodeProperties(rebuilt);
 
         if (mode === 'overwrite' || Object.keys(baseIds).length === 0) {
-            // No existing nodes to preserve — full re-layout
+            // No existing nodes to preserve  - full re-layout
             reflowCanvasNodes(rebuilt, {
                 startX: LAYOUT.startX, startY: LAYOUT.startY,
                 spacingX: LAYOUT.spacingX, spacingY: LAYOUT.spacingY,
@@ -565,7 +569,7 @@
         // Delegate to shared layout engine
         var positions = cfg.layoutNodes(ids, outgoing, incoming, maxColumns);
 
-        // Apply col/row → pixel coordinates with per-component stacking
+        // Apply col/row  - pixel coordinates with per-component stacking
         var compGapPx = LAYOUT.componentGap;
         var compInfo = {};
         ids.forEach(function(id) {
@@ -599,10 +603,10 @@
      * then place only new nodes near their connected neighbors.
      *
      * Placement rules for new nodes:
-     *  - Has both predecessor(s) and successor(s) among positioned nodes → midpoint
-     *  - Has only predecessor(s) → to the right of the furthest predecessor
-     *  - Has only successor(s)   → to the left of the nearest successor
-     *  - No positioned neighbors → below all existing nodes (orphan fallback)
+     *  - Has both predecessor(s) and successor(s) among positioned nodes  - midpoint
+     *  - Has only predecessor(s)  - to the right of the furthest predecessor
+     *  - Has only successor(s)    - to the left of the nearest successor
+     *  - No positioned neighbors  - below all existing nodes (orphan fallback)
      *
      * Multi-node chains (new nodes connected only to other new nodes) are resolved
      * by iterating until all reachable nodes are placed.
@@ -714,9 +718,9 @@
             }
         }
 
-        // Step 4: Orphan new nodes — no path to any existing node — place below
+        // Step 4: Orphan new nodes  - no path to any existing node  - place below
         //   Use the layout engine to respect connections among orphan nodes
-        //   (e.g. 10 disconnected inject→venv→debug chains should stack vertically,
+        //   (e.g. 10 disconnected inject - venv - debug chains should stack vertically,
         //    not collapse into a flat grid).
         if (remaining.length > 0) {
             // Find the bottom-most Y among ALL positioned nodes (existing +
@@ -863,7 +867,7 @@
             if (!isCanvasNode(nn)) {
                 var existing = RED.nodes.node(nn.id);
                 if (existing) {
-                    // Config node already exists — collect for in-place update
+                    // Config node already exists  - collect for in-place update
                     configNodesToUpdate.push(nn);
                     return false;
                 }
@@ -874,7 +878,7 @@
         // Update existing config nodes in-place (properties only; no re-import)
         configNodesToUpdate.forEach(function(nn) {
             try {
-                // Auto-created stubs have no real props — skip to preserve existing settings
+                // Auto-created stubs have no real props  - skip to preserve existing settings
                 if (nn._autoStub) return;
                 var existing = RED.nodes.node(nn.id);
                 if (!existing) return;
@@ -939,6 +943,7 @@
             var spec = schema.nodes[alias];
             if (!spec || typeof spec !== 'object') return;
             if (spec.config === true) return;
+            if (spec.type === 'tab' || String(spec.type).toLowerCase() === 'tab') return;
             if (spec.type && isConfigNodeType(spec.type)) return;
             var flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
             if (!flow) { untagged.push(alias); return; }
@@ -958,7 +963,7 @@
     /**
      * Slice a schema down to a single flow: its tagged canvas nodes, any
      * untagged nodes (config / shared), and connections where both endpoints
-     * belong to this flow. Cross-flow connections are dropped — the prompt
+     * belong to this flow. Cross-flow connections are dropped  - the prompt
      * discourages them unless the user asks explicitly.
      */
     function buildSubSchemaForFlow(schema, aliases) {
@@ -1059,7 +1064,7 @@
             // When the LLM response tags canvas nodes with "flow" fields,
             // proposals may span several workspaces. Split them per-flow so
             // each flow's existing nodes are only matched against proposals
-            // intended for that flow — prevents cross-flow overwrites.
+            // intended for that flow  - prevents cross-flow overwrites.
             if (!options._isSubImport) {
                 var dispatchSchema = extractLastVibeSchema(messageContent);
                 var flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
@@ -1068,9 +1073,17 @@
                     return await dispatchMultiFlowImport(messageContent, dispatchSchema, flowGroups, options);
                 }
                 if (flowLabels.length === 1) {
-                    var onlyWs = resolveFlowLabelToWorkspace(flowLabels[0]);
-                    if (onlyWs && onlyWs !== getActiveWorkspaceId()) {
-                        options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
+                    var targetLabel = flowLabels[0];
+                    var onlyWs = resolveFlowLabelToWorkspace(targetLabel);
+                    if (onlyWs) {
+                        if (onlyWs !== getActiveWorkspaceId()) {
+                            options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
+                        }
+                    } else {
+                        if (window.RED && RED.notify) {
+                            RED.notify('Target flow "' + targetLabel + '" not found. Import aborted to prevent modifying the current flow.', 'error');
+                        }
+                        return { ok: false, error: 'Target flow "' + targetLabel + '" not found.' };
                     }
                 }
             }
@@ -1090,7 +1103,7 @@
             var rawConnectionHints = extractConnectionHints(messageContent);
             var rawFlowDirectives = extractFlowDirectives(messageContent);
 
-            // Safety guard: auto + overwrite without explicit deletes → prefer merge
+            // Safety guard: auto + overwrite without explicit deletes  - prefer merge
             if (requestedApplyMode === 'auto' && applyMode === 'overwrite' && hasExistingFlow) {
                 var hasDeleteDirectives = (rawFlowDirectives.removeTokens || []).length > 0 ||
                     (rawFlowDirectives.removeConnections || []).length > 0;
@@ -1124,6 +1137,11 @@
                 mode: options.mode,
                 currentFlow: beforeFlow
             });
+
+            // Strip tab nodes early so they don't trigger false-positive patch-only updates
+            if (Array.isArray(nodes)) {
+                nodes = nodes.filter(function(n) { return n && n.type && String(n.type).toLowerCase() !== 'tab'; });
+            }
 
             if (!nodes || nodes.length === 0) {
                 if (canModifyExisting && (
@@ -1181,7 +1199,7 @@
 
             // Track existing IDs for downstream edit-only/patch-only checks.
             // Checkpoints are saved at chat-send time by ChatManager.savePreSendCheckpoint,
-            // not here — the import path no longer produces its own checkpoints.
+            // not here  - the import path no longer produces its own checkpoints.
             var beforeIdSet = new Set();
             (beforeFlow || []).forEach(function(n) {
                 if (n && n.id) beforeIdSet.add(n.id);
@@ -1269,7 +1287,7 @@
 
                 var replacedExisting = null;
 
-                // 1. Alias-based matching (primary — uses _llmAlias from Vibe Schema conversion)
+                // 1. Alias-based matching (primary  - uses _llmAlias from Vibe Schema conversion)
                 if (canModifyExisting && nn._llmAlias) {
                     var aliasId = preResolvedAlias[idx] || null;
                     // Fallback to fuzzy/loose only when this node had no exact
@@ -1278,7 +1296,7 @@
                     if (!aliasId) {
                         // New-node signal: alias has a trailing digit run
                         // (with or without underscore) and stripping it yields
-                        // an existing exact alias — e.g. "inject_py1" vs
+                        // an existing exact alias  - e.g. "inject_py1" vs
                         // existing "inject_py", or "inject_trigger_2" vs
                         // existing "inject_trigger". Treat as NEW so loose
                         // fuzzy can't hijack an existing node.
@@ -1290,8 +1308,7 @@
                         // Fuzzy matching is useful in edit-only mode where the
                         // LLM may typo an alias it wants to modify. In merge
                         // mode the LLM has every existing alias in its context
-                        // and the prompt forbids reusing them for new nodes —
-                        // fuzzy here only causes accidental overwrites of
+                        // and the prompt forbids reusing them for new nodes  -                         // fuzzy here only causes accidental overwrites of
                         // same-type existing nodes.
                         if (!isNewNodeSignal && applyMode === 'edit-only') {
                             var fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
@@ -1301,7 +1318,7 @@
                     if (aliasId) {
                         var byAlias = RED.nodes.node(aliasId);
                         // Allow matching for: same workspace nodes, OR config nodes
-                        // (config nodes have no z / empty z — they live outside workspaces)
+                        // (config nodes have no z / empty z  - they live outside workspaces)
                         if (byAlias && (!currentWorkspace || byAlias.z === currentWorkspace || !byAlias.z)) {
                             replacedExisting = byAlias;
                         }
@@ -1409,7 +1426,7 @@
             // referenced by canvas nodes via plain string properties such as
             // "group", "tab", "server", "broker", etc.  When a config node's
             // generated ID is remapped to an existing node's ID we must update
-            // every reference — not just wires.
+            // every reference  - not just wires.
             if (Object.keys(remappedIds).length > 0) {
                 newNodes.forEach(function(n) {
                     if (!n) return;
@@ -1584,3 +1601,6 @@
                hints.length > 0;
     };
 })();
+
+
+

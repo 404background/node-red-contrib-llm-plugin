@@ -1,4 +1,4 @@
-// LLM Plugin — Server Side
+// LLM Plugin  -  Server Side
 // Registers all HTTP admin endpoints used by the client sidebar.
 const fs = require('fs-extra');
 const path = require('path');
@@ -292,10 +292,10 @@ function createLLMPluginServer(RED) {
             if (activeWorkspaceId && z === activeWorkspaceId) activeLabel = label;
         }
 
-        let header = 'CURRENT FLOWS (Vibe Schema — each canvas node has a "flow" field naming its home flow tab). Aliases are globally unique across all flows; do not rename existing aliases.';
+        let header = 'CURRENT FLOWS (Vibe Schema - each canvas node has a "flow" field naming its home flow tab). Aliases are globally unique across all flows; do not rename existing aliases.';
         header += '\nFLOWS: ' + flowNames.map(n => JSON.stringify(n)).join(', ');
         if (activeLabel) header += '\nACTIVE FLOW: ' + JSON.stringify(activeLabel);
-        header += '\nAll listed flows are editable. When adding a new node, set its "flow" field to one of the FLOWS names to choose its target flow.';
+        header += '\nAll listed flows are editable. When adding a new node, set its "flow" field to one of the FLOWS names to choose its target flow. DO NOT output tab (workflow/canvas) definition nodes yourself.';
 
         return {
             header: header,
@@ -420,7 +420,7 @@ function createLLMPluginServer(RED) {
 
     function writeFileAtomic(filepath, content) {
         const tmpPath = filepath + '.tmp';
-        fs.writeFileSync(tmpPath, content);
+        fs.writeFileSync(tmpPath, content, 'utf8');
         fs.renameSync(tmpPath, filepath);
     }
 
@@ -473,7 +473,7 @@ function createLLMPluginServer(RED) {
                 path: basePath + '/api/chat',
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
+                    'Content-Type': 'application/json; charset=utf-8',
                     'Content-Length': Buffer.byteLength(data)
                 }
             };
@@ -487,7 +487,7 @@ function createLLMPluginServer(RED) {
                     chunks.push(chunk);
                 });
                 res.on('end', () => {
-                    const responseData = Buffer.concat(chunks).toString();
+                    const responseData = Buffer.concat(chunks).toString('utf8');
                     if (res.statusCode && res.statusCode >= 400) {
                         return reject(new Error(`Ollama API error (${res.statusCode}): ${responseData.substring(0, 200)}`));
                     }
@@ -558,7 +558,7 @@ function createLLMPluginServer(RED) {
             const response = await generateWithProvider(provider, settings, model, enhancedMessages);
             res.json({ response: response, elapsed: Date.now() - genStart, model: model, applyMode: detectApplyModeFromResponse(response) });
         } catch (error) {
-            // Log only safe fields — never log the full error object which may contain sensitive headers
+            // Log only safe fields  -  never log the full error object which may contain sensitive headers
             const safeErrorText = redactSecrets(error && error.message ? error.message : error);
             console.error("[LLM Plugin] Generation error:", safeErrorText);
             let errorMessage = 'Generation failed';
@@ -842,7 +842,7 @@ function createLLMPluginServer(RED) {
         try {
             const cssPath = path.join(__dirname, '..', 'llm-plugin_styles.css');
             if (fs.existsSync(cssPath)) {
-                res.setHeader('Content-Type', 'text/css');
+                res.setHeader('Content-Type', 'text/css; charset=utf-8');
                 const cssContent = fs.readFileSync(cssPath, 'utf8');
                 res.send(cssContent);
             } else {
@@ -871,9 +871,9 @@ function createLLMPluginServer(RED) {
             if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
                 const ext = path.extname(filePath).toLowerCase();
                 let contentType = 'application/octet-stream';
-                if (ext === '.js') contentType = 'application/javascript';
-                else if (ext === '.css') contentType = 'text/css';
-                else if (ext === '.json') contentType = 'application/json';
+                if (ext === '.js') contentType = 'application/javascript; charset=utf-8';
+                else if (ext === '.css') contentType = 'text/css; charset=utf-8';
+                else if (ext === '.json') contentType = 'application/json; charset=utf-8';
                 res.setHeader('Content-Type', contentType);
                 const content = fs.readFileSync(filePath, 'utf8');
                 res.send(content);
