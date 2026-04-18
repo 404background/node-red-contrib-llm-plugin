@@ -865,6 +865,13 @@
                 type: spec.type
             };
             if (preserveAlias) node._llmAlias = alias;
+            // Preserve the Vibe Schema `flow` field as `_llmFlow` so the
+            // importer can route this node to the correct workspace in
+            // multi-flow edits. The field is stripped before nodes reach
+            // the canvas (handled by the importer).
+            if (typeof spec.flow === 'string' && spec.flow.length > 0) {
+                node._llmFlow = spec.flow;
+            }
             if (spec.name) node.name = spec.name;
             if (workspace && !isConfig) node.z = workspace;
 
@@ -888,8 +895,8 @@
             }
 
             // Flatten spec root keys into mergedProps, skipping META_KEYS
-            // and Vibe-Schema-only keys (props, _llmAlias, config).
-            var SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config']);
+            // and Vibe-Schema-only keys (props, _llmAlias, config, flow).
+            var SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config', 'flow']);
             Object.keys(spec).forEach(function(key) {
                 if (SPEC_SKIP_KEYS.indexOf(key) === -1) {
                     mergedProps[key] = spec[key];

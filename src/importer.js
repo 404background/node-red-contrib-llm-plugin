@@ -40,10 +40,36 @@
 
     function genId() { return 'id_' + Math.random().toString(36).substr(2,9); }
 
-    function safeGetCurrentFlow() {
-        return (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)
-            ? LLMPlugin.UI.getCurrentFlow()
-            : null;
+    function safeGetCurrentFlow(workspaceId) {
+        if (!window.LLMPlugin || !LLMPlugin.UI) return null;
+        if (workspaceId && LLMPlugin.UI.getFlowsByIds) {
+            return LLMPlugin.UI.getFlowsByIds([workspaceId]);
+        }
+        return LLMPlugin.UI.getCurrentFlow ? LLMPlugin.UI.getCurrentFlow() : null;
+    }
+
+    /**
+     * Scan RED workspaces for a tab matching the given label (or ID).
+     * Returns the workspace ID or null if no unique match exists.
+     */
+    function resolveFlowLabelToWorkspace(label) {
+        if (!label || typeof label !== 'string') return null;
+        if (!window.RED || !RED.nodes) return null;
+        var target = label.trim();
+        if (!target) return null;
+        var byLabel = [];
+        var byId = null;
+        if (typeof RED.nodes.eachWorkspace === 'function') {
+            RED.nodes.eachWorkspace(function(ws) {
+                if (!ws || !ws.id || ws.type !== 'tab') return;
+                if (ws.id === target) byId = ws.id;
+                var lbl = String(ws.label || '').trim();
+                if (lbl && lbl === target) byLabel.push(ws.id);
+            });
+        }
+        if (byId) return byId;
+        if (byLabel.length === 1) return byLabel[0];
+        return null;
     }
 
     /** Merge multiple wire ID arrays into one, deduplicating. */
@@ -241,8 +267,15 @@
 
         var desiredByFromPort = {};
         hints.forEach(function(h) {
-            var fromId = lookup.resolve(h.from);
-            var toId = lookup.resolve(h.to);
+            // exactOnly: a hint's alias must match a real alias/name/ID
+            // exactly. Fuzzy matching here is unsafe — a new-node alias
+            // like "inject_py_1" can prefix-match an existing "inject"
+            // and silently reroute every connection to the wrong node.
+            // New-to-new wires are already baked into node.wires by
+            // toNodeRed, so we only need hints to land when they
+            // reference something unambiguously.
+            var fromId = lookup.resolve(h.from, { exactOnly: true });
+            var toId = lookup.resolve(h.to, { exactOnly: true });
             if (!fromId || !toId || !lookup.byId[fromId] || !lookup.byId[toId]) return;
             // Skip connections targeting nodes that cannot accept input
             var targetNode = lookup.byId[toId];
@@ -457,6 +490,7 @@
             if (!n) return;
             delete n._llmAlias;
             delete n._autoStub;
+            delete n._llmFlow;
         });
 
         // Prune wires targeting nodes that cannot accept input
@@ -759,8 +793,10 @@
     //  Replace Workspace Flow                                             //
     // ================================================================== //
 
-    function replaceWorkspaceFlow(nodes) {
-        var workspaceId = getActiveWorkspaceId();
+    function replaceWorkspaceFlow(nodes, targetWorkspaceId) {
+        var workspaceId = (targetWorkspaceId && typeof targetWorkspaceId === 'string')
+            ? targetWorkspaceId
+            : getActiveWorkspaceId();
         if (!workspaceId) return { ok: false, error: 'Active workspace not found' };
 
         function collectWorkspaceEntities() {
@@ -876,13 +912,173 @@
     }
 
     // ================================================================== //
+    //  Multi-flow Dispatch Helpers                                        //
+    // ================================================================== //
+
+    function getActiveWorkspaceLabel() {
+        var id = getActiveWorkspaceId();
+        if (!id || !window.RED || !RED.nodes) return null;
+        if (typeof RED.nodes.workspace === 'function') {
+            var ws = RED.nodes.workspace(id);
+            if (ws && ws.label) return ws.label;
+        }
+        return id;
+    }
+
+    /**
+     * Group the LLM's proposed canvas nodes by their `flow` label so each
+     * group can target its own workspace. Untagged canvas nodes are folded
+     * into the active flow when any other node is tagged (mixed response);
+     * otherwise no groups are returned and the caller uses single-flow mode.
+     */
+    function collectFlowGroupsFromSchema(schema) {
+        if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return null;
+        var groups = {};
+        var untagged = [];
+        Object.keys(schema.nodes).forEach(function(alias) {
+            var spec = schema.nodes[alias];
+            if (!spec || typeof spec !== 'object') return;
+            if (spec.config === true) return;
+            if (spec.type && isConfigNodeType(spec.type)) return;
+            var flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
+            if (!flow) { untagged.push(alias); return; }
+            if (!groups[flow]) groups[flow] = [];
+            groups[flow].push(alias);
+        });
+        if (untagged.length > 0 && Object.keys(groups).length > 0) {
+            var activeLabel = getActiveWorkspaceLabel();
+            if (activeLabel) {
+                if (!groups[activeLabel]) groups[activeLabel] = [];
+                untagged.forEach(function(a) { groups[activeLabel].push(a); });
+            }
+        }
+        return groups;
+    }
+
+    /**
+     * Slice a schema down to a single flow: its tagged canvas nodes, any
+     * untagged nodes (config / shared), and connections where both endpoints
+     * belong to this flow. Cross-flow connections are dropped — the prompt
+     * discourages them unless the user asks explicitly.
+     */
+    function buildSubSchemaForFlow(schema, aliases) {
+        var aliasSet = {};
+        aliases.forEach(function(a) { aliasSet[a] = true; });
+        var subNodes = {};
+
+        aliases.forEach(function(alias) {
+            if (Object.prototype.hasOwnProperty.call(schema.nodes || {}, alias)) {
+                subNodes[alias] = schema.nodes[alias];
+            }
+        });
+        Object.keys(schema.nodes || {}).forEach(function(alias) {
+            if (aliasSet[alias]) return;
+            var spec = schema.nodes[alias];
+            if (spec === null) { subNodes[alias] = spec; return; }
+            if (!spec || typeof spec !== 'object') return;
+            var isUntagged = !spec.flow || typeof spec.flow !== 'string' || !spec.flow.trim();
+            if (isUntagged) subNodes[alias] = spec;
+        });
+
+        var subConns = [];
+        (schema.connections || []).forEach(function(c) {
+            if (!c || typeof c !== 'object') return;
+            if (c.remove && typeof c.remove === 'object') {
+                var r = c.remove;
+                if (aliasSet[r.from] && aliasSet[r.to]) subConns.push(c);
+                return;
+            }
+            if (aliasSet[c.from] && aliasSet[c.to]) subConns.push(c);
+        });
+
+        var out = {
+            nodes: subNodes,
+            connections: subConns
+        };
+        if (typeof schema.description === 'string') out.description = schema.description;
+        if (typeof schema.applyMode === 'string') out.applyMode = schema.applyMode;
+        if (Array.isArray(schema.remove)) {
+            out.remove = schema.remove.filter(function(t) { return aliasSet[t]; });
+        }
+        return out;
+    }
+
+    async function dispatchMultiFlowImport(messageContent, schema, flowGroups, options) {
+        var applyMode = schema && typeof schema.applyMode === 'string' ? schema.applyMode : null;
+        var results = [];
+        var aggregatedAdded = 0;
+        var aggregatedImported = 0;
+        var unresolved = [];
+        var flowLabels = Object.keys(flowGroups);
+
+        for (var li = 0; li < flowLabels.length; li++) {
+            var label = flowLabels[li];
+            var wsId = resolveFlowLabelToWorkspace(label);
+            if (!wsId) { unresolved.push(label); continue; }
+
+            var subSchema = buildSubSchemaForFlow(schema, flowGroups[label]);
+            var subMessage = '```json\n' + JSON.stringify(subSchema, null, 2) + '\n```';
+            try {
+                var res = await Importer.importFlowFromMessage(subMessage, Object.assign({}, options, {
+                    targetWorkspaceId: wsId,
+                    _isSubImport: true
+                }));
+                results.push(Object.assign({}, res, { flow: label, workspaceId: wsId }));
+                if (res && res.ok) {
+                    aggregatedAdded += (res.addedNodeCount || 0);
+                    aggregatedImported += (res.importedCount || 0);
+                }
+            } catch (e) {
+                results.push({ ok: false, error: String(e && e.message ? e.message : e), flow: label, workspaceId: wsId });
+            }
+        }
+
+        if (unresolved.length > 0 && window.RED && RED.notify) {
+            RED.notify('Skipped unknown flow(s): ' + unresolved.join(', '), 'warning');
+        }
+
+        var allOk = results.length > 0 && results.every(function(r) { return r && r.ok; });
+        return {
+            ok: allOk,
+            multiFlow: true,
+            results: results,
+            importedCount: aggregatedImported,
+            addedNodeCount: aggregatedAdded,
+            applyMode: applyMode || 'auto'
+        };
+    }
+
+    // ================================================================== //
     //  Main Import Entry Point                                            //
     // ================================================================== //
 
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
         try {
-            var beforeFlow = safeGetCurrentFlow();
+            // --- Multi-flow dispatch ---
+            // When the LLM response tags canvas nodes with "flow" fields,
+            // proposals may span several workspaces. Split them per-flow so
+            // each flow's existing nodes are only matched against proposals
+            // intended for that flow — prevents cross-flow overwrites.
+            if (!options._isSubImport) {
+                var dispatchSchema = extractLastVibeSchema(messageContent);
+                var flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
+                var flowLabels = flowGroups ? Object.keys(flowGroups) : [];
+                if (flowLabels.length > 1) {
+                    return await dispatchMultiFlowImport(messageContent, dispatchSchema, flowGroups, options);
+                }
+                if (flowLabels.length === 1) {
+                    var onlyWs = resolveFlowLabelToWorkspace(flowLabels[0]);
+                    if (onlyWs && onlyWs !== getActiveWorkspaceId()) {
+                        options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
+                    }
+                }
+            }
+
+            var targetWs = (options.targetWorkspaceId && typeof options.targetWorkspaceId === 'string')
+                ? options.targetWorkspaceId
+                : null;
+            var beforeFlow = safeGetCurrentFlow(targetWs);
 
             var requestedApplyMode = normalizeApplyMode(options.applyMode) || 'auto';
             var llmApplyMode = extractApplyModeFromMessage(messageContent);
@@ -949,7 +1145,7 @@
                 return { ok: false, error: 'Delete Only mode requires delete directives', checkpointId: null };
             }
 
-            var currentWorkspace = getActiveWorkspaceId();
+            var currentWorkspace = targetWs || getActiveWorkspaceId();
 
             // Build unified lookup from current flow
             var cfg = getConfigurator();
@@ -957,24 +1153,27 @@
                 ? buildFlowLookup(beforeFlow, cfg)
                 : buildFlowLookup([], null);
 
-            // Remap connection hints and directives using lookup
+            // Remap connection hints and directives using lookup.
+            // exactOnly prevents a new-node alias (e.g. "inject_py_1")
+            // from fuzzy-matching an unrelated existing node ("inject")
+            // and silently hijacking connections or deletions.
             connectionHints = (connectionHints || []).map(function(h) {
                 return {
-                    from: lookup.resolve(h.from) || h.from,
-                    to: lookup.resolve(h.to) || h.to,
+                    from: lookup.resolve(h.from, { exactOnly: true }) || h.from,
+                    to: lookup.resolve(h.to, { exactOnly: true }) || h.to,
                     fromPort: h.fromPort
                 };
             });
             if (flowDirectives && Array.isArray(flowDirectives.removeTokens)) {
                 flowDirectives.removeTokens = flowDirectives.removeTokens.map(function(t) {
-                    return lookup.resolve(t) || t;
+                    return lookup.resolve(t, { exactOnly: true }) || t;
                 });
             }
             if (flowDirectives && Array.isArray(flowDirectives.removeConnections)) {
                 flowDirectives.removeConnections = flowDirectives.removeConnections.map(function(rc) {
                     return {
-                        from: lookup.resolve(rc.from) || rc.from,
-                        to: lookup.resolve(rc.to) || rc.to,
+                        from: lookup.resolve(rc.from, { exactOnly: true }) || rc.from,
+                        to: lookup.resolve(rc.to, { exactOnly: true }) || rc.to,
                         fromPort: rc.fromPort
                     };
                 });
@@ -1077,15 +1276,24 @@
                     // match; skip any existing IDs already claimed by the
                     // pre-pass or a prior proposal.
                     if (!aliasId) {
-                        // New-node signal: alias ends with _N and stripping
-                        // that suffix yields an existing exact alias. Treat
-                        // as new rather than letting loose/fuzzy replace the
-                        // existing node (common when the LLM proposes a
-                        // second inject alongside an existing inject_trigger).
-                        var stripped = nn._llmAlias.replace(/_\d+$/, '');
+                        // New-node signal: alias has a trailing digit run
+                        // (with or without underscore) and stripping it yields
+                        // an existing exact alias — e.g. "inject_py1" vs
+                        // existing "inject_py", or "inject_trigger_2" vs
+                        // existing "inject_trigger". Treat as NEW so loose
+                        // fuzzy can't hijack an existing node.
+                        var stripped = nn._llmAlias
+                            .replace(/_?\d+$/, '')
+                            .replace(/_+$/, '');
                         var isNewNodeSignal = (stripped !== nn._llmAlias) &&
                             lookup.aliasToId && !!lookup.aliasToId[stripped];
-                        if (!isNewNodeSignal) {
+                        // Fuzzy matching is useful in edit-only mode where the
+                        // LLM may typo an alias it wants to modify. In merge
+                        // mode the LLM has every existing alias in its context
+                        // and the prompt forbids reusing them for new nodes —
+                        // fuzzy here only causes accidental overwrites of
+                        // same-type existing nodes.
+                        if (!isNewNodeSignal && applyMode === 'edit-only') {
                             var fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
                             if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
                         }
@@ -1100,8 +1308,13 @@
                     }
                 }
 
-                // 2. Type+name matching (fallback)
-                if (!replacedExisting && canModifyExisting && nn.name && nn.type) {
+                // 2. Type+name matching (fallback).
+                // Only applies in edit-only mode: in merge mode the LLM picks
+                // fresh aliases for new nodes and may legitimately reuse a
+                // display name (e.g. adding another "run 1" inject alongside
+                // an existing one). Matching on name would silently overwrite
+                // the existing node instead of creating a new sibling.
+                if (!replacedExisting && canModifyExisting && nn.name && nn.type && applyMode === 'edit-only') {
                     var key = String(nn.type).trim().toLowerCase() + '::' + String(nn.name).trim().toLowerCase();
                     var candidates = existingByTypeName[key] || [];
                     if (candidates.length === 1 && !claimedExistingIds[candidates[0].id]) {
@@ -1287,7 +1500,7 @@
             }
 
             var rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives, applyMode);
-            var rebuiltResult = replaceWorkspaceFlow(rebuiltFlow);
+            var rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
             if (!rebuiltResult || !rebuiltResult.ok) {
                 return {
                     ok: false,

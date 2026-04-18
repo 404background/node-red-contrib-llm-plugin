@@ -248,27 +248,50 @@ function createLLMPluginServer(RED) {
             };
         }
 
-        // Multi-flow case: emit an object keyed by tab label so the LLM
-        // can tell which nodes belong to which flow tab. Each tab's schema
-        // includes only the config nodes it actually references (BFS over
-        // string-valued props), so unrelated configs don't leak.
-        const result = {};
-        let activeKey = null;
+        // Multi-flow case: emit ONE flat Vibe Schema where every canvas node
+        // carries a `flow` field naming its home flow (tab label). Aliases
+        // come from a single toIntermediate pass so they are globally unique
+        // across all flows, preventing cross-flow alias collisions that
+        // caused the importer to overwrite nodes in the wrong tab.
+        // Config nodes are collected once (referenced by any flow) and
+        // emitted without a `flow` field since they live outside canvases.
+        const allCanvas = [];
+        const neededConfigs = {};
         for (const z of tabIds) {
-            const flowNodes = byTab[z];
-            const referencedConfigs = collectReferencedConfigsServer(flowNodes, configById);
+            for (const n of byTab[z]) allCanvas.push(n);
+            const refs = collectReferencedConfigsServer(byTab[z], configById);
+            for (const cn of refs) if (cn && cn.id) neededConfigs[cn.id] = cn;
+        }
+        const allNodes = allCanvas.concat(Object.values(neededConfigs));
+        const inter = Configurator.toIntermediate(allNodes, { includeIdMap: true });
+        const idToAlias = (inter._meta && inter._meta.idToAlias) || {};
+        delete inter._meta;
+
+        // Annotate each canvas node's intermediate entry with its flow label.
+        // Config nodes get no flow tag (shared/global scope).
+        for (const n of allCanvas) {
+            const alias = idToAlias[n.id];
+            if (alias && inter.nodes[alias]) {
+                inter.nodes[alias].flow = tabLabelById[n.z] || n.z;
+            }
+        }
+
+        const flowNames = [];
+        let activeLabel = null;
+        for (const z of tabIds) {
             const label = tabLabelById[z] || z;
-            const key = result[label] === undefined ? label : (label + ' (' + z + ')');
-            result[key] = Configurator.toIntermediate(flowNodes.concat(referencedConfigs));
-            if (activeWorkspaceId && z === activeWorkspaceId) activeKey = key;
+            if (flowNames.indexOf(label) === -1) flowNames.push(label);
+            if (activeWorkspaceId && z === activeWorkspaceId) activeLabel = label;
         }
-        let header = 'CURRENT FLOWS (Vibe Schema, keyed by tab name — each entry is one flow tab):';
-        if (activeKey) {
-            header += '\nACTIVE FLOW: ' + activeKey;
-        }
+
+        let header = 'CURRENT FLOWS (Vibe Schema — each canvas node has a "flow" field naming its home flow tab). Aliases are globally unique across all flows; do not rename existing aliases.';
+        header += '\nFLOWS: ' + flowNames.map(n => JSON.stringify(n)).join(', ');
+        if (activeLabel) header += '\nACTIVE FLOW: ' + JSON.stringify(activeLabel);
+        header += '\nAll listed flows are editable. When adding a new node, set its "flow" field to one of the FLOWS names to choose its target flow.';
+
         return {
             header: header,
-            body: JSON.stringify(result, null, 2)
+            body: JSON.stringify(inter, null, 2)
         };
     }
 
