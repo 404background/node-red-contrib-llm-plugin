@@ -1555,6 +1555,58 @@
     //  Checkpoint Restore                                                 //
     // ================================================================== //
 
+    function restoreMultiFlowCheckpoint(nodes) {
+        return new Promise(function(resolve, reject) {
+            try {
+                if (!window.RED || !RED.nodes || !RED.view) {
+                    return reject(new Error("Node-RED API not available"));
+                }
+                
+                // Identify target workspaces from checkpoint
+                var workspaceIds = {};
+                nodes.forEach(function(n) {
+                    if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
+                    if (n && n.z) workspaceIds[n.z] = true;
+                });
+                var ids = Object.keys(workspaceIds);
+                if (ids.length === 0) {
+                    var activeWs = getActiveWorkspaceId();
+                    if (activeWs) ids = [activeWs];
+                }
+
+                // Clear any UI selection before destructive operations
+                try {
+                    if (RED.actions && typeof RED.actions.invoke === 'function') {
+                        RED.actions.invoke('core:select-none');
+                    }
+                } catch (e) { /* ignore */ }
+
+                // Clear ONLY the nodes in the target workspaces
+                ids.forEach(function(wsId) {
+                    var list = RED.nodes.filterNodes({ z: wsId }) || [];
+                    if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: wsId }) || []);
+                    if (RED.nodes.filterJunctions) list = list.concat(RED.nodes.filterJunctions({ z: wsId }) || []);
+                    list.filter(isCanvasNode).forEach(function(n) {
+                        try { RED.nodes.remove(n.id); } catch(e) {}
+                    });
+                });
+
+                // Import the snapshot verbatim (do not alter `z` so nodes return to their original tabs)
+                RED.nodes.import(nodes, { generateIds: false, reimport: true, addFlow: false });
+
+                // Force UI synchronization
+                RED.view.redraw(true);
+                if (RED.workspaces && typeof RED.workspaces.refresh === 'function') {
+                    RED.workspaces.refresh();
+                }
+
+                resolve({ ok: true, msg: 'Checkpoint restored' });
+            } catch(e) {
+                reject(e);
+            }
+        });
+    }
+
     Importer.restoreCheckpoint = function(checkpointId) {
         if (!checkpointId) return Promise.resolve({ ok: false, error: 'checkpointId is required' });
         return fetch('llm-plugin/checkpoint/' + encodeURIComponent(checkpointId))
@@ -1570,7 +1622,7 @@
                 if (!cp || !Array.isArray(cp.flow)) {
                     return { ok: false, error: 'Invalid checkpoint data' };
                 }
-                return replaceWorkspaceFlow(cp.flow);
+                return restoreMultiFlowCheckpoint(cp.flow);
             })
             .catch(function(err) {
                 return { ok: false, error: err && err.message ? err.message : String(err) };

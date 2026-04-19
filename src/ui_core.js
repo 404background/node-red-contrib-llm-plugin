@@ -368,10 +368,22 @@
         return Object.keys(collected).map(function(id) { return collected[id]; });
     }
 
-    UI.getCurrentFlow = function() {
+    /**
+     * Gets the full JSON configuration for the specified tab workspaces (or the active tab if omitted),
+     * including nodes, subflows, and config nodes that are referenced by nodes on these tabs.
+     */
+    UI.getCurrentFlow = function(flowIds) {
         if (!window.RED || !RED.workspaces) return null;
         var active = RED.workspaces.active();
-        return active ? UI.getFlowsByIds([active]) : null;
+        var targetIds = [];
+        if (flowIds && Array.isArray(flowIds) && flowIds.length > 0) {
+            targetIds = flowIds;
+        } else if (typeof flowIds === 'string' && flowIds.trim() !== '') {
+            targetIds = [flowIds];
+        } else if (active) {
+            targetIds = [active];
+        }
+        return targetIds.length > 0 ? UI.getFlowsByIds(targetIds) : null;
     };
 
     window.LLMPlugin = window.LLMPlugin || {};

@@ -1,4 +1,4 @@
-// Main sidebar UI module — vanilla JS (no jQuery).
+﻿// Main sidebar UI module — vanilla JS (no jQuery).
 // Builds the plugin sidebar, settings dialog, and generation workflow.
 (function(){
 
@@ -392,14 +392,18 @@
                 return;
             }
 
-            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.addMessage(prompt, true);
+            var flowIdsToSend = getSelectedFlowIds();
+
+            if (window.LLMPlugin && LLMPlugin.ChatManager) {
+                LLMPlugin.ChatManager.addMessage(prompt, true, null, flowIdsToSend);
+            }
             promptInput.value = '';
 
             // Snapshot the pre-change flow at send time so the assistant
             // message's Restore Checkpoint rewinds to this state (no
             // post-apply checkpoint is created by the importer).
             var preSendCheckpointPromise = (window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.savePreSendCheckpoint)
-                ? LLMPlugin.ChatManager.savePreSendCheckpoint()
+                ? LLMPlugin.ChatManager.savePreSendCheckpoint(null, flowIdsToSend)
                 : Promise.resolve(null);
 
             var loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
@@ -411,11 +415,10 @@
             generateBtn.classList.add('stop-btn');
             generateBtn.innerHTML = '<i class="fa fa-stop" aria-hidden="true"></i>';
 
-            var flowIdsToSend = getSelectedFlowIds();
             var currentFlow = null;
-            if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI &&
-                typeof LLMPlugin.UI.getFlowsByIds === 'function') {
-                currentFlow = LLMPlugin.UI.getFlowsByIds(flowIdsToSend);
+            if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI && 
+                typeof LLMPlugin.UI.getCurrentFlow === 'function') {
+                currentFlow = LLMPlugin.UI.getCurrentFlow(flowIdsToSend);
             }
 
             if (currentAbortController) currentAbortController.abort();

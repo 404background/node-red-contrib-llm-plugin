@@ -85,13 +85,13 @@
         chatArea.insertBefore(row, chatArea.firstChild);
     }
 
-    ChatManager.ensureBaselineCheckpoint = function(chatId) {
+    ChatManager.ensureBaselineCheckpoint = function(chatId, targetFlowIds) {
         var id = chatId || ChatManager.getCurrentChatId();
         var chat = chatHistory[id];
         if (!chat || chat.baselineCheckpointId || chat._baselinePending) return;
         if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) return;
 
-        var flow = LLMPlugin.UI.getCurrentFlow();
+        var flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
         if (!Array.isArray(flow) || flow.length === 0) return;
 
         chat._baselinePending = true;
@@ -134,12 +134,12 @@
      * Restore button can rewind to the pre-send state without needing a
      * separate post-apply checkpoint.
      */
-    ChatManager.savePreSendCheckpoint = function(chatId) {
+    ChatManager.savePreSendCheckpoint = function(chatId, targetFlowIds) {
         var id = chatId || ChatManager.getCurrentChatId();
         if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) {
             return Promise.resolve(null);
         }
-        var flow = LLMPlugin.UI.getCurrentFlow();
+        var flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
         if (!Array.isArray(flow) || flow.length === 0) return Promise.resolve(null);
 
         return fetch('llm-plugin/checkpoint/save', {
@@ -310,10 +310,10 @@
         });
     };
 
-    ChatManager.addMessage = function(content, isUser, metaOverwrite) {
+    ChatManager.addMessage = function(content, isUser, metaOverwrite, targetFlowIds) {
         var chatId = ChatManager.getCurrentChatId();
         var chat = chatHistory[chatId];
-        if (isUser) ChatManager.ensureBaselineCheckpoint(chatId);
+        if (isUser) ChatManager.ensureBaselineCheckpoint(chatId, targetFlowIds);
 
         var message = {
             id: generateMessageId(),
