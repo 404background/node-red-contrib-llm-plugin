@@ -369,12 +369,34 @@
     }
 
     /**
+     * Get the ID of the currently active workspace/tab.
+     */
+    UI.getActiveWorkspaceId = function() {
+        if (window.RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
+            return RED.workspaces.active() || null;
+        }
+        return null;
+    };
+
+    /**
+     * Automatically extract unique tab/workspace IDs referenced by a list of nodes.
+     */
+    UI.extractWorkspaceIds = function(nodes) {
+        if (!Array.isArray(nodes)) return [];
+        var workspaceIds = {};
+        nodes.forEach(function(n) {
+            if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
+            if (n && n.z) workspaceIds[n.z] = true;
+        });
+        return Object.keys(workspaceIds);
+    };
+
+    /**
      * Gets the full JSON configuration for the specified tab workspaces (or the active tab if omitted),
      * including nodes, subflows, and config nodes that are referenced by nodes on these tabs.
      */
     UI.getCurrentFlow = function(flowIds) {
-        if (!window.RED || !RED.workspaces) return null;
-        var active = RED.workspaces.active();
+        var active = UI.getActiveWorkspaceId();
         var targetIds = [];
         if (flowIds && Array.isArray(flowIds) && flowIds.length > 0) {
             targetIds = flowIds;

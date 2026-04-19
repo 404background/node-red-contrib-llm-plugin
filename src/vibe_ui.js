@@ -230,10 +230,9 @@
         }
 
         function getActiveWorkspaceId() {
-            if (window.RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
-                return RED.workspaces.active() || null;
-            }
-            return null;
+            return (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.getActiveWorkspaceId === 'function')
+                ? LLMPlugin.UI.getActiveWorkspaceId()
+                : null;
         }
 
         function ensureDefaultSelection() {

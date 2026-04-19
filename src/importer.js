@@ -315,16 +315,9 @@
     // ================================================================== //
 
     function getActiveWorkspaceId() {
-        var currentWorkspace = null;
-        try {
-            if (RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
-                currentWorkspace = RED.workspaces.active();
-            }
-        } catch(e) { /* ignore */ }
-        if (currentWorkspace && typeof currentWorkspace === 'object' && currentWorkspace.id) {
-            currentWorkspace = currentWorkspace.id;
-        }
-        return (currentWorkspace && typeof currentWorkspace === 'string') ? currentWorkspace : null;
+        return (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.getActiveWorkspaceId === 'function')
+            ? LLMPlugin.UI.getActiveWorkspaceId()
+            : null;
     }
 
     function saveCheckpoint(chatId, label, flow, meta) {
@@ -1563,12 +1556,18 @@
                 }
                 
                 // Identify target workspaces from checkpoint
-                var workspaceIds = {};
-                nodes.forEach(function(n) {
-                    if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
-                    if (n && n.z) workspaceIds[n.z] = true;
-                });
-                var ids = Object.keys(workspaceIds);
+                var ids = [];
+                if (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.extractWorkspaceIds === 'function') {
+                    ids = LLMPlugin.UI.extractWorkspaceIds(nodes);
+                } else {
+                    var workspaceIds = {};
+                    nodes.forEach(function(n) {
+                        if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
+                        if (n && n.z) workspaceIds[n.z] = true;
+                    });
+                    ids = Object.keys(workspaceIds);
+                }
+
                 if (ids.length === 0) {
                     var activeWs = getActiveWorkspaceId();
                     if (activeWs) ids = [activeWs];
