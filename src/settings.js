@@ -33,8 +33,13 @@
                 providerSelect.value = data.provider || 'ollama';
                 ollamaUrlInput.value = '';
                 ollamaUrlInput.placeholder = data.ollamaUrlMasked || 'http://localhost:11434';
-                apiKeyInput.value = '';
-                apiKeyInput.placeholder = data.openaiApiKeyMasked || 'sk-...';
+                if (data.openaiApiKeyMasked) {
+                    apiKeyInput.value = '__EXISTING_KEY__';
+                    apiKeyInput.placeholder = data.openaiApiKeyMasked;
+                } else {
+                    apiKeyInput.value = '';
+                    apiKeyInput.placeholder = 'sk-...';
+                }
                 if (systemPromptInput) {
                     // Show saved prompt, or default if never set
                     var saved = data.systemPrompt;

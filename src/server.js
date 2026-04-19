@@ -663,11 +663,13 @@ function createLLMPluginServer(RED) {
             } else {
                 newSettings.ollamaUrl = existing.ollamaUrl || 'http://localhost:11434';
             }
-            // If API key field is empty, preserve the existing key (user didn't change it)
-            if (body.openaiApiKey && typeof body.openaiApiKey === 'string' && body.openaiApiKey.trim() !== '') {
+            // Handle API key updates (including deletion)
+            if (body.openaiApiKey === '__EXISTING_KEY__') {
+                newSettings.openaiApiKey = existing.openaiApiKey || '';
+            } else if (body.openaiApiKey && typeof body.openaiApiKey === 'string' && body.openaiApiKey.trim() !== '') {
                 newSettings.openaiApiKey = body.openaiApiKey.trim();
             } else {
-                newSettings.openaiApiKey = existing.openaiApiKey || '';
+                newSettings.openaiApiKey = '';
             }
             // System prompt (user-authored, always save as-is)
             if (body.systemPrompt !== undefined && body.systemPrompt !== null) {
