@@ -311,5 +311,5 @@ User types prompt
 - **Backward compatibility**: The importer auto-detects both Vibe Schema and raw Node-RED JSON. If an LLM outputs the old format, it still works.
 - **Adding a new endpoint**: Add the route in the *HTTP admin endpoints* section of `server.js`. Restart Node-RED to apply.
 - **Adding a new client module**: Create a new file under `src/`, add it to the load list in `client.js`, and expose its API on `window.LLMPlugin`.
-- **Chat storage**: JSON files in `.logs/llm-plugin/chats/` with pattern `YYYY-MM-DD-<title>-<id>.json`.
+- **Chat storage**: JSON files in `llm-plugin-data/chats/` (within the Node-RED `userDir`) with pattern `YYYY-MM-DD-<title>-<id>.json`.
 - **Settings storage**: `RED.settings.get/set('llmPluginSettings')` — persisted in Node-RED's internal config, not in exported flows.

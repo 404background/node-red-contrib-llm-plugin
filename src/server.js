@@ -15,7 +15,9 @@ const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(
 );
 
 function createLLMPluginServer(RED) {
-    const logsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
+    // Store data in the Node-RED user directory (safe across plugin updates/Docker restarts)
+    const userDir = RED.settings.userDir || process.env.NODE_RED_HOME || process.cwd();
+    const logsDir = path.join(userDir, 'llm-plugin-data');
     const checkpointsDir = path.join(logsDir, 'checkpoints');
     const clientEventsLog = path.join(logsDir, 'client-events.log');
     fs.ensureDirSync(logsDir);
@@ -160,8 +162,18 @@ function createLLMPluginServer(RED) {
             const rawTitle = (chatData.title && typeof chatData.title === 'string') ? chatData.title : 'untitled';
             const sanitizedTitle = rawTitle.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
             const filename = `${date}-${sanitizedTitle}-${chatId}.json`;
-            const filepath = path.join(logsDir, 'chats', filename);
-            fs.ensureDirSync(path.dirname(filepath));
+            const chatsDir = path.join(logsDir, 'chats');
+            const filepath = path.join(chatsDir, filename);
+            fs.ensureDirSync(chatsDir);
+
+            // Clean up any older files for this chatId to prevent duplicates
+            try {
+                const existingFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith(`-${chatId}.json`));
+                existingFiles.forEach(file => {
+                    if (file !== filename) fs.unlinkSync(path.join(chatsDir, file));
+                });
+            } catch (e) { /* ignore cleanup errors */ }
+
             writeFileAtomic(filepath, JSON.stringify(chatData, null, 2));
         } catch (error) {
             console.error("[LLM Plugin] Error saving chat history:", error);
