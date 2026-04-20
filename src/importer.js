@@ -1065,9 +1065,8 @@
                         options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
                     } else {
                         if (window.RED && RED.notify) {
-                            RED.notify('Target flow "' + targetLabel + '" not found. Import aborted to prevent modifying the current flow.', 'error');
+                            RED.notify('Target flow "' + targetLabel + '" not found. Using current workspace instead.', 'warning');
                         }
-                        return { ok: false, error: 'Target flow "' + targetLabel + '" not found.' };
                     }
                 }
             }
