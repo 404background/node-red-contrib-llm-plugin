@@ -306,10 +306,24 @@
 
     function collectReferencedConfigs(nodes, seenIds) {
         let configNodes = [];
+        let referencedIds = {};
+
+        // Find which config node IDs are actually referenced by the targeted canvas nodes
+        nodes.forEach(function(n) {
+            Object.keys(n).forEach(function(k) {
+                if (k === 'id' || k === 'z' || k === 'type' || k === 'wires' || k === 'x' || k === 'y') return;
+                if (typeof n[k] === 'string' && n[k].length > 5) {
+                    referencedIds[n[k]] = true;
+                }
+            });
+        });
+
         if (RED.nodes.eachConfig) {
             RED.nodes.eachConfig(function(cn) {
-                if (cn && (!seenIds || !seenIds[cn.id])) {
+                // Include config nodes ONLY if they are explicitly referenced
+                if (cn && (!seenIds || !seenIds[cn.id]) && referencedIds[cn.id]) {
                     configNodes.push(cn);
+                    seenIds[cn.id] = true;
                 }
             });
         }

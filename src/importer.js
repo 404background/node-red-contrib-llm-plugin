@@ -859,16 +859,25 @@
         // Update existing config nodes in-place (properties only; no re-import)
         configNodesToUpdate.forEach(function(nn) {
             try {
-                // Auto-created stubs have no real props  - skip to preserve existing settings
+                // Auto-created stubs have no real props - skip to preserve existing settings
                 if (nn._autoStub) return;
                 let existing = RED.nodes.node(nn.id);
                 if (!existing) return;
+
+                let isDirty = false;
                 Object.keys(nn).forEach(function(key) {
                     if (key === 'id' || key === 'type') return;
-                    existing[key] = nn[key];
+                    if (existing[key] !== nn[key] &&
+                        JSON.stringify(existing[key]) !== JSON.stringify(nn[key])) {
+                        existing[key] = nn[key];
+                        isDirty = true;
+                    }
                 });
-                existing.dirty = true;
-                existing.changed = true;
+
+                if (isDirty) {
+                    existing.dirty = true;
+                    existing.changed = true;
+                }
             } catch (e) {
                 safeLog('[LLM Plugin] Failed to update config node:', nn.id, e);
             }
