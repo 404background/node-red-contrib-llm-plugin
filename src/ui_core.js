@@ -236,8 +236,16 @@
                                 ? messageMeta.meta.preSendCheckpointId
                                 : null;
                             if (checkpointId) {
-                                flowActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
-                                flowActions.appendChild(createRestoreCheckpointButton(checkpointId));
+                                var preChatActions = message.querySelector('.pre-chat-actions');
+                                if (!preChatActions) {
+                                    preChatActions = document.createElement('div');
+                                    preChatActions.className = 'flow-actions pre-chat-actions';
+                                    preChatActions.style.marginTop = '0';
+                                    preChatActions.style.marginBottom = '10px';
+                                    message.insertBefore(preChatActions, message.firstChild);
+                                }
+                                preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
+                                preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
                                 if (messageMeta && messageMeta.id && window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.updateMessageMeta) {
                                     LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
                                         pluginEdited: true,
@@ -257,7 +265,12 @@
                         ? messageMeta.meta.checkpointId
                         : null;
                     if (existingCheckpointId) {
-                        flowActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
+                        var preChatActions = document.createElement('div');
+                        preChatActions.className = 'flow-actions pre-chat-actions';
+                        preChatActions.style.marginTop = '0';
+                        preChatActions.style.marginBottom = '10px';
+                        preChatActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
+                        message.insertBefore(preChatActions, message.firstChild);
                     }
 
                     message.appendChild(flowActions);
