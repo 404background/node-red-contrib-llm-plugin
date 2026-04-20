@@ -86,6 +86,13 @@
     function initializeClientApp(settingsManager) {
         var generateBtn       = document.getElementById('llm-plugin-generate');
         var modelInput        = document.getElementById('llm-plugin-model');
+        // Restore last used model from localStorage
+        try {
+            var lastModel = localStorage.getItem('llm-plugin-last-model');
+            if (lastModel) {
+                modelInput.value = lastModel;
+            }
+        } catch (e) { /* ignore localStorage errors */ }
         var promptInput       = document.getElementById('llm-plugin-prompt');
         var chatArea          = document.getElementById('llm-plugin-chat');
         var flowSelector      = document.getElementById('llm-plugin-flow-selector');
@@ -385,6 +392,12 @@
         function handleGenerate() {
             var model  = modelInput.value.trim();
             var prompt = promptInput.value.trim();
+            
+            // Save model to localStorage
+            try {
+                if (model) localStorage.setItem('llm-plugin-last-model', model);
+            } catch (e) { /* ignore localStorage errors */ }
+
             var mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
             if (!model || !prompt) {
                 if (window.RED && RED.notify) RED.notify('Please enter both model and prompt', 'warning');

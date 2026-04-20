@@ -884,7 +884,8 @@
         });
 
         try {
-            console.log('[LLM PLUG DEBUG]', importNodes);
+            // Debug output hidden by default
+            // console.log('[LLM PLUG DEBUG]', importNodes);
               postTerminalLog('info', 'import-nodes-before', 'ImportNodes array before RED.nodes.import', { importNodes: importNodes });
               var importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
               postTerminalLog('info', 'import-nodes-after', 'RED.nodes.import result OK', { count: (importResult||[]).length });

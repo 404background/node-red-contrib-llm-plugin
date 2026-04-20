@@ -23,6 +23,35 @@ function createLLMPluginServer(RED) {
     fs.ensureDirSync(logsDir);
     fs.ensureDirSync(checkpointsDir);
 
+    // --- Migrate old data if present ---
+    try {
+        const oldLogsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
+        if (fs.existsSync(oldLogsDir)) {
+            const oldChatsDir = path.join(oldLogsDir, 'chats');
+            const newChatsDir = path.join(logsDir, 'chats');
+            if (fs.existsSync(oldChatsDir)) {
+                fs.ensureDirSync(newChatsDir);
+                const files = fs.readdirSync(oldChatsDir);
+                for (let file of files) {
+                    const src = path.join(oldChatsDir, file);
+                    const dest = path.join(newChatsDir, file);
+                    if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
+                }
+            }
+            const oldCheckpointsDir = path.join(oldLogsDir, 'checkpoints');
+            if (fs.existsSync(oldCheckpointsDir)) {
+                const cpFiles = fs.readdirSync(oldCheckpointsDir);
+                for (let file of cpFiles) {
+                    const src = path.join(oldCheckpointsDir, file);
+                    const dest = path.join(checkpointsDir, file);
+                    if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
+                }
+            }
+        }
+    } catch(e) {
+        RED.log.warn('[LLM Plugin] Failed to migrate old chat logs: ' + e.message);
+    }
+
     function writeClientEvent(level, event, message, meta) {
         const lv = String(level || 'info').toLowerCase();
         const safeLevel = (lv === 'error' || lv === 'warn' || lv === 'warning') ? lv : 'info';
@@ -56,7 +85,8 @@ function createLLMPluginServer(RED) {
         const line = `[LLM Plugin][Client][${payload.event}] ${payload.message}${metaPreview}`;
         if (safeLevel === 'error') RED.log.error(line);
         else if (safeLevel === 'warn' || safeLevel === 'warning') RED.log.warn(line);
-        else RED.log.info(line);
+        // By default, info level debug output to terminal is suppressed.
+        // else RED.log.info(line);
     }
 
     // ------------------------------------------------------------------ //
