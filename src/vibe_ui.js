@@ -20,7 +20,7 @@
             '</div>' +
             '<div class="llm-plugin-chat" id="llm-plugin-chat"></div>' +
             '<div class="llm-plugin-input">' +
-                '<div class="flow-selector" id="llm-plugin-flow-selector">' +
+                '<details class="llm-session-config" open><summary style="font-size: 12px; cursor: pointer; color: #666; margin-bottom: 8px; font-weight: bold;">Session Options</summary><div class="flow-selector" id="llm-plugin-flow-selector">' +
                     '<button type="button" class="flow-selector-toggle" id="llm-plugin-flow-toggle" aria-haspopup="listbox" aria-expanded="false">' +
                         '<span class="flow-selector-label" id="llm-plugin-flow-label">Current Open Flow</span>' +
                         '<i class="fa fa-caret-down flow-selector-caret" aria-hidden="true"></i>' +
@@ -34,7 +34,7 @@
                         '<option value="agent">Agent</option>' +
                     '</select>' +
                 '</div>' +
-                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">' +
+                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></details>' +
                 '<div class="prompt-input-group">' +
                     '<textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>' +
                     '<button id="llm-plugin-generate" class="generate-btn">Send</button>' +
