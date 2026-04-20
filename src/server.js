@@ -286,8 +286,9 @@ function createLLMPluginServer(RED) {
         for (const z of tabIds) {
             const flowNodes = byTab[z] || [];
             for (const n of flowNodes) allCanvas.push(n);
-            const refs = collectReferencedConfigsServer(flowNodes, configById);
-            for (const cn of refs) if (cn && cn.id) neededConfigs[cn.id] = cn;
+        }
+        for (const cn of Object.values(configById)) {
+            if (cn && cn.id) neededConfigs[cn.id] = cn;
         }
         const allNodes = allCanvas.concat(Object.values(neededConfigs));
         const inter = Configurator.toIntermediate(allNodes, { includeIdMap: true });
@@ -320,26 +321,6 @@ function createLLMPluginServer(RED) {
             header: header,
             body: JSON.stringify(inter, null, 2)
         };
-    }
-
-    function collectReferencedConfigsServer(flowNodes, configById) {
-        if (!configById || Object.keys(configById).length === 0) return [];
-        const collected = {};
-        const queue = flowNodes.slice();
-        while (queue.length > 0) {
-            const cur = queue.shift();
-            if (!cur) continue;
-            for (const key of Object.keys(cur)) {
-                const v = cur[key];
-                if (typeof v !== 'string') continue;
-                const cn = configById[v];
-                if (cn && !collected[cn.id]) {
-                    collected[cn.id] = cn;
-                    queue.push(cn);
-                }
-            }
-        }
-        return Object.values(collected);
     }
 
     // Build the system prompt.

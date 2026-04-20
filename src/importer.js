@@ -1390,6 +1390,10 @@
                         nn.wires = mergedWires;
                     }
                 } else {
+                    if (nn._autoStub) {
+                        existingIds.add(nn.id);
+                        return null;
+                    }
                     if (isPatchOnlyUpdate) {
                         droppedPatchCandidates += 1;
                         return null;

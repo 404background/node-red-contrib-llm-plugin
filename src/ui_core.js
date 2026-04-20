@@ -346,26 +346,14 @@
 
     function collectReferencedConfigs(nodes, seenIds) {
         var configNodes = [];
-        var allConfigById = {};
         if (RED.nodes.eachConfig) {
-            RED.nodes.eachConfig(function(cn) { allConfigById[cn.id] = cn; });
-        }
-        if (Object.keys(allConfigById).length === 0) return configNodes;
-        var collected = {};
-        var queue = nodes.slice();
-        while (queue.length > 0) {
-            var cur = queue.shift();
-            if (!cur) continue;
-            Object.keys(cur).forEach(function(key) {
-                if (typeof cur[key] !== 'string') return;
-                var cn = allConfigById[cur[key]];
-                if (cn && !collected[cn.id] && !(seenIds && seenIds[cn.id])) {
-                    collected[cn.id] = cn;
-                    queue.push(cn);
+            RED.nodes.eachConfig(function(cn) {
+                if (cn && (!seenIds || !seenIds[cn.id])) {
+                    configNodes.push(cn);
                 }
             });
         }
-        return Object.keys(collected).map(function(id) { return collected[id]; });
+        return configNodes;
     }
 
     /**

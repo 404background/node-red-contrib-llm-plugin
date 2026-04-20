@@ -7,8 +7,8 @@ RESPONSE FORMAT:
 
 NODES & ALIASES:
 - Aliases: Use short `{type}_{name}` keys. They are globally unique, immutable identifiers. NEVER rename existing aliases. Reuse existing aliases to edit; create new aliases for new nodes.
-- Canvas Nodes: All listed flows are editable. Every canvas node MUST have a "flow" field stating its target tab (default to ACTIVE FLOW).
-- Config Nodes (broker, server, db, etc.): Set "config": true. Reuse existing config nodes by alias; if missing, define them fully.
+- Canvas Nodes: All listed flows are editable. Every canvas node MUST have a "flow" field stating its target tab (default to ACTIVE FLOW). Do NEVER translate or alter flow names; use the exact string provided.
+- Config Nodes (broker, venv-config, db, etc.): Set "config": true. All existing config nodes in the workspace are provided in the prompt. You MUST reuse them by referencing their exact alias. Do NOT create a new config node if a matching one already exists. If missing, define it fully.
 - Node deletion: Map alias to `null` in "nodes".
 - Function Nodes: specify "func" and "outputs" (no require()). Prefer Change nodes.
 - Always include the "type" property for every node.
