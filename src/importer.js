@@ -58,27 +58,32 @@
         var target = label.trim();
         if (!target) return null;
         var byLabel = [];
-          var byFuzzy = [];
-          var byId = null;
-          
-          var fuzzyTarget = target.replace(/[\s\u3000]+/g, '').toLowerCase();
+        var byFuzzy = [];
+        var byId = null;
 
-          if (typeof RED.nodes.eachWorkspace === 'function') {
-              RED.nodes.eachWorkspace(function(ws) {
-                  if (!ws || !ws.id || ws.type !== 'tab') return;
-                  if (ws.id === target) byId = ws.id;
-                  var lbl = String(ws.label || '').trim();
-                  if (lbl === target) {
-                      byLabel.push(ws.id);
-                  } else {
-                      var fuzzyLbl = lbl.replace(/[\s\u3000]+/g, '').toLowerCase();
-                      if (fuzzyLbl === fuzzyTarget) byFuzzy.push(ws.id);
-                  }
-              });
-          }
-          if (byId) return byId;
-          if (byLabel.length === 1) return byLabel[0];
-          if (byLabel.length === 0 && byFuzzy.length === 1) return byFuzzy[0];
+        function normalizeForFuzzy(str) {
+            var s = str.replace(/[\s\u3000_]+/g, '').toLowerCase();
+            return (String.prototype.normalize) ? s.normalize('NFKC') : s;
+        }
+
+        var fuzzyTarget = normalizeForFuzzy(target);
+
+        if (typeof RED.nodes.eachWorkspace === 'function') {
+            RED.nodes.eachWorkspace(function(ws) {
+                if (!ws || !ws.id || ws.type !== 'tab') return;
+                if (ws.id === target) byId = ws.id;
+                var lbl = String(ws.label || '').trim();
+                if (lbl === target) {
+                    byLabel.push(ws.id);
+                } else {
+                    var fuzzyLbl = normalizeForFuzzy(lbl);
+                    if (fuzzyLbl === fuzzyTarget) byFuzzy.push(ws.id);
+                }
+            });
+        }
+        if (byId) return byId;
+        if (byLabel.length === 1) return byLabel[0];
+        if (byLabel.length === 0 && byFuzzy.length === 1) return byFuzzy[0];
         return null;
     }
 
@@ -1506,9 +1511,11 @@
             var rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives, applyMode);
             var rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
             if (!rebuiltResult || !rebuiltResult.ok) {
+                var errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
+                if (window && window.RED && RED.notify) RED.notify('Import failed: ' + errMsg, 'error');
                 return {
                     ok: false,
-                    error: (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot'
+                    error: errMsg
                 };
             }
 
