@@ -891,7 +891,9 @@
 
         try {
             console.log('[LLM PLUG DEBUG]', importNodes);
+              postTerminalLog('info', 'import-nodes-before', 'ImportNodes array before RED.nodes.import', { importNodes: importNodes });
               var importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
+              postTerminalLog('info', 'import-nodes-after', 'RED.nodes.import result', { importResult: importResult });
             // Intentionally bypass RED.history.push to avoid the user doing Ctrl+Z 
             // and wiping their entire flow. Use plugin checkpoints to revert.
             stabilizeView();
