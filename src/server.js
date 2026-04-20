@@ -15,42 +15,12 @@ const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(
 );
 
 function createLLMPluginServer(RED) {
-    // Store data in the Node-RED user directory (safe across plugin updates/Docker restarts)
-    const userDir = RED.settings.userDir || process.env.NODE_RED_HOME || process.cwd();
-    const logsDir = path.join(userDir, 'llm-plugin-data');
+    // Create logs directory in plugin folder
+    const logsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
     const checkpointsDir = path.join(logsDir, 'checkpoints');
     const clientEventsLog = path.join(logsDir, 'client-events.log');
     fs.ensureDirSync(logsDir);
     fs.ensureDirSync(checkpointsDir);
-
-    // --- Migrate old data if present ---
-    try {
-        const oldLogsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
-        if (fs.existsSync(oldLogsDir)) {
-            const oldChatsDir = path.join(oldLogsDir, 'chats');
-            const newChatsDir = path.join(logsDir, 'chats');
-            if (fs.existsSync(oldChatsDir)) {
-                fs.ensureDirSync(newChatsDir);
-                const files = fs.readdirSync(oldChatsDir);
-                for (let file of files) {
-                    const src = path.join(oldChatsDir, file);
-                    const dest = path.join(newChatsDir, file);
-                    if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
-                }
-            }
-            const oldCheckpointsDir = path.join(oldLogsDir, 'checkpoints');
-            if (fs.existsSync(oldCheckpointsDir)) {
-                const cpFiles = fs.readdirSync(oldCheckpointsDir);
-                for (let file of cpFiles) {
-                    const src = path.join(oldCheckpointsDir, file);
-                    const dest = path.join(checkpointsDir, file);
-                    if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
-                }
-            }
-        }
-    } catch(e) {
-        RED.log.warn('[LLM Plugin] Failed to migrate old chat logs: ' + e.message);
-    }
 
     function writeClientEvent(level, event, message, meta) {
         const lv = String(level || 'info').toLowerCase();
