@@ -97,7 +97,7 @@
         // Structural detection: config nodes have no canvas properties.
         // Exclude tab and subflow definitions which also lack x/y/wires.
         if (type === 'tab' || type.indexOf('subflow:') === 0) return false;
-        var hasZ = typeof node.z === 'string' && node.z.length > 0;
+        var hasZ = false; // Ignore z (config nodes can be workspace scoped)
         var hasXY = typeof node.x === 'number' || typeof node.y === 'number';
         var hasWires = Array.isArray(node.wires);
         var hasGroup = typeof node.g === 'string' && node.g.length > 0;

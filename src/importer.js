@@ -893,14 +893,15 @@
             console.log('[LLM PLUG DEBUG]', importNodes);
               postTerminalLog('info', 'import-nodes-before', 'ImportNodes array before RED.nodes.import', { importNodes: importNodes });
               var importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
-              postTerminalLog('info', 'import-nodes-after', 'RED.nodes.import result', { importResult: importResult });
+              postTerminalLog('info', 'import-nodes-after', 'RED.nodes.import result OK', { count: (importResult||[]).length });
             // Intentionally bypass RED.history.push to avoid the user doing Ctrl+Z 
             // and wiping their entire flow. Use plugin checkpoints to revert.
             stabilizeView();
             return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
         } catch (e) {
-            try {
-                if (backupEntitiesJSON && backupEntitiesJSON.length > 0) {
+              postTerminalLog('error', 'import-nodes-error', 'RED.nodes.import threw an error', { error: e ? String(e && e.message ? e.message : e) : 'unknown' });
+              try {
+                  if (backupEntitiesJSON && backupEntitiesJSON.length > 0) {
                     RED.nodes.import(backupEntitiesJSON, { generateIds: false, reimport: true, addFlow: false });
                     stabilizeView();
                 }
