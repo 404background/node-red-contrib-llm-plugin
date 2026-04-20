@@ -7,7 +7,7 @@
      * Node-RED's sidebar.addTab accepts DOM elements for its `content` property.
      */
     function createLLMPluginUI() {
-        var container = document.createElement('div');
+        let container = document.createElement('div');
         container.className = 'llm-plugin-container';
         container.innerHTML =
             '<div class="llm-plugin-header">' +
@@ -45,8 +45,8 @@
             '</div>';
 
         // Inject settings form from the <script> template defined in llm_plugin.html
-        var settingsDialog = container.querySelector('#llm-plugin-settings-dialog');
-        var templateEl = document.getElementById('llm-plugin-settings-template');
+        let settingsDialog = container.querySelector('#llm-plugin-settings-dialog');
+        let templateEl = document.getElementById('llm-plugin-settings-template');
         settingsDialog.innerHTML = templateEl
             ? templateEl.innerHTML
             : '<div class="llm-settings-missing">Settings template not found.</div>';
@@ -65,7 +65,7 @@
         });
 
         // Settings manager (accepts raw DOM element after settings.js refactor)
-        var settingsManager = null;
+        let settingsManager = null;
         if (window.createLLMPluginSettings) {
             settingsManager = window.createLLMPluginSettings(settingsDialog);
         } else {
@@ -84,37 +84,37 @@
      * @param {Object|null} settingsManager  load/save/updateVisibility
      */
     function initializeClientApp(settingsManager) {
-        var generateBtn       = document.getElementById('llm-plugin-generate');
-        var modelInput        = document.getElementById('llm-plugin-model');
+        let generateBtn       = document.getElementById('llm-plugin-generate');
+        let modelInput        = document.getElementById('llm-plugin-model');
         // Restore last used model from localStorage
         try {
-            var lastModel = localStorage.getItem('llm-plugin-last-model');
+            let lastModel = localStorage.getItem('llm-plugin-last-model');
             if (lastModel) {
                 modelInput.value = lastModel;
             }
         } catch (e) { /* ignore localStorage errors */ }
-        var promptInput       = document.getElementById('llm-plugin-prompt');
-        var chatArea          = document.getElementById('llm-plugin-chat');
-        var flowSelector      = document.getElementById('llm-plugin-flow-selector');
-        var flowToggleBtn     = document.getElementById('llm-plugin-flow-toggle');
-        var flowPanel         = document.getElementById('llm-plugin-flow-panel');
-        var flowLabel         = document.getElementById('llm-plugin-flow-label');
-        var modeSelect        = document.getElementById('llm-plugin-mode');
-        var settingsOverlay   = document.getElementById('llm-plugin-settings-overlay');
-        var settingsDialog    = document.getElementById('llm-plugin-settings-dialog');
-        var openSettingsBtn   = document.getElementById('llm-plugin-settings-button');
-        var saveSettingsBtn   = document.getElementById('llm-plugin-settings-save');
-        var cancelSettingsBtn = document.getElementById('llm-plugin-settings-cancel');
+        let promptInput       = document.getElementById('llm-plugin-prompt');
+        let chatArea          = document.getElementById('llm-plugin-chat');
+        let flowSelector      = document.getElementById('llm-plugin-flow-selector');
+        let flowToggleBtn     = document.getElementById('llm-plugin-flow-toggle');
+        let flowPanel         = document.getElementById('llm-plugin-flow-panel');
+        let flowLabel         = document.getElementById('llm-plugin-flow-label');
+        let modeSelect        = document.getElementById('llm-plugin-mode');
+        let settingsOverlay   = document.getElementById('llm-plugin-settings-overlay');
+        let settingsDialog    = document.getElementById('llm-plugin-settings-dialog');
+        let openSettingsBtn   = document.getElementById('llm-plugin-settings-button');
+        let saveSettingsBtn   = document.getElementById('llm-plugin-settings-save');
+        let cancelSettingsBtn = document.getElementById('llm-plugin-settings-cancel');
 
-        var currentAbortController = null;
-        var cachedSettings = null;
-        var settingsSaving = false;
-        var lastFocusedBeforeSettings = null;
+        let currentAbortController = null;
+        let cachedSettings = null;
+        let settingsSaving = false;
+        let lastFocusedBeforeSettings = null;
         // Selected workspace IDs to send as flow context. Initialized lazily to
         // the active tab on first use so the "Current Open Flow" default works
         // even before RED is fully ready.
-        var selectedFlowIds = {};
-        var selectionInitialized = false;
+        let selectedFlowIds = {};
+        let selectionInitialized = false;
 
         // --- Chat history bootstrap ---
         if (window.LLMPlugin && LLMPlugin.ChatManager) {
@@ -139,8 +139,8 @@
                 settingsDialog.setAttribute('tabindex', '-1');
                 settingsDialog.focus();
                 // Focus first visible input
-                var fields = settingsDialog.querySelectorAll('select, input');
-                for (var i = 0; i < fields.length; i++) {
+                let fields = settingsDialog.querySelectorAll('select, input');
+                for (let i = 0; i < fields.length; i++) {
                     if (fields[i].offsetParent !== null) {
                         (function(f) { setTimeout(function() { f.focus(); }, 30); })(fields[i]);
                         break;
@@ -169,7 +169,7 @@
 
         saveSettingsBtn.addEventListener('click', function() {
             if (!settingsManager || settingsSaving) return;
-            var settings = settingsManager.save();
+            let settings = settingsManager.save();
             settingsSaving = true;
             saveSettingsBtn.disabled = true;
             saveSettingsBtn.classList.add('saving');
@@ -203,7 +203,7 @@
             if (generateBtn.classList.contains('stop-btn')) {
                 if (currentAbortController) {
                     currentAbortController.abort();
-                    var loadingMsg = chatArea.querySelector('.loading-message');
+                    let loadingMsg = chatArea.querySelector('.loading-message');
                     if (loadingMsg) loadingMsg.remove();
                     resetGenerateBtn();
                     currentAbortController = null;
@@ -225,7 +225,7 @@
 
         // --- Flow selector ---
         function listWorkspaces() {
-            var out = [];
+            let out = [];
             if (window.RED && RED.nodes && typeof RED.nodes.eachWorkspace === 'function') {
                 RED.nodes.eachWorkspace(function(ws) {
                     if (ws && ws.id && ws.type === 'tab') {
@@ -244,7 +244,7 @@
 
         function ensureDefaultSelection() {
             if (selectionInitialized) return;
-            var active = getActiveWorkspaceId();
+            let active = getActiveWorkspaceId();
             if (active) {
                 selectedFlowIds[active] = true;
                 selectionInitialized = true;
@@ -252,8 +252,8 @@
         }
 
         function updateFlowLabel(workspaces) {
-            var ids = Object.keys(selectedFlowIds);
-            var active = getActiveWorkspaceId();
+            let ids = Object.keys(selectedFlowIds);
+            let active = getActiveWorkspaceId();
             if (ids.length === 0) {
                 flowLabel.textContent = 'No flow context';
                 return;
@@ -262,10 +262,10 @@
                 flowLabel.textContent = 'Current Open Flow';
                 return;
             }
-            var ws = workspaces || listWorkspaces();
-            var byId = {};
+            let ws = workspaces || listWorkspaces();
+            let byId = {};
             ws.forEach(function(w) { byId[w.id] = w.label; });
-            var names = ids.map(function(id) { return byId[id] || id; });
+            let names = ids.map(function(id) { return byId[id] || id; });
             if (names.length <= 2) {
                 flowLabel.textContent = names.join(', ');
             } else {
@@ -276,18 +276,18 @@
         function renderFlowPanel() {
             while (flowPanel.firstChild) flowPanel.removeChild(flowPanel.firstChild);
 
-            var workspaces = listWorkspaces();
+            let workspaces = listWorkspaces();
             if (workspaces.length === 0) {
-                var empty = document.createElement('div');
+                let empty = document.createElement('div');
                 empty.className = 'flow-selector-empty';
                 empty.textContent = 'No flows available';
                 flowPanel.appendChild(empty);
                 return;
             }
 
-            var active = getActiveWorkspaceId();
+            let active = getActiveWorkspaceId();
             workspaces.forEach(function(ws) {
-                var row = buildFlowOption({
+                let row = buildFlowOption({
                     label: ws.label,
                     checked: !!selectedFlowIds[ws.id],
                     isActive: ws.id === active,
@@ -302,14 +302,14 @@
         }
 
         function buildFlowOption(opts) {
-            var row = document.createElement('label');
+            let row = document.createElement('label');
             row.className = 'flow-selector-option';
             if (opts.isActive) row.classList.add('flow-selector-current');
-            var cb = document.createElement('input');
+            let cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.checked = !!opts.checked;
             cb.addEventListener('change', function() { opts.onToggle(cb.checked); });
-            var span = document.createElement('span');
+            let span = document.createElement('span');
             span.textContent = opts.label;
             row.appendChild(cb);
             row.appendChild(span);
@@ -323,11 +323,11 @@
         // Position the panel using fixed coordinates so it escapes any
         // overflow:hidden ancestor from Node-RED's sidebar/flex layout.
         function positionPanel() {
-            var rect = flowToggleBtn.getBoundingClientRect();
-            var panelHeight = flowPanel.offsetHeight || 220;
-            var spaceAbove = rect.top;
-            var spaceBelow = window.innerHeight - rect.bottom;
-            var openUp = spaceBelow < panelHeight && spaceAbove > spaceBelow;
+            let rect = flowToggleBtn.getBoundingClientRect();
+            let panelHeight = flowPanel.offsetHeight || 220;
+            let spaceAbove = rect.top;
+            let spaceBelow = window.innerHeight - rect.bottom;
+            let openUp = spaceBelow < panelHeight && spaceAbove > spaceBelow;
             flowPanel.style.left = rect.left + 'px';
             flowPanel.style.width = rect.width + 'px';
             if (openUp) {
@@ -339,8 +339,8 @@
 
         // Listeners attached only while the panel is open, so they don't
         // run on every chat-area scroll during LLM streaming.
-        var repositionOnScroll = function() { if (isPanelOpen()) positionPanel(); };
-        var repositionOnResize = function() { if (isPanelOpen()) positionPanel(); };
+        let repositionOnScroll = function() { if (isPanelOpen()) positionPanel(); };
+        let repositionOnResize = function() { if (isPanelOpen()) positionPanel(); };
 
         function openFlowPanel() {
             renderFlowPanel();
@@ -377,7 +377,7 @@
                     updateFlowLabel();
                 });
                 RED.events.on('flows:change', function() {
-                    var workspaces = listWorkspaces();
+                    let workspaces = listWorkspaces();
                     if (isPanelOpen()) renderFlowPanel();
                     updateFlowLabel(workspaces);
                 });
@@ -390,21 +390,21 @@
 
         // --- Core generation flow ---
         function handleGenerate() {
-            var model  = modelInput.value.trim();
-            var prompt = promptInput.value.trim();
+            let model  = modelInput.value.trim();
+            let prompt = promptInput.value.trim();
             
             // Save model to localStorage
             try {
                 if (model) localStorage.setItem('llm-plugin-last-model', model);
             } catch (e) { /* ignore localStorage errors */ }
 
-            var mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
+            let mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
             if (!model || !prompt) {
                 if (window.RED && RED.notify) RED.notify('Please enter both model and prompt', 'warning');
                 return;
             }
 
-            var flowIdsToSend = getSelectedFlowIds();
+            let flowIdsToSend = getSelectedFlowIds();
 
             if (window.LLMPlugin && LLMPlugin.ChatManager) {
                 LLMPlugin.ChatManager.addMessage(prompt, true, null, flowIdsToSend);
@@ -414,11 +414,11 @@
             // Snapshot the pre-change flow at send time so the assistant
             // message's Restore Checkpoint rewinds to this state (no
             // post-apply checkpoint is created by the importer).
-            var preSendCheckpointPromise = (window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.savePreSendCheckpoint)
+            let preSendCheckpointPromise = (window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.savePreSendCheckpoint)
                 ? LLMPlugin.ChatManager.savePreSendCheckpoint(null, flowIdsToSend)
                 : Promise.resolve(null);
 
-            var loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
+            let loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
                 ? LLMPlugin.UI.addMessageToUI('Generating...', false, false)
                 : null;
             if (loadingMsg) loadingMsg.classList.add('loading-message');
@@ -427,7 +427,7 @@
             generateBtn.classList.add('stop-btn');
             generateBtn.innerHTML = '<i class="fa fa-stop" aria-hidden="true"></i>';
 
-            var currentFlow = null;
+            let currentFlow = null;
             if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI && 
                 typeof LLMPlugin.UI.getCurrentFlow === 'function') {
                 currentFlow = LLMPlugin.UI.getCurrentFlow(flowIdsToSend);
@@ -436,8 +436,8 @@
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();
 
-            var endpoint = mode === 'agent' ? 'llm-plugin/agent-generate' : 'llm-plugin/generate';
-            var fetchStart = Date.now();
+            let endpoint = mode === 'agent' ? 'llm-plugin/agent-generate' : 'llm-plugin/generate';
+            let fetchStart = Date.now();
 
             fetch(endpoint, {
                 method: 'POST',
@@ -456,7 +456,7 @@
                     return res.json()
                         .catch(function() { return { error: 'Request failed (' + res.status + ')' }; })
                         .then(function(d) {
-                            var err = new Error(d.error || 'Request failed');
+                            let err = new Error(d.error || 'Request failed');
                             err.status = res.status;
                             throw err;
                         });
@@ -466,11 +466,11 @@
             .then(function(data) {
                 return preSendCheckpointPromise.then(function(preSendCheckpointId) {
                     if (loadingMsg) loadingMsg.remove();
-                    var totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
-                    var msgEl = null;
-                    var resolvedApplyMode = data && data.applyMode ? data.applyMode : 'auto';
-                    var usedModel = (data && data.model) ? data.model : model;
-                    var metaOpts = {
+                    let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
+                    let msgEl = null;
+                    let resolvedApplyMode = data && data.applyMode ? data.applyMode : 'auto';
+                    let usedModel = (data && data.model) ? data.model : model;
+                    let metaOpts = {
                         mode: mode,
                         applyMode: resolvedApplyMode,
                         elapsedMs: totalElapsed,
@@ -484,7 +484,7 @@
                     }
 
                     if (mode === 'agent' && msgEl) {
-                        var importBtn = msgEl.querySelector('.import-btn');
+                        let importBtn = msgEl.querySelector('.import-btn');
                         if (importBtn) {
                             importBtn.click();
                         }
@@ -494,7 +494,7 @@
             .catch(function(err) {
                 if (loadingMsg) loadingMsg.remove();
                 if (err && err.name === 'AbortError') return; // user cancelled
-                var errorMsg = 'Request failed';
+                let errorMsg = 'Request failed';
                 if (err && err.message) {
                     errorMsg = err.message;
                 }
@@ -515,7 +515,7 @@
         if (typeof RED !== 'undefined' && RED.sidebar) {
             // Wire runtime type info into FlowConverterCore so community
             // nodes are handled correctly (config detection, input checks).
-            var cfg = window.LLMPlugin && window.LLMPlugin.Configurator;
+            let cfg = window.LLMPlugin && window.LLMPlugin.Configurator;
             if (cfg && typeof cfg.setRuntimeGetType === 'function' &&
                 RED.nodes && typeof RED.nodes.getType === 'function') {
                 cfg.setRuntimeGetType(function(type) {

@@ -498,9 +498,6 @@ function createLLMPluginServer(RED) {
                             : null;
                         if (content !== null) {
                             resolve(content);
-                        } else if (response && typeof response.response === 'string') {
-                            // Compatibility fallback for mixed server versions.
-                            resolve(response.response);
                         } else {
                             reject(new Error('No response from model'));
                         }

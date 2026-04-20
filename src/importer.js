@@ -4,7 +4,7 @@
 // JSON parsing, token normalization, schema extraction, and flow lookup are
 // implemented in src/core/llm_json_parser.js and accessed via LLMPlugin.LLMJsonParser.
 (function(){
-    var Importer = {};
+    let Importer = {};
 
     // ================================================================== //
     //  Layout Constants                                                   //
@@ -12,7 +12,7 @@
     // Single source of truth for all spacing / gap values used by the
     // layout functions below.  Changing a value here updates every path
     // (overwrite, merge, and orphan placement) at once.
-    var LAYOUT = {
+    let LAYOUT = {
         startX:       200,   // canvas origin X (px)
         startY:       200,   // canvas origin Y (px)
         spacingX:     180,   // horizontal gap between node centres (3 grid squares between edges)
@@ -27,11 +27,11 @@
     // ================================================================== //
 
     function getConfigurator() {
-        return (window.LLMPlugin && window.LLMPlugin.Configurator) || null;
+        return window.LLMPlugin ? window.LLMPlugin.Configurator : null;
     }
 
     function getParser() {
-        return (window.LLMPlugin && window.LLMPlugin.LLMJsonParser) || null;
+        return window.LLMPlugin ? window.LLMPlugin.LLMJsonParser : null;
     }
 
     // ================================================================== //
@@ -55,32 +55,31 @@
     function resolveFlowLabelToWorkspace(label) {
         if (!label || typeof label !== 'string') return null;
         if (!window.RED || !RED.nodes) return null;
-        var target = label.trim();
+        let target = label.trim();
         if (!target) return null;
-        var byLabel = [];
-        var byFuzzy = [];
-        var byId = null;
+        let byLabel = [];
+        let byFuzzy = [];
+        let byId = null;
 
         function normalizeForFuzzy(str) {
-            var s = str.replace(/[\s\u3000_]+/g, '').toLowerCase();
+            let s = str.replace(/[\s\u3000_]+/g, '').toLowerCase();
             return (String.prototype.normalize) ? s.normalize('NFKC') : s;
         }
 
-        var fuzzyTarget = normalizeForFuzzy(target);
+        let fuzzyTarget = normalizeForFuzzy(target);
 
-        if (typeof RED.nodes.eachWorkspace === 'function') {
-            RED.nodes.eachWorkspace(function(ws) {
-                if (!ws || !ws.id || ws.type !== 'tab') return;
-                if (ws.id === target) byId = ws.id;
-                var lbl = String(ws.label || '').trim();
-                if (lbl === target) {
-                    byLabel.push(ws.id);
-                } else {
-                    var fuzzyLbl = normalizeForFuzzy(lbl);
-                    if (fuzzyLbl === fuzzyTarget) byFuzzy.push(ws.id);
-                }
-            });
-        }
+        RED.nodes.eachWorkspace(function(ws) {
+            if (!ws || !ws.id || ws.type !== 'tab') return;
+            if (ws.id === target) byId = ws.id;
+            let lbl = String(ws.label || '').trim();
+            if (lbl === target) {
+                byLabel.push(ws.id);
+            } else {
+                let fuzzyLbl = normalizeForFuzzy(lbl);
+                if (fuzzyLbl === fuzzyTarget) byFuzzy.push(ws.id);
+            }
+        });
+
         if (byId) return byId;
         if (byLabel.length === 1) return byLabel[0];
         if (byLabel.length === 0 && byFuzzy.length === 1) return byFuzzy[0];
@@ -89,13 +88,13 @@
 
     /** Merge multiple wire ID arrays into one, deduplicating. */
     function mergeWireIds(/* ...arrays */) {
-        var seen = {};
-        var out = [];
-        for (var i = 0; i < arguments.length; i++) {
-            var arr = arguments[i];
+        let seen = {};
+        let out = [];
+        for (let i = 0; i < arguments.length; i++) {
+            let arr = arguments[i];
             if (!Array.isArray(arr)) continue;
-            for (var j = 0; j < arr.length; j++) {
-                var id = String(arr[j] || '').trim();
+            for (let j = 0; j < arr.length; j++) {
+                let id = String(arr[j] || '').trim();
                 if (id && !seen[id]) { seen[id] = true; out.push(id); }
             }
         }
@@ -136,7 +135,7 @@
      */
     function nodeCanAcceptInput(type) {
         if (!type || typeof type !== 'string') return true;
-        var cfg = getConfigurator();
+        let cfg = getConfigurator();
         if (cfg && typeof cfg.isNoInputType === 'function') return !cfg.isNoInputType(type);
         return true;
     }
@@ -148,7 +147,7 @@
      */
     function isConfigNodeType(type) {
         if (!type || typeof type !== 'string') return false;
-        var cfg = getConfigurator();
+        let cfg = getConfigurator();
         if (cfg && typeof cfg.isConfigType === 'function') return cfg.isConfigType(type);
         return false;
     }
@@ -160,7 +159,7 @@
      */
     function isConfigNodeObj(node) {
         if (!node || typeof node !== 'object') return false;
-        var cfg = getConfigurator();
+        let cfg = getConfigurator();
         if (cfg && typeof cfg.isConfigNode === 'function') return cfg.isConfigNode(node);
         return isConfigNodeType(node.type);
     }
@@ -171,7 +170,7 @@
      */
     function pruneInvalidInputWires(flowNodes) {
         if (!Array.isArray(flowNodes)) return;
-        var noInputIds = {};
+        let noInputIds = {};
         flowNodes.forEach(function(n) {
             if (n && n.id && !nodeCanAcceptInput(n.type)) noInputIds[n.id] = true;
         });
@@ -209,36 +208,36 @@
     // ------------------------------------------------------------------ //
 
     function normalizeToken(v) {
-        var p = getParser(); return p ? p.normalizeToken(v) : '';
+        let p = getParser(); return p ? p.normalizeToken(v) : '';
     }
     function normalizeTokenLoose(v) {
-        var p = getParser(); return p ? p.normalizeTokenLoose(v) : '';
+        let p = getParser(); return p ? p.normalizeTokenLoose(v) : '';
     }
     function putUniqueToken(mapObj, token, id) {
-        var p = getParser(); if (p) p.putUniqueToken(mapObj, token, id);
+        let p = getParser(); if (p) p.putUniqueToken(mapObj, token, id);
     }
     function resolveUniqueApprox(mapObj, token, minLen) {
-        var p = getParser(); return p ? p.resolveUniqueApprox(mapObj, token, minLen) : null;
+        let p = getParser(); return p ? p.resolveUniqueApprox(mapObj, token, minLen) : null;
     }
     function buildFlowLookup(flowNodes, cfg) {
-        var p = getParser();
+        let p = getParser();
         return p ? p.buildFlowLookup(flowNodes, cfg)
                  : { aliasToId: {}, idToAlias: {}, nameToId: {}, byId: {}, inter: null, resolve: function() { return null; } };
     }
     function extractLastVibeSchema(messageContent) {
-        var p = getParser(); var cfg = getConfigurator();
+        let p = getParser(); let cfg = getConfigurator();
         return (p && cfg) ? p.extractVibeSchema(messageContent, cfg) : null;
     }
     function extractConnectionHints(messageContent) {
-        var p = getParser(); var cfg = getConfigurator();
+        let p = getParser(); let cfg = getConfigurator();
         return (p && cfg) ? p.extractConnectionHints(messageContent, cfg) : [];
     }
     function extractFlowDirectives(messageContent) {
-        var p = getParser(); var cfg = getConfigurator();
+        let p = getParser(); let cfg = getConfigurator();
         return (p && cfg) ? p.extractFlowDirectives(messageContent, cfg) : { removeTokens: [], removeConnections: [] };
     }
     function extractFlowNodes(messageContent, options) {
-        var p = getParser(); var cfg = getConfigurator();
+        let p = getParser(); let cfg = getConfigurator();
         return (p && cfg) ? p.extractFlowNodes(messageContent, options, cfg) : null;
     }
 
@@ -247,7 +246,7 @@
     // ================================================================== //
 
     function normalizeApplyMode(v) {
-        var m = String(v || '').trim().toLowerCase();
+        let m = String(v || '').trim().toLowerCase();
         if (m === 'editonly') m = 'edit-only';
         if (m === 'deleteonly') m = 'delete-only';
         if (m === 'add-edit' || m === 'add_edit') m = 'merge';
@@ -256,15 +255,15 @@
     }
 
     function extractApplyModeFromMessage(messageContent) {
-        var parsed = extractLastVibeSchema(messageContent);
+        let parsed = extractLastVibeSchema(messageContent);
         if (parsed && typeof parsed === 'object') {
-            var fromSchema = normalizeApplyMode(parsed.applyMode || parsed.mode || parsed.strategy);
+            let fromSchema = normalizeApplyMode(parsed.applyMode || parsed.mode || parsed.strategy);
             if (fromSchema) return fromSchema;
         }
-        var text = String(messageContent || '');
-        var marker = text.match(/APPLY[_\s-]*MODE\s*[:=]\s*(edit-only|merge|overwrite|delete-only|auto)/i);
+        let text = String(messageContent || '');
+        let marker = text.match(/APPLY[_\s-]*MODE\s*[:=]\s*(edit-only|merge|overwrite|delete-only|auto)/i);
         if (marker && marker[1]) {
-            var fromMarker = normalizeApplyMode(marker[1]);
+            let fromMarker = normalizeApplyMode(marker[1]);
             if (fromMarker) return fromMarker;
         }
         return null;
@@ -277,10 +276,10 @@
     function applyConnectionHints(flowNodes, hints) {
         if (!Array.isArray(flowNodes) || !Array.isArray(hints) || hints.length === 0) return flowNodes;
 
-        var cfg = getConfigurator();
-        var lookup = buildFlowLookup(flowNodes, cfg);
+        let cfg = getConfigurator();
+        let lookup = buildFlowLookup(flowNodes, cfg);
 
-        var desiredByFromPort = {};
+        let desiredByFromPort = {};
         hints.forEach(function(h) {
             // exactOnly: a hint's alias must match a real alias/name/ID
             // exactly. Fuzzy matching here is unsafe  - a new-node alias
@@ -289,23 +288,23 @@
             // New-to-new wires are already baked into node.wires by
             // toNodeRed, so we only need hints to land when they
             // reference something unambiguously.
-            var fromId = lookup.resolve(h.from, { exactOnly: true });
-            var toId = lookup.resolve(h.to, { exactOnly: true });
+            let fromId = lookup.resolve(h.from, { exactOnly: true });
+            let toId = lookup.resolve(h.to, { exactOnly: true });
             if (!fromId || !toId || !lookup.byId[fromId] || !lookup.byId[toId]) return;
             // Skip connections targeting nodes that cannot accept input
-            var targetNode = lookup.byId[toId];
+            let targetNode = lookup.byId[toId];
             if (targetNode && !nodeCanAcceptInput(targetNode.type)) return;
-            var port = (typeof h.fromPort === 'number' && h.fromPort >= 0) ? h.fromPort : 0;
-            var key = fromId + '::' + port;
+            let port = (typeof h.fromPort === 'number' && h.fromPort >= 0) ? h.fromPort : 0;
+            let key = fromId + '::' + port;
             if (!desiredByFromPort[key]) desiredByFromPort[key] = [];
             if (desiredByFromPort[key].indexOf(toId) === -1) desiredByFromPort[key].push(toId);
         });
 
         Object.keys(desiredByFromPort).forEach(function(key) {
-            var sep = key.lastIndexOf('::');
-            var fromId = key.substring(0, sep);
-            var port = parseInt(key.substring(sep + 2), 10);
-            var fromNode = lookup.byId[fromId];
+            let sep = key.lastIndexOf('::');
+            let fromId = key.substring(0, sep);
+            let port = parseInt(key.substring(sep + 2), 10);
+            let fromNode = lookup.byId[fromId];
             if (!fromNode) return;
             if (!Array.isArray(fromNode.wires)) fromNode.wires = [];
             while (fromNode.wires.length <= port) fromNode.wires.push([]);
@@ -320,9 +319,7 @@
     // ================================================================== //
 
     function getActiveWorkspaceId() {
-        return (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.getActiveWorkspaceId === 'function')
-            ? LLMPlugin.UI.getActiveWorkspaceId()
-            : null;
+        return LLMPlugin.UI ? LLMPlugin.UI.getActiveWorkspaceId() : null;
     }
 
     function saveCheckpoint(chatId, label, flow, meta) {
@@ -354,22 +351,22 @@
     // ================================================================== //
 
     function rebuildWorkspaceFromSnapshot(beforeFlow, updateNodes, workspaceId, connectionHints, flowDirectives, applyMode) {
-        var base = Array.isArray(beforeFlow)
+        let base = Array.isArray(beforeFlow)
             ? JSON.parse(JSON.stringify(beforeFlow))
             : [];
-        var updates = Array.isArray(updateNodes)
+        let updates = Array.isArray(updateNodes)
             ? JSON.parse(JSON.stringify(updateNodes))
             : [];
 
         // Capture original positions before any mutations so we can restore them later
-        var basePositions = {};
+        let basePositions = {};
         base.forEach(function(n) {
             if (n && n.id && typeof n.x === 'number' && typeof n.y === 'number') {
                 basePositions[n.id] = { x: n.x, y: n.y };
             }
         });
-        var directives = flowDirectives || { removeTokens: [], removeConnections: [] };
-        var mode = normalizeApplyMode(applyMode) || 'edit-only';
+        let directives = flowDirectives || { removeTokens: [], removeConnections: [] };
+        let mode = normalizeApplyMode(applyMode) || 'edit-only';
 
         if (mode === 'overwrite') base = [];
         if (mode === 'delete-only') { updates = []; connectionHints = []; }
@@ -378,23 +375,23 @@
 
         function hasAnyOutgoing(wires) {
             if (!Array.isArray(wires)) return false;
-            for (var i = 0; i < wires.length; i++) {
+            for (let i = 0; i < wires.length; i++) {
                 if (Array.isArray(wires[i]) && wires[i].length > 0) return true;
             }
             return false;
         }
 
-        var hintedSourceKeys = {};
+        let hintedSourceKeys = {};
         (connectionHints || []).forEach(function(h) {
             if (!h || typeof h.from !== 'string') return;
-            var k = normalizeToken(h.from);
+            let k = normalizeToken(h.from);
             if (k) hintedSourceKeys[k] = true;
         });
 
         function isHintedSource(node) {
             if (!node) return false;
-            var keys = [normalizeToken(node.id), normalizeToken(node.name), normalizeToken(node._llmAlias)];
-            for (var i = 0; i < keys.length; i++) {
+            let keys = [normalizeToken(node.id), normalizeToken(node.name), normalizeToken(node._llmAlias)];
+            for (let i = 0; i < keys.length; i++) {
                 if (keys[i] && hintedSourceKeys[keys[i]]) return true;
             }
             return false;
@@ -403,14 +400,14 @@
         // Delete nodes by token using shared lookup
         function removeNodesByTokens(nodes, removeTokens) {
             if (!Array.isArray(removeTokens) || removeTokens.length === 0) return nodes;
-            var cfg = getConfigurator();
-            var lookup = buildFlowLookup(nodes, cfg);
-            var removeIdSet = {};
+            let cfg = getConfigurator();
+            let lookup = buildFlowLookup(nodes, cfg);
+            let removeIdSet = {};
 
             removeTokens.forEach(function(tok) {
-                var t = String(tok || '').trim();
+                let t = String(tok || '').trim();
                 if (!t) return;
-                var id = lookup.resolve(t, { minLen: 8 });
+                let id = lookup.resolve(t, { minLen: 8 });
                 if (id) removeIdSet[id] = true;
             });
 
@@ -432,38 +429,38 @@
         // --- Deletion-first pass ---
         base = removeNodesByTokens(base, directives.removeTokens);
 
-        var baseIds = {};
+        let baseIds = {};
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
 
-        var byId = {};
+        let byId = {};
         base.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
         updates.forEach(function(n) {
             if (!n || !n.id) return;
             // Auto-created config stubs must not overwrite existing config nodes
             if (n._autoStub && byId[n.id]) return;
-            var existing = byId[n.id];
+            let existing = byId[n.id];
             if (existing && !isHintedSource(n) && !hasAnyOutgoing(n.wires) && hasAnyOutgoing(existing.wires)) {
                 n.wires = deepClone(existing.wires);
             }
             byId[n.id] = n;
         });
 
-        var rebuilt = Object.keys(byId).map(function(id) { return byId[id]; });
+        let rebuilt = Object.keys(byId).map(function(id) { return byId[id]; });
 
         // Second pass deletion (catches nodes added by updates that should also be removed)
         rebuilt = removeNodesByTokens(rebuilt, directives.removeTokens);
 
         // Remove specific connections
         if (Array.isArray(directives.removeConnections) && directives.removeConnections.length > 0) {
-            var rcLookup = buildFlowLookup(rebuilt, getConfigurator());
+            let rcLookup = buildFlowLookup(rebuilt, getConfigurator());
 
             directives.removeConnections.forEach(function(rc) {
-                var fromId = rcLookup.resolve(rc.from);
-                var toId = rcLookup.resolve(rc.to);
+                let fromId = rcLookup.resolve(rc.from);
+                let toId = rcLookup.resolve(rc.to);
                 if (!fromId || !toId || !rcLookup.byId[fromId]) return;
-                var port = (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : 0;
-                var fromNode = rcLookup.byId[fromId];
+                let port = (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : 0;
+                let fromNode = rcLookup.byId[fromId];
                 if (!Array.isArray(fromNode.wires) || !Array.isArray(fromNode.wires[port])) return;
                 fromNode.wires[port] = fromNode.wires[port].filter(function(tid) { return tid !== toId; });
             });
@@ -476,7 +473,7 @@
         }
 
         // Prune wires pointing to removed nodes
-        var validIds = {};
+        let validIds = {};
         rebuilt.forEach(function(n) { if (n && n.id) validIds[n.id] = true; });
         rebuilt.forEach(function(n) {
             if (!n || !Array.isArray(n.wires)) return;
@@ -527,32 +524,32 @@
      * Builds adjacency from wires, delegates layout, applies coordinates.
      */
     function reflowCanvasNodes(nodes, opts) {
-        var cfg = getConfigurator();
+        let cfg = getConfigurator();
         if (!cfg || typeof cfg.layoutNodes !== 'function') return nodes;
 
-        var options = opts || {};
-        var startX = (typeof options.startX === 'number') ? options.startX : LAYOUT.startX;
-        var startY = (typeof options.startY === 'number') ? options.startY : LAYOUT.startY;
-        var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : LAYOUT.spacingX;
-        var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : LAYOUT.spacingY;
-        var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2)
+        let options = opts || {};
+        let startX = (typeof options.startX === 'number') ? options.startX : LAYOUT.startX;
+        let startY = (typeof options.startY === 'number') ? options.startY : LAYOUT.startY;
+        let spacingX = (typeof options.spacingX === 'number') ? options.spacingX : LAYOUT.spacingX;
+        let spacingY = (typeof options.spacingY === 'number') ? options.spacingY : LAYOUT.spacingY;
+        let maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2)
             ? Math.floor(options.maxColumns) : LAYOUT.maxColumns;
 
-        var canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
+        let canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
         if (canvasNodes.length < 2) return nodes;
 
-        var byId = {};
-        var ids = [];
+        let byId = {};
+        let ids = [];
         canvasNodes.forEach(function(n) {
             if (n && n.id) { byId[n.id] = n; ids.push(n.id); }
         });
 
         // Build bidirectional adjacency from wires
-        var outgoing = {};
-        var incoming = {};
+        let outgoing = {};
+        let incoming = {};
         ids.forEach(function(id) { outgoing[id] = []; incoming[id] = []; });
         ids.forEach(function(id) {
-            var n = byId[id];
+            let n = byId[id];
             if (!Array.isArray(n.wires)) return;
             n.wires.forEach(function(port) {
                 if (!Array.isArray(port)) return;
@@ -565,30 +562,30 @@
         });
 
         // Delegate to shared layout engine
-        var positions = cfg.layoutNodes(ids, outgoing, incoming, maxColumns);
+        let positions = cfg.layoutNodes(ids, outgoing, incoming, maxColumns);
 
         // Apply col/row  - pixel coordinates with per-component stacking
-        var compGapPx = LAYOUT.componentGap;
-        var compInfo = {};
+        let compGapPx = LAYOUT.componentGap;
+        let compInfo = {};
         ids.forEach(function(id) {
-            var pos = positions[id] || { col: 0, row: 0 };
-            var ci = pos.comp || 0;
+            let pos = positions[id] || { col: 0, row: 0 };
+            let ci = pos.comp || 0;
             if (!compInfo[ci]) compInfo[ci] = { minRow: pos.row, maxRow: pos.row };
             if (pos.row < compInfo[ci].minRow) compInfo[ci].minRow = pos.row;
             if (pos.row > compInfo[ci].maxRow) compInfo[ci].maxRow = pos.row;
         });
-        var compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
-        var compOffsets = {};
-        var nextYR = startY;
+        let compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
+        let compOffsets = {};
+        let nextYR = startY;
         compKeys.forEach(function(ci) {
-            var info = compInfo[ci];
+            let info = compInfo[ci];
             compOffsets[ci] = nextYR - info.minRow * spacingY;
             nextYR = nextYR + (info.maxRow - info.minRow) * spacingY + compGapPx;
         });
         ids.forEach(function(id) {
-            var node = byId[id];
-            var pos = positions[id] || { col: 0, row: 0 };
-            var ci = pos.comp || 0;
+            let node = byId[id];
+            let pos = positions[id] || { col: 0, row: 0 };
+            let ci = pos.comp || 0;
             node.x = Math.round(startX + pos.col * spacingX);
             node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
         });
@@ -610,16 +607,16 @@
      * by iterating until all reachable nodes are placed.
      */
     function placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, opts) {
-        var options = opts || {};
-        var spacingX = (typeof options.spacingX === 'number') ? options.spacingX : LAYOUT.spacingX;
-        var spacingY = (typeof options.spacingY === 'number') ? options.spacingY : LAYOUT.spacingY;
-        var bandGap = (typeof options.bandGap === 'number') ? options.bandGap : LAYOUT.componentGap;
-        var maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2) ? options.maxColumns : LAYOUT.maxColumns;
+        let options = opts || {};
+        let spacingX = (typeof options.spacingX === 'number') ? options.spacingX : LAYOUT.spacingX;
+        let spacingY = (typeof options.spacingY === 'number') ? options.spacingY : LAYOUT.spacingY;
+        let bandGap = (typeof options.bandGap === 'number') ? options.bandGap : LAYOUT.componentGap;
+        let maxColumns = (typeof options.maxColumns === 'number' && options.maxColumns >= 2) ? options.maxColumns : LAYOUT.maxColumns;
 
-        var canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
+        let canvasNodes = (nodes || []).filter(function(n) { return isCanvasNode(n); });
         if (canvasNodes.length < 1) return nodes;
 
-        var byId = {};
+        let byId = {};
         canvasNodes.forEach(function(n) { byId[n.id] = n; });
 
         // Step 1: Restore original positions for all existing nodes
@@ -631,8 +628,8 @@
         });
 
         // Step 2: Build wire adjacency
-        var outgoing = {};
-        var incoming = {};
+        let outgoing = {};
+        let incoming = {};
         canvasNodes.forEach(function(n) { outgoing[n.id] = []; incoming[n.id] = []; });
         canvasNodes.forEach(function(n) {
             (n.wires || []).forEach(function(port) {
@@ -646,28 +643,28 @@
         });
 
         // Step 3: Iteratively place new nodes using any already-positioned neighbor
-        var positioned = {};
+        let positioned = {};
         canvasNodes.forEach(function(n) {
             if (existingIdMap[n.id]) positioned[n.id] = true;
         });
 
         function tryPlace(n) {
-            var preds = incoming[n.id].filter(function(id) { return positioned[id]; });
-            var succs = outgoing[n.id].filter(function(id) { return positioned[id]; });
+            let preds = incoming[n.id].filter(function(id) { return positioned[id]; });
+            let succs = outgoing[n.id].filter(function(id) { return positioned[id]; });
             if (preds.length === 0 && succs.length === 0) return false;
 
             if (preds.length > 0 && succs.length > 0) {
-                var refs = preds.concat(succs);
+                let refs = preds.concat(succs);
                 n.x = Math.round(refs.reduce(function(s, id) { return s + (byId[id].x || 0); }, 0) / refs.length);
                 n.y = Math.round(refs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / refs.length);
             } else if (preds.length > 0) {
-                var maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
-                var avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
+                let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
+                let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
                 n.x = Math.round(maxPredX + spacingX);
                 n.y = Math.round(avgPredY);
             } else {
-                var minSuccX = Math.min.apply(null, succs.map(function(id) { return byId[id].x || 0; }));
-                var avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
+                let minSuccX = Math.min.apply(null, succs.map(function(id) { return byId[id].x || 0; }));
+                let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
                 n.x = Math.round(minSuccX - spacingX);
                 n.y = Math.round(avgSuccY);
             }
@@ -675,11 +672,11 @@
             return true;
         }
 
-        var remaining = canvasNodes.filter(function(n) { return !existingIdMap[n.id]; });
-        var progress = true;
+        let remaining = canvasNodes.filter(function(n) { return !existingIdMap[n.id]; });
+        let progress = true;
         while (progress && remaining.length > 0) {
             progress = false;
-            var next = [];
+            let next = [];
             remaining.forEach(function(n) {
                 if (tryPlace(n)) { progress = true; } else { next.push(n); }
             });
@@ -688,23 +685,23 @@
 
         // Step 3.5: Resolve overlapping positions among all canvas nodes
         //   Check newly placed nodes against ALL positioned nodes (existing + new).
-        var allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
-        var newlyPlaced = canvasNodes.filter(function(n) {
+        let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
+        let newlyPlaced = canvasNodes.filter(function(n) {
             return !existingIdMap[n.id] && positioned[n.id];
         });
         if (newlyPlaced.length > 0) {
             newlyPlaced.sort(function(a, b) {
-                var dx = (a.x || 0) - (b.x || 0);
+                let dx = (a.x || 0) - (b.x || 0);
                 return dx !== 0 ? dx : ((a.y || 0) - (b.y || 0));
             });
-            var changed = true;
-            var maxPasses = newlyPlaced.length * 2;
+            let changed = true;
+            let maxPasses = newlyPlaced.length * 2;
             while (changed && maxPasses-- > 0) {
                 changed = false;
-                for (var ni = 0; ni < newlyPlaced.length; ni++) {
-                    var cur = newlyPlaced[ni];
-                    for (var oi = 0; oi < allPositioned.length; oi++) {
-                        var other = allPositioned[oi];
+                for (let ni = 0; ni < newlyPlaced.length; ni++) {
+                    let cur = newlyPlaced[ni];
+                    for (let oi = 0; oi < allPositioned.length; oi++) {
+                        let other = allPositioned[oi];
                         if (other.id === cur.id) continue;
                         if (Math.abs((cur.x || 0) - (other.x || 0)) < spacingX * 0.5 &&
                             Math.abs((cur.y || 0) - (other.y || 0)) < spacingY * 0.8) {
@@ -723,8 +720,8 @@
         if (remaining.length > 0) {
             // Find the bottom-most Y among ALL positioned nodes (existing +
             // Step-3-placed) so orphans never overlap with anything above.
-            var maxY = Number.NEGATIVE_INFINITY;
-            var minX = Number.POSITIVE_INFINITY;
+            let maxY = Number.NEGATIVE_INFINITY;
+            let minX = Number.POSITIVE_INFINITY;
             canvasNodes.forEach(function(n) {
                 if (!positioned[n.id] && !existingIdMap[n.id]) return;
                 if ((n.y || 0) > maxY) maxY = n.y;
@@ -732,20 +729,20 @@
             });
             if (!isFinite(maxY)) maxY = 200;
             if (!isFinite(minX)) minX = 200;
-            var orphanStartY = maxY + bandGap;
+            let orphanStartY = maxY + bandGap;
 
-            var cfg = getConfigurator();
+            let cfg = getConfigurator();
             if (cfg && typeof cfg.layoutNodes === 'function') {
                 // Build adjacency for orphan nodes only
-                var orphanIds = [];
-                var orphanOut = {};
-                var orphanIn = {};
+                let orphanIds = [];
+                let orphanOut = {};
+                let orphanIn = {};
                 remaining.forEach(function(n) {
                     orphanIds.push(n.id);
                     orphanOut[n.id] = [];
                     orphanIn[n.id] = [];
                 });
-                var orphanSet = {};
+                let orphanSet = {};
                 remaining.forEach(function(n) { orphanSet[n.id] = true; });
                 remaining.forEach(function(n) {
                     (outgoing[n.id] || []).forEach(function(toId) {
@@ -755,27 +752,27 @@
                         }
                     });
                 });
-                var orphanPositions = cfg.layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
+                let orphanPositions = cfg.layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
                 // Per-component stacking with 40px gap
-                var oCompInfo = {};
+                let oCompInfo = {};
                 remaining.forEach(function(n) {
-                    var pos = orphanPositions[n.id] || { col: 0, row: 0 };
-                    var ci = pos.comp || 0;
+                    let pos = orphanPositions[n.id] || { col: 0, row: 0 };
+                    let ci = pos.comp || 0;
                     if (!oCompInfo[ci]) oCompInfo[ci] = { minRow: pos.row, maxRow: pos.row };
                     if (pos.row < oCompInfo[ci].minRow) oCompInfo[ci].minRow = pos.row;
                     if (pos.row > oCompInfo[ci].maxRow) oCompInfo[ci].maxRow = pos.row;
                 });
-                var oCompKeys = Object.keys(oCompInfo).map(Number).sort(function(a, b) { return a - b; });
-                var oCompOff = {};
-                var oNextY = orphanStartY;
+                let oCompKeys = Object.keys(oCompInfo).map(Number).sort(function(a, b) { return a - b; });
+                let oCompOff = {};
+                let oNextY = orphanStartY;
                 oCompKeys.forEach(function(ci) {
-                    var info = oCompInfo[ci];
+                    let info = oCompInfo[ci];
                     oCompOff[ci] = oNextY - info.minRow * spacingY;
                     oNextY = oNextY + (info.maxRow - info.minRow) * spacingY + LAYOUT.componentGap;
                 });
                 remaining.forEach(function(n) {
-                    var pos = orphanPositions[n.id] || { col: 0, row: 0 };
-                    var ci = pos.comp || 0;
+                    let pos = orphanPositions[n.id] || { col: 0, row: 0 };
+                    let ci = pos.comp || 0;
                     n.x = Math.round(minX + pos.col * spacingX);
                     n.y = Math.round(pos.row * spacingY + (oCompOff[ci] || 0));
                 });
@@ -796,13 +793,13 @@
     // ================================================================== //
 
     function replaceWorkspaceFlow(nodes, targetWorkspaceId) {
-        var workspaceId = (targetWorkspaceId && typeof targetWorkspaceId === 'string')
+        let workspaceId = (targetWorkspaceId && typeof targetWorkspaceId === 'string')
             ? targetWorkspaceId
             : getActiveWorkspaceId();
         if (!workspaceId) return { ok: false, error: 'Active workspace not found' };
 
         function collectWorkspaceEntities() {
-            var list = RED.nodes.filterNodes({ z: workspaceId }) || [];
+            let list = RED.nodes.filterNodes({ z: workspaceId }) || [];
             if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: workspaceId }) || []);
             if (RED.nodes.filterJunctions) list = list.concat(RED.nodes.filterJunctions({ z: workspaceId }) || []);
             return list;
@@ -810,24 +807,20 @@
 
         function stabilizeView() {
             try {
-                if (RED.actions && typeof RED.actions.invoke === 'function') {
-                    RED.actions.invoke('core:select-none');
-                }
+                RED.actions.invoke('core:select-none');
             } catch (e) { /* ignore */ }
             try {
-                if (RED.nodes && typeof RED.nodes.dirty === 'function') RED.nodes.dirty(true);
-                if (RED.view && typeof RED.view.redraw === 'function') {
-                    RED.view.redraw(true);
-                    setTimeout(function() {
-                        try { RED.view.redraw(true); } catch (e2) { /* ignore */ }
-                    }, 0);
-                }
+                RED.nodes.dirty(true);
+                RED.view.redraw(true);
+                setTimeout(function() {
+                    try { RED.view.redraw(true); } catch (e2) { /* ignore */ }
+                }, 0);
             } catch (e) { /* ignore */ }
         }
 
-        var backupEntitiesJSON = [];
+        let backupEntitiesJSON = [];
         try {
-            var allEntities = collectWorkspaceEntities().filter(isCanvasNode);
+            let allEntities = collectWorkspaceEntities().filter(isCanvasNode);
             backupEntitiesJSON = allEntities.map(function(n) { return JSON.parse(JSON.stringify(n)); });
 
             if (allEntities.length > 0) {
@@ -835,9 +828,7 @@
                     try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ } 
                 });
             }
-            if (RED.view && typeof RED.view.redraw === 'function') {
-                try { RED.view.redraw(true, true); } catch (e) {}
-            }
+            try { RED.view.redraw(true, true); } catch (e) {}
         } catch (e) {
             return { ok: false, error: 'Failed to clear current workspace nodes: ' + (e.message || e) };
         }
@@ -847,15 +838,15 @@
         // Drop tab definitions: generateIds would regenerate their ID and
         // RED.nodes.import would create a duplicate workspace with the same
         // label; canvas nodes should instead land on the active workspace.
-        var configNodesToUpdate = [];
-        var importNodes = (nodes || []).map(function(n) {
-            var nn = JSON.parse(JSON.stringify(n));
+        let configNodesToUpdate = [];
+        let importNodes = (nodes || []).map(function(n) {
+            let nn = JSON.parse(JSON.stringify(n));
             if (isCanvasNode(nn)) nn.z = workspaceId;
             return nn;
         }).filter(function(nn) {
             if (nn.type === 'tab') return false;
             if (!isCanvasNode(nn)) {
-                var existing = RED.nodes.node(nn.id);
+                let existing = RED.nodes.node(nn.id);
                 if (existing) {
                     // Config node already exists  - collect for in-place update
                     configNodesToUpdate.push(nn);
@@ -870,7 +861,7 @@
             try {
                 // Auto-created stubs have no real props  - skip to preserve existing settings
                 if (nn._autoStub) return;
-                var existing = RED.nodes.node(nn.id);
+                let existing = RED.nodes.node(nn.id);
                 if (!existing) return;
                 Object.keys(nn).forEach(function(key) {
                     if (key === 'id' || key === 'type') return;
@@ -887,7 +878,7 @@
             // Debug output hidden by default
             // console.log('[LLM PLUG DEBUG]', importNodes);
               postTerminalLog('info', 'import-nodes-before', 'ImportNodes array before RED.nodes.import', { importNodes: importNodes });
-              var importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
+              let importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
               postTerminalLog('info', 'import-nodes-after', 'RED.nodes.import result OK', { count: (importResult||[]).length });
             // Intentionally bypass RED.history.push to avoid the user doing Ctrl+Z 
             // and wiping their entire flow. Use plugin checkpoints to revert.
@@ -910,12 +901,10 @@
     // ================================================================== //
 
     function getActiveWorkspaceLabel() {
-        var id = getActiveWorkspaceId();
+        let id = getActiveWorkspaceId();
         if (!id || !window.RED || !RED.nodes) return null;
-        if (typeof RED.nodes.workspace === 'function') {
-            var ws = RED.nodes.workspace(id);
-            if (ws && ws.label) return ws.label;
-        }
+        let ws = RED.nodes.workspace(id);
+        if (ws && ws.label) return ws.label;
         return id;
     }
 
@@ -927,21 +916,21 @@
      */
     function collectFlowGroupsFromSchema(schema) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return null;
-        var groups = {};
-        var untagged = [];
+        let groups = {};
+        let untagged = [];
         Object.keys(schema.nodes).forEach(function(alias) {
-            var spec = schema.nodes[alias];
+            let spec = schema.nodes[alias];
             if (!spec || typeof spec !== 'object') return;
             if (spec.config === true) return;
             if (spec.type === 'tab' || String(spec.type).toLowerCase() === 'tab') return;
             if (spec.type && isConfigNodeType(spec.type)) return;
-            var flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
+            let flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
             if (!flow) { untagged.push(alias); return; }
             if (!groups[flow]) groups[flow] = [];
             groups[flow].push(alias);
         });
         if (untagged.length > 0 && Object.keys(groups).length > 0) {
-            var activeLabel = getActiveWorkspaceLabel();
+            let activeLabel = getActiveWorkspaceLabel();
             if (activeLabel) {
                 if (!groups[activeLabel]) groups[activeLabel] = [];
                 untagged.forEach(function(a) { groups[activeLabel].push(a); });
@@ -957,9 +946,9 @@
      * discourages them unless the user asks explicitly.
      */
     function buildSubSchemaForFlow(schema, aliases) {
-        var aliasSet = {};
+        let aliasSet = {};
         aliases.forEach(function(a) { aliasSet[a] = true; });
-        var subNodes = {};
+        let subNodes = {};
 
         aliases.forEach(function(alias) {
             if (Object.prototype.hasOwnProperty.call(schema.nodes || {}, alias)) {
@@ -968,25 +957,25 @@
         });
         Object.keys(schema.nodes || {}).forEach(function(alias) {
             if (aliasSet[alias]) return;
-            var spec = schema.nodes[alias];
+            let spec = schema.nodes[alias];
             if (spec === null) { subNodes[alias] = spec; return; }
             if (!spec || typeof spec !== 'object') return;
-            var isUntagged = !spec.flow || typeof spec.flow !== 'string' || !spec.flow.trim();
+            let isUntagged = !spec.flow || typeof spec.flow !== 'string' || !spec.flow.trim();
             if (isUntagged) subNodes[alias] = spec;
         });
 
-        var subConns = [];
+        let subConns = [];
         (schema.connections || []).forEach(function(c) {
             if (!c || typeof c !== 'object') return;
             if (c.remove && typeof c.remove === 'object') {
-                var r = c.remove;
+                let r = c.remove;
                 if (aliasSet[r.from] && aliasSet[r.to]) subConns.push(c);
                 return;
             }
             if (aliasSet[c.from] && aliasSet[c.to]) subConns.push(c);
         });
 
-        var out = {
+        let out = {
             nodes: subNodes,
             connections: subConns
         };
@@ -999,22 +988,22 @@
     }
 
     async function dispatchMultiFlowImport(messageContent, schema, flowGroups, options) {
-        var applyMode = schema && typeof schema.applyMode === 'string' ? schema.applyMode : null;
-        var results = [];
-        var aggregatedAdded = 0;
-        var aggregatedImported = 0;
-        var unresolved = [];
-        var flowLabels = Object.keys(flowGroups);
+        let applyMode = schema && typeof schema.applyMode === 'string' ? schema.applyMode : null;
+        let results = [];
+        let aggregatedAdded = 0;
+        let aggregatedImported = 0;
+        let unresolved = [];
+        let flowLabels = Object.keys(flowGroups);
 
-        for (var li = 0; li < flowLabels.length; li++) {
-            var label = flowLabels[li];
-            var wsId = resolveFlowLabelToWorkspace(label);
+        for (let li = 0; li < flowLabels.length; li++) {
+            let label = flowLabels[li];
+            let wsId = resolveFlowLabelToWorkspace(label);
             if (!wsId) { unresolved.push(label); continue; }
 
-            var subSchema = buildSubSchemaForFlow(schema, flowGroups[label]);
-            var subMessage = '```json\n' + JSON.stringify(subSchema, null, 2) + '\n```';
+            let subSchema = buildSubSchemaForFlow(schema, flowGroups[label]);
+            let subMessage = '```json\n' + JSON.stringify(subSchema, null, 2) + '\n```';
             try {
-                var res = await Importer.importFlowFromMessage(subMessage, Object.assign({}, options, {
+                let res = await Importer.importFlowFromMessage(subMessage, Object.assign({}, options, {
                     targetWorkspaceId: wsId,
                     _isSubImport: true
                 }));
@@ -1032,7 +1021,7 @@
             RED.notify('Skipped unknown flow(s): ' + unresolved.join(', '), 'warning');
         }
 
-        var allOk = results.length > 0 && results.every(function(r) { return r && r.ok; });
+        let allOk = results.length > 0 && results.every(function(r) { return r && r.ok; });
         return {
             ok: allOk,
             multiFlow: true,
@@ -1056,15 +1045,15 @@
             // each flow's existing nodes are only matched against proposals
             // intended for that flow  - prevents cross-flow overwrites.
             if (!options._isSubImport) {
-                var dispatchSchema = extractLastVibeSchema(messageContent);
-                var flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
-                var flowLabels = flowGroups ? Object.keys(flowGroups) : [];
+                let dispatchSchema = extractLastVibeSchema(messageContent);
+                let flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
+                let flowLabels = flowGroups ? Object.keys(flowGroups) : [];
                 if (flowLabels.length > 1) {
                     return await dispatchMultiFlowImport(messageContent, dispatchSchema, flowGroups, options);
                 }
                 if (flowLabels.length === 1) {
-                    var targetLabel = flowLabels[0];
-                    var onlyWs = resolveFlowLabelToWorkspace(targetLabel);
+                    let targetLabel = flowLabels[0];
+                    let onlyWs = resolveFlowLabelToWorkspace(targetLabel);
                     if (onlyWs) {
                         options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
                     } else {
@@ -1075,24 +1064,24 @@
                 }
             }
 
-            var targetWs = (options.targetWorkspaceId && typeof options.targetWorkspaceId === 'string')
+            let targetWs = (options.targetWorkspaceId && typeof options.targetWorkspaceId === 'string')
                 ? options.targetWorkspaceId
                 : null;
-            var beforeFlow = safeGetCurrentFlow(targetWs);
+            let beforeFlow = safeGetCurrentFlow(targetWs);
 
-            var requestedApplyMode = normalizeApplyMode(options.applyMode) || 'auto';
-            var llmApplyMode = extractApplyModeFromMessage(messageContent);
-            var applyMode = requestedApplyMode === 'auto'
+            let requestedApplyMode = normalizeApplyMode(options.applyMode) || 'auto';
+            let llmApplyMode = extractApplyModeFromMessage(messageContent);
+            let applyMode = requestedApplyMode === 'auto'
                 ? (llmApplyMode || 'edit-only')
                 : requestedApplyMode;
-            var hasExistingFlow = Array.isArray(beforeFlow) && beforeFlow.length > 0;
-            var parsedSchema = extractLastVibeSchema(messageContent);
-            var rawConnectionHints = extractConnectionHints(messageContent);
-            var rawFlowDirectives = extractFlowDirectives(messageContent);
+            let hasExistingFlow = Array.isArray(beforeFlow) && beforeFlow.length > 0;
+            let parsedSchema = extractLastVibeSchema(messageContent);
+            let rawConnectionHints = extractConnectionHints(messageContent);
+            let rawFlowDirectives = extractFlowDirectives(messageContent);
 
             // Safety guard: auto + overwrite without explicit deletes  - prefer merge
             if (requestedApplyMode === 'auto' && applyMode === 'overwrite' && hasExistingFlow) {
-                var hasDeleteDirectives = (rawFlowDirectives.removeTokens || []).length > 0 ||
+                let hasDeleteDirectives = (rawFlowDirectives.removeTokens || []).length > 0 ||
                     (rawFlowDirectives.removeConnections || []).length > 0;
                 if (!hasDeleteDirectives) {
                     applyMode = 'merge';
@@ -1104,11 +1093,11 @@
                 }
             }
 
-            var canModifyExisting = applyMode !== 'overwrite';
-            var connectionHints = canModifyExisting ? rawConnectionHints : [];
-            var flowDirectives = canModifyExisting ? rawFlowDirectives : { removeTokens: [], removeConnections: [] };
+            let canModifyExisting = applyMode !== 'overwrite';
+            let connectionHints = canModifyExisting ? rawConnectionHints : [];
+            let flowDirectives = canModifyExisting ? rawFlowDirectives : { removeTokens: [], removeConnections: [] };
 
-            var isPatchOnlyUpdate = (
+            let isPatchOnlyUpdate = (
                 (applyMode === 'merge' || applyMode === 'edit-only') &&
                 hasExistingFlow &&
                 parsedSchema &&
@@ -1120,7 +1109,7 @@
                 (rawFlowDirectives.removeConnections || []).length === 0
             );
 
-            var nodes = extractFlowNodes(messageContent, {
+            let nodes = extractFlowNodes(messageContent, {
                 mode: options.mode,
                 currentFlow: beforeFlow
             });
@@ -1150,11 +1139,11 @@
                 return { ok: false, error: 'Delete Only mode requires delete directives', checkpointId: null };
             }
 
-            var currentWorkspace = targetWs || getActiveWorkspaceId();
+            let currentWorkspace = targetWs || getActiveWorkspaceId();
 
             // Build unified lookup from current flow
-            var cfg = getConfigurator();
-            var lookup = canModifyExisting && hasExistingFlow
+            let cfg = getConfigurator();
+            let lookup = canModifyExisting && hasExistingFlow
                 ? buildFlowLookup(beforeFlow, cfg)
                 : buildFlowLookup([], null);
 
@@ -1187,20 +1176,20 @@
             // Track existing IDs for downstream edit-only/patch-only checks.
             // Checkpoints are saved at chat-send time by ChatManager.savePreSendCheckpoint,
             // not here  - the import path no longer produces its own checkpoints.
-            var beforeIdSet = new Set();
+            let beforeIdSet = new Set();
             (beforeFlow || []).forEach(function(n) {
                 if (n && n.id) beforeIdSet.add(n.id);
             });
 
             // Build type+name lookup from live editor state
-            var existingIds = new Set();
-            var existingByTypeName = {};
-            var existingByTypeNameToken = {};
-            var existingByTypeNameTokenLoose = {};
-            var existingConfigByType = {};
-            var claimedExistingIds = {};
-            var remappedIds = {};
-            var droppedPatchCandidates = 0;
+            let existingIds = new Set();
+            let existingByTypeName = {};
+            let existingByTypeNameToken = {};
+            let existingByTypeNameTokenLoose = {};
+            let existingConfigByType = {};
+            let claimedExistingIds = {};
+            let remappedIds = {};
+            let droppedPatchCandidates = 0;
 
             if (window.RED && RED.nodes) {
                 RED.nodes.eachNode(function(n) { existingIds.add(n.id); });
@@ -1211,14 +1200,14 @@
                 // Helper to register a node in type+name lookup tables
                 function registerNodeInLookups(n) {
                     if (!n || !n.name || !String(n.name).trim()) return;
-                    var typeKey = String(n.type || '').trim().toLowerCase();
-                    var k = typeKey + '::' + String(n.name || '').trim().toLowerCase();
+                    let typeKey = String(n.type || '').trim().toLowerCase();
+                    let k = typeKey + '::' + String(n.name || '').trim().toLowerCase();
                     if (k === '::') return;
                     if (!existingByTypeName[k]) existingByTypeName[k] = [];
                     existingByTypeName[k].push(n);
 
-                    var nk = normalizeToken(n.name || '');
-                    var lk = normalizeTokenLoose(n.name || '');
+                    let nk = normalizeToken(n.name || '');
+                    let lk = normalizeTokenLoose(n.name || '');
                     if (!existingByTypeNameToken[typeKey]) existingByTypeNameToken[typeKey] = {};
                     if (!existingByTypeNameTokenLoose[typeKey]) existingByTypeNameTokenLoose[typeKey] = {};
                     putUniqueToken(existingByTypeNameToken[typeKey], nk, n.id);
@@ -1227,7 +1216,7 @@
 
                 if (canModifyExisting && currentWorkspace) {
                     // Register workspace canvas nodes
-                    var wsNodes = RED.nodes.filterNodes({ z: currentWorkspace }) || [];
+                    let wsNodes = RED.nodes.filterNodes({ z: currentWorkspace }) || [];
                     wsNodes.forEach(registerNodeInLookups);
 
                     // Register config nodes (they live outside workspaces)
@@ -1236,7 +1225,7 @@
                             registerNodeInLookups(n);
                             // Build type-only lookup for singleton config-node matching
                             if (n && n.id && n.type) {
-                                var ct = String(n.type).trim().toLowerCase();
+                                let ct = String(n.type).trim().toLowerCase();
                                 if (!existingConfigByType[ct]) existingConfigByType[ct] = [];
                                 existingConfigByType[ct].push(n);
                             }
@@ -1252,13 +1241,13 @@
             // with alias "inject_trigger_1" from loose-matching an existing
             // "inject_trigger" when the LLM also (intentionally) references
             // "inject_trigger" as an edit target.
-            var preResolvedAlias = {};
+            let preResolvedAlias = {};
             if (canModifyExisting) {
                 nodes.forEach(function(n, idx) {
                     if (!n || !n._llmAlias) return;
-                    var exactId = lookup.resolve(n._llmAlias, { exactOnly: true });
+                    let exactId = lookup.resolve(n._llmAlias, { exactOnly: true });
                     if (!exactId || claimedExistingIds[exactId]) return;
-                    var existing = RED.nodes.node(exactId);
+                    let existing = RED.nodes.node(exactId);
                     if (!existing) return;
                     if (!currentWorkspace || existing.z === currentWorkspace || !existing.z) {
                         preResolvedAlias[idx] = exactId;
@@ -1268,15 +1257,15 @@
             }
 
             // ---- Map each proposed node to existing or new ----
-            var newNodes = nodes.map(function(n, idx) {
-                var nn = JSON.parse(JSON.stringify(n));
+            let newNodes = nodes.map(function(n, idx) {
+                let nn = JSON.parse(JSON.stringify(n));
                 nn.type = String(nn.type || '').trim();
 
-                var replacedExisting = null;
+                let replacedExisting = null;
 
                 // 1. Alias-based matching (primary  - uses _llmAlias from Vibe Schema conversion)
                 if (canModifyExisting && nn._llmAlias) {
-                    var aliasId = preResolvedAlias[idx] || null;
+                    let aliasId = preResolvedAlias[idx] || null;
                     // Fallback to fuzzy/loose only when this node had no exact
                     // match; skip any existing IDs already claimed by the
                     // pre-pass or a prior proposal.
@@ -1287,10 +1276,10 @@
                         // existing "inject_py", or "inject_trigger_2" vs
                         // existing "inject_trigger". Treat as NEW so loose
                         // fuzzy can't hijack an existing node.
-                        var stripped = nn._llmAlias
+                        let stripped = nn._llmAlias
                             .replace(/_?\d+$/, '')
                             .replace(/_+$/, '');
-                        var isNewNodeSignal = (stripped !== nn._llmAlias) &&
+                        let isNewNodeSignal = (stripped !== nn._llmAlias) &&
                             lookup.aliasToId && !!lookup.aliasToId[stripped];
                         // Fuzzy matching is useful in edit-only mode where the
                         // LLM may typo an alias it wants to modify. In merge
@@ -1298,12 +1287,12 @@
                         // and the prompt forbids reusing them for new nodes  -                         // fuzzy here only causes accidental overwrites of
                         // same-type existing nodes.
                         if (!isNewNodeSignal && applyMode === 'edit-only') {
-                            var fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
+                            let fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
                             if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
                         }
                     }
                     if (aliasId) {
-                        var byAlias = RED.nodes.node(aliasId);
+                        let byAlias = RED.nodes.node(aliasId);
                         // Allow matching for: same workspace nodes, OR config nodes
                         // (config nodes have no z / empty z  - they live outside workspaces)
                         if (byAlias && (!currentWorkspace || byAlias.z === currentWorkspace || !byAlias.z)) {
@@ -1319,8 +1308,8 @@
                 // an existing one). Matching on name would silently overwrite
                 // the existing node instead of creating a new sibling.
                 if (!replacedExisting && canModifyExisting && nn.name && nn.type && applyMode === 'edit-only') {
-                    var key = String(nn.type).trim().toLowerCase() + '::' + String(nn.name).trim().toLowerCase();
-                    var candidates = existingByTypeName[key] || [];
+                    let key = String(nn.type).trim().toLowerCase() + '::' + String(nn.name).trim().toLowerCase();
+                    let candidates = existingByTypeName[key] || [];
                     if (candidates.length === 1 && !claimedExistingIds[candidates[0].id]) {
                         replacedExisting = candidates[0];
                     }
@@ -1328,20 +1317,20 @@
 
                 // 3. Patch-only: type + name token matching (last resort for property updates)
                 if (!replacedExisting && isPatchOnlyUpdate && canModifyExisting && nn._llmAlias && nn.type) {
-                    var tkey = String(nn.type || '').trim().toLowerCase();
-                    var tokenMap = existingByTypeNameToken[tkey] || {};
-                    var tokenMapLoose = existingByTypeNameTokenLoose[tkey] || {};
-                    var ank = normalizeToken(nn._llmAlias);
+                    let tkey = String(nn.type || '').trim().toLowerCase();
+                    let tokenMap = existingByTypeNameToken[tkey] || {};
+                    let tokenMapLoose = existingByTypeNameTokenLoose[tkey] || {};
+                    let ank = normalizeToken(nn._llmAlias);
                     if (ank) {
-                        var byTokenId = tokenMap[ank] || null;
+                        let byTokenId = tokenMap[ank] || null;
                         if (!byTokenId) byTokenId = resolveUniqueApprox(tokenMap, ank, 6);
                         if (!byTokenId) {
-                            var alk = normalizeTokenLoose(nn._llmAlias);
+                            let alk = normalizeTokenLoose(nn._llmAlias);
                             if (alk && tokenMapLoose[alk]) byTokenId = tokenMapLoose[alk];
                             if (!byTokenId && alk) byTokenId = resolveUniqueApprox(tokenMapLoose, alk, 6);
                         }
                         if (byTokenId && !claimedExistingIds[byTokenId]) {
-                            var byToken = RED.nodes.node(byTokenId);
+                            let byToken = RED.nodes.node(byTokenId);
                             if (byToken && (!currentWorkspace || byToken.z === currentWorkspace)) {
                                 replacedExisting = byToken;
                             }
@@ -1353,9 +1342,9 @@
                 //    by alias or name, but exactly one existing config node of the
                 //    same type exists, reuse it rather than creating a duplicate.
                 if (!replacedExisting && canModifyExisting && isConfigNodeObj(nn)) {
-                    var configTypeKey = String(nn.type).trim().toLowerCase();
-                    var sameTypeCandidates = existingConfigByType[configTypeKey] || [];
-                    var unclaimedCandidates = sameTypeCandidates.filter(function(c) {
+                    let configTypeKey = String(nn.type).trim().toLowerCase();
+                    let sameTypeCandidates = existingConfigByType[configTypeKey] || [];
+                    let unclaimedCandidates = sameTypeCandidates.filter(function(c) {
                         return !claimedExistingIds[c.id];
                     });
                     if (unclaimedCandidates.length === 1) {
@@ -1364,7 +1353,7 @@
                 }
 
                 if (replacedExisting) {
-                    var originalId = nn.id;
+                    let originalId = nn.id;
                     claimedExistingIds[replacedExisting.id] = true;
                     nn.id = replacedExisting.id;
                     if (originalId && originalId !== nn.id) {
@@ -1386,9 +1375,9 @@
                     if ((!Array.isArray(nn.wires) || nn.wires.length === 0) && Array.isArray(replacedExisting.wires)) {
                         nn.wires = JSON.parse(JSON.stringify(replacedExisting.wires));
                     } else if (Array.isArray(nn.wires) && Array.isArray(replacedExisting.wires)) {
-                        var maxPorts = Math.max(nn.wires.length, replacedExisting.wires.length);
-                        var mergedWires = [];
-                        for (var p = 0; p < maxPorts; p++) {
+                        let maxPorts = Math.max(nn.wires.length, replacedExisting.wires.length);
+                        let mergedWires = [];
+                        for (let p = 0; p < maxPorts; p++) {
                             mergedWires[p] = mergeWireIds(replacedExisting.wires[p], nn.wires[p]);
                         }
                         nn.wires = mergedWires;
@@ -1445,7 +1434,7 @@
                 if (droppedPatchCandidates > 0 && window.RED && RED.notify) {
                     RED.notify('Patch update: skipped ' + droppedPatchCandidates + ' unmatched node proposal(s)', 'warning');
                 }
-                var matchedCount = newNodes.filter(function(n) {
+                let matchedCount = newNodes.filter(function(n) {
                     return !!(n && n.id) && beforeIdSet.has(n.id);
                 }).length;
                 if (matchedCount === 0) {
@@ -1460,7 +1449,7 @@
             }
 
             // edit-only: block new nodes but don't fail entirely
-            var blockedNewNodes = [];
+            let blockedNewNodes = [];
             if (applyMode === 'edit-only') {
                 blockedNewNodes = newNodes.filter(function(n) {
                     return !!(n && n.id) && !beforeIdSet.has(n.id);
@@ -1489,7 +1478,7 @@
                 } catch(e) {}
             }
 
-            var hasDirectives = (flowDirectives.removeTokens || []).length > 0 ||
+            let hasDirectives = (flowDirectives.removeTokens || []).length > 0 ||
                                 (flowDirectives.removeConnections || []).length > 0 ||
                                 (connectionHints || []).length > 0;
             if (!newNodes.length && !hasDirectives) {
@@ -1500,17 +1489,17 @@
                 return { ok: false, error: 'No valid nodes after sanitization' };
             }
 
-            var bad = newNodes.find(function(n) { return typeof n.type !== 'string' || n.type.length === 0; });
+            let bad = newNodes.find(function(n) { return typeof n.type !== 'string' || n.type.length === 0; });
             if (bad) {
                 if (RED && RED.notify) RED.notify('Import aborted: invalid node shape', 'error');
                 safeLog('bad node', bad);
                 return { ok: false, error: 'Invalid node shape' };
             }
 
-            var rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives, applyMode);
-            var rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
+            let rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives, applyMode);
+            let rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
             if (!rebuiltResult || !rebuiltResult.ok) {
-                var errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
+                let errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
                 if (window && window.RED && RED.notify) RED.notify('Import failed: ' + errMsg, 'error');
                 return {
                     ok: false,
@@ -1520,7 +1509,7 @@
 
             if (RED && RED.notify) RED.notify('Flow reloaded successfully', 'success');
 
-            var addedNodes = rebuiltFlow.filter(function(n) {
+            let addedNodes = rebuiltFlow.filter(function(n) {
                 return !!(n && n.id) && !beforeIdSet.has(n.id);
             }).map(function(n) {
                 return { id: n.id, type: n.type || '', name: n.name || '' };
@@ -1565,11 +1554,11 @@
                 }
                 
                 // Identify target workspaces from checkpoint
-                var ids = [];
-                if (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.extractWorkspaceIds === 'function') {
+                let ids = [];
+                if (LLMPlugin.UI) {
                     ids = LLMPlugin.UI.extractWorkspaceIds(nodes);
                 } else {
-                    var workspaceIds = {};
+                    let workspaceIds = {};
                     nodes.forEach(function(n) {
                         if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
                         if (n && n.z) workspaceIds[n.z] = true;
@@ -1578,20 +1567,18 @@
                 }
 
                 if (ids.length === 0) {
-                    var activeWs = getActiveWorkspaceId();
+                    let activeWs = getActiveWorkspaceId();
                     if (activeWs) ids = [activeWs];
                 }
 
                 // Clear any UI selection before destructive operations
                 try {
-                    if (RED.actions && typeof RED.actions.invoke === 'function') {
-                        RED.actions.invoke('core:select-none');
-                    }
+                    RED.actions.invoke('core:select-none');
                 } catch (e) { /* ignore */ }
 
                 // Clear ONLY the nodes in the target workspaces
                 ids.forEach(function(wsId) {
-                    var list = RED.nodes.filterNodes({ z: wsId }) || [];
+                    let list = RED.nodes.filterNodes({ z: wsId }) || [];
                     if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: wsId }) || []);
                     if (RED.nodes.filterJunctions) list = list.concat(RED.nodes.filterJunctions({ z: wsId }) || []);
                     list.filter(isCanvasNode).forEach(function(n) {
@@ -1604,9 +1591,7 @@
 
                 // Force UI synchronization
                 RED.view.redraw(true);
-                if (RED.workspaces && typeof RED.workspaces.refresh === 'function') {
-                    RED.workspaces.refresh();
-                }
+                RED.workspaces.refresh();
 
                 resolve({ ok: true, msg: 'Checkpoint restored' });
             } catch(e) {
@@ -1626,7 +1611,7 @@
                 return res.json();
             })
             .then(function(data) {
-                var cp = data && data.checkpoint;
+                let cp = data && data.checkpoint;
                 if (!cp || !Array.isArray(cp.flow)) {
                     return { ok: false, error: 'Invalid checkpoint data' };
                 }
@@ -1645,8 +1630,8 @@
     window.LLMPlugin.Importer = Importer;
     Importer.extractFlowNodes = extractFlowNodes;
     Importer.hasFlowDirectives = function(messageContent) {
-        var directives = extractFlowDirectives(messageContent);
-        var hints = extractConnectionHints(messageContent);
+        let directives = extractFlowDirectives(messageContent);
+        let hints = extractConnectionHints(messageContent);
         return (directives.removeTokens || []).length > 0 ||
                (directives.removeConnections || []).length > 0 ||
                hints.length > 0;

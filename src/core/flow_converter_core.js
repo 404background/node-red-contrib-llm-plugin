@@ -22,26 +22,26 @@
 })(function() {
     'use strict';
 
-    // Layout defaults — shared between toNodeRed() and callers that
+    // Layout defaults  Eshared between toNodeRed() and callers that
     // override via options.  Importers should reference these values so
     // there is a single source of truth for spacing / gap constants.
-    var LAYOUT_DEFAULTS = {
+    let LAYOUT_DEFAULTS = {
         startX:       60,
         startY:       60,
         spacingX:     180,   // 3 grid squares (60 px) between node edges
         spacingY:      80,   // row height
         componentGap:  80,   // gap between disconnected flow components (center-to-center)
-                             // 80 px = ~40 px visible gap + ~40 px node height ≈ 2 grid squares
+                             // 80 px = ~40 px visible gap + ~40 px node height ≁E2 grid squares
         maxColumns:     5
     };
 
     // Node-RED config node types end with "-config" and live outside the
     // canvas (no x, y, wires).  Detect them so we can handle them specially.
-    var CONFIG_TYPE_SUFFIX = '-config';
+    let CONFIG_TYPE_SUFFIX = '-config';
 
     // Well-known node types that have 0 input ports (source-only / event nodes).
     // Connections targeting these types are invalid and should be dropped.
-    var NO_INPUT_TYPES = {
+    let NO_INPUT_TYPES = {
         'inject': true,
         'catch': true,
         'status': true,
@@ -59,7 +59,7 @@
      * node definition object (same shape as RED.nodes.getType) or null.
      * This allows non-core / community nodes to be detected correctly.
      */
-    var _runtimeGetType = null;
+    let _runtimeGetType = null;
 
     function setRuntimeGetType(fn) {
         _runtimeGetType = (typeof fn === 'function') ? fn : null;
@@ -67,10 +67,10 @@
 
     function isConfigType(type) {
         if (typeof type !== 'string') return false;
-        // Runtime detection first (covers every installed node — core,
-        // community, custom — via RED.nodes.getType().category).
+        // Runtime detection first (covers every installed node  Ecore,
+        // community, custom  Evia RED.nodes.getType().category).
         if (_runtimeGetType) {
-            var def = _runtimeGetType(type);
+            let def = _runtimeGetType(type);
             if (def && def.category === 'config') return true;
         }
         // Static fallback: the "-config" suffix is the Node-RED convention
@@ -90,17 +90,17 @@
      */
     function isConfigNode(node) {
         if (!node || typeof node !== 'object') return false;
-        var type = node.type;
+        let type = node.type;
         if (typeof type !== 'string' || !type.trim()) return false;
         // Type-based detection (runtime + static suffix/list)
         if (isConfigType(type)) return true;
         // Structural detection: config nodes have no canvas properties.
         // Exclude tab and subflow definitions which also lack x/y/wires.
         if (type === 'tab' || type.indexOf('subflow:') === 0) return false;
-        var hasZ = false; // Ignore z (config nodes can be workspace scoped)
-        var hasXY = typeof node.x === 'number' || typeof node.y === 'number';
-        var hasWires = Array.isArray(node.wires);
-        var hasGroup = typeof node.g === 'string' && node.g.length > 0;
+        let hasZ = false; // Ignore z (config nodes can be workspace scoped)
+        let hasXY = typeof node.x === 'number' || typeof node.y === 'number';
+        let hasWires = Array.isArray(node.wires);
+        let hasGroup = typeof node.g === 'string' && node.g.length > 0;
         return !hasZ && !hasXY && !hasWires && !hasGroup;
     }
 
@@ -109,7 +109,7 @@
         if (typeof type !== 'string') return false;
         // Runtime detection first (covers all installed nodes)
         if (_runtimeGetType) {
-            var def = _runtimeGetType(type);
+            let def = _runtimeGetType(type);
             if (def && typeof def.inputs === 'number') {
                 return def.inputs === 0;
             }
@@ -120,7 +120,7 @@
 
     // Keys that belong to the Node-RED runtime/editor and should NOT be treated
     // as type-specific properties ("props") in the intermediate format.
-    var META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
+    let META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
 
     // ------------------------------------------------------------------ //
     //  Utilities                                                          //
@@ -142,17 +142,17 @@
 
     /** Pick a unique alias for a node: {type}_{name} format, kept short. */
     function generateAlias(node, usedAliases) {
-        var typePart = sanitizeAlias(node.type || 'node');
-        var namePart = node.name && node.name.trim() ? sanitizeAlias(node.name) : '';
+        let typePart = sanitizeAlias(node.type || 'node');
+        let namePart = node.name && node.name.trim() ? sanitizeAlias(node.name) : '';
         // Combine type and name; skip name if it duplicates the type
-        var base;
+        let base;
         if (namePart && namePart !== typePart) {
             base = typePart + '_' + namePart;
         } else {
             base = typePart;
         }
-        var alias = base;
-        var counter = 2;
+        let alias = base;
+        let counter = 2;
         while (usedAliases[alias]) {
             alias = base + '_' + counter;
             counter++;
@@ -161,7 +161,7 @@
     }
 
     // ------------------------------------------------------------------ //
-    //  Node-RED JSON  →  Intermediate (Vibe Schema)                       //
+    //  Node-RED JSON  ↁE Intermediate (Vibe Schema)                       //
     // ------------------------------------------------------------------ //
 
     /**
@@ -171,35 +171,35 @@
      * @return {Object} Vibe Schema { description, nodes, connections }.
      */
     function toIntermediate(nodeRedJson, options) {
-        var opts = options || {};
+        let opts = options || {};
         if (!Array.isArray(nodeRedJson) || nodeRedJson.length === 0) {
             return { description: '', nodes: {}, connections: [] };
         }
 
         // Filter out tab / subflow definition nodes
-        var nodes = nodeRedJson.filter(function(n) {
+        let nodes = nodeRedJson.filter(function(n) {
             return n && n.type && n.type !== 'tab' && n.type.indexOf('subflow:') !== 0;
         });
 
         // --- Pass 1: assign aliases ---
-        var usedAliases = {};
-        var idToAlias = {};
+        let usedAliases = {};
+        let idToAlias = {};
 
         nodes.forEach(function(node) {
-            var alias = generateAlias(node, usedAliases);
+            let alias = generateAlias(node, usedAliases);
             usedAliases[alias] = true;
             idToAlias[node.id] = alias;
         });
 
         // --- Pass 2: build intermediate nodes & connections ---
-        var intermediateNodes = {};
-        var connections = [];
+        let intermediateNodes = {};
+        let connections = [];
 
         nodes.forEach(function(node) {
-            var alias = idToAlias[node.id];
+            let alias = idToAlias[node.id];
 
             // Collect type-specific properties
-            var props = {};
+            let props = {};
             Object.keys(node).forEach(function(key) {
                 if (META_KEYS.indexOf(key) !== -1) return;
                 if (key.charAt(0) === '_') return;              // editor-internal
@@ -207,12 +207,12 @@
             });
 
             // Inject nodes have an internal "props" array that collides with
-            // the Vibe Schema concept.  Strip it — toNodeRed will regenerate it.
+            // the Vibe Schema concept.  Strip it  EtoNodeRed will regenerate it.
             if (node.type === 'inject' && Array.isArray(props.props)) {
                 delete props.props;
             }
 
-            // Resolve config-node ID references in props → aliases.
+            // Resolve config-node ID references in props ↁEaliases.
             // Any string prop whose value is a known node ID is replaced
             // with that node's alias so the intermediate format stays
             // portable (IDs are instance-specific).
@@ -222,7 +222,7 @@
                 }
             });
 
-            var entry = { type: node.type };
+            let entry = { type: node.type };
             if (node.name) entry.name = node.name;
             // Mark config nodes so the LLM knows they live outside the canvas.
             if (isConfigNode(node)) {
@@ -232,14 +232,14 @@
 
             intermediateNodes[alias] = entry;
 
-            // wires → connections
+            // wires ↁEconnections
             if (Array.isArray(node.wires)) {
                 node.wires.forEach(function(output, portIndex) {
                     if (!Array.isArray(output)) return;
                     output.forEach(function(targetId) {
-                        var targetAlias = idToAlias[targetId];
+                        let targetAlias = idToAlias[targetId];
                         if (!targetAlias) return;
-                        var conn = { from: alias, to: targetAlias };
+                        let conn = { from: alias, to: targetAlias };
                         if (portIndex > 0) conn.fromPort = portIndex;
                         connections.push(conn);
                     });
@@ -248,16 +248,16 @@
         });
 
         // Auto-generate a human-readable description
-        var typeCount = {};
+        let typeCount = {};
         nodes.forEach(function(n) {
             typeCount[n.type] = (typeCount[n.type] || 0) + 1;
         });
-        var desc = nodes.length + ' node(s): ' +
+        let desc = nodes.length + ' node(s): ' +
             Object.keys(typeCount).map(function(t) {
                 return t + (typeCount[t] > 1 ? ' x' + typeCount[t] : '');
             }).join(', ');
 
-        var result = {
+        let result = {
             description: desc,
             nodes: intermediateNodes,
             connections: connections
@@ -271,38 +271,38 @@
     }
 
     // ------------------------------------------------------------------ //
-    //  Intermediate (Vibe Schema)  →  Node-RED JSON                       //
+    //  Intermediate (Vibe Schema)  ↁE Node-RED JSON                       //
     // ------------------------------------------------------------------ //
 
     /**
      * Topological layout engine with parallel-branch support and line wrapping.
      * 1. Discovers connected components (subgraphs).
-     * 2. Lays out each component independently — nodes in a straight chain
+     * 2. Lays out each component independently  Enodes in a straight chain
      *    share the same row so branches stay visually horizontal.
      * 3. When a chain exceeds maxColumns, wraps to the next row set.
      * 4. Stacks components vertically with a 2-row gap.
      *
      * @param {string[]} aliases
-     * @param {Object}   outgoing  alias → [target aliases]
-     * @param {Object}   incoming  alias → [source aliases]
+     * @param {Object}   outgoing  alias ↁE[target aliases]
+     * @param {Object}   incoming  alias ↁE[source aliases]
      * @param {number}   [maxColumns=5]  Wrap after this many columns.
      */
     function layoutNodes(aliases, outgoing, incoming, maxColumns) {
         if (!maxColumns || maxColumns < 2) maxColumns = 5;
-        var positions = {};
-        var visited = {};
+        let positions = {};
+        let visited = {};
 
         // --- Step 1: discover connected components (undirected BFS) ---
-        var components = [];
+        let components = [];
         function discoverComponent(start) {
-            var comp = [];
-            var q = [start];
+            let comp = [];
+            let q = [start];
             visited[start] = true;
             while (q.length > 0) {
-                var a = q.shift();
+                let a = q.shift();
                 comp.push(a);
-                var neighbors = (outgoing[a] || []).concat(incoming[a] || []);
-                for (var i = 0; i < neighbors.length; i++) {
+                let neighbors = (outgoing[a] || []).concat(incoming[a] || []);
+                for (let i = 0; i < neighbors.length; i++) {
                     if (!visited[neighbors[i]]) {
                         visited[neighbors[i]] = true;
                         q.push(neighbors[i]);
@@ -316,32 +316,32 @@
         });
 
         // --- Step 2: layout each component, stacked vertically ---
-        var globalRowOffset = 0;
-        var componentIndex = 0;
+        let globalRowOffset = 0;
+        let componentIndex = 0;
 
         components.forEach(function(comp) {
-            var compSet = {};
+            let compSet = {};
             comp.forEach(function(a) { compSet[a] = true; });
 
             // Root nodes: no incoming edges from within this component
-            var roots = comp.filter(function(a) {
+            let roots = comp.filter(function(a) {
                 return incoming[a].every(function(p) { return !compSet[p]; });
             });
             if (roots.length === 0) roots = [comp[0]];
 
             // BFS to assign column indices
-            var colMap = {};
-            var bfsVis = {};
-            var queue = [];
+            let colMap = {};
+            let bfsVis = {};
+            let queue = [];
             roots.forEach(function(r) {
                 colMap[r] = 0;
                 bfsVis[r] = true;
                 queue.push(r);
             });
             while (queue.length > 0) {
-                var cur = queue.shift();
-                for (var i = 0; i < outgoing[cur].length; i++) {
-                    var next = outgoing[cur][i];
+                let cur = queue.shift();
+                for (let i = 0; i < outgoing[cur].length; i++) {
+                    let next = outgoing[cur][i];
                     if (!bfsVis[next] && compSet[next]) {
                         bfsVis[next] = true;
                         colMap[next] = (colMap[cur] || 0) + 1;
@@ -352,19 +352,19 @@
             comp.forEach(function(a) { if (colMap[a] === undefined) colMap[a] = 0; });
 
             // Group by column
-            var columns = {};
+            let columns = {};
             comp.forEach(function(a) {
-                var c = colMap[a];
+                let c = colMap[a];
                 if (!columns[c]) columns[c] = [];
                 columns[c].push(a);
             });
 
             // Assign rows: inherit parent's row to keep chains horizontal
-            var rowMap = {};
-            var colKeys = Object.keys(columns).map(Number).sort(function(a, b) { return a - b; });
+            let rowMap = {};
+            let colKeys = Object.keys(columns).map(Number).sort(function(a, b) { return a - b; });
 
             colKeys.forEach(function(col) {
-                var nodesInCol = columns[col];
+                let nodesInCol = columns[col];
                 if (col === colKeys[0]) {
                     // First column: sequential rows from current offset
                     nodesInCol.forEach(function(a, idx) {
@@ -372,11 +372,11 @@
                     });
                 } else {
                     // Later columns: inherit parent row
-                    var assignments = nodesInCol.map(function(a) {
-                        var parents = incoming[a].filter(function(p) {
+                    let assignments = nodesInCol.map(function(a) {
+                        let parents = incoming[a].filter(function(p) {
                             return compSet[p] && rowMap[p] !== undefined;
                         });
-                        var target;
+                        let target;
                         if (parents.length > 0) {
                             target = Math.round(
                                 parents.reduce(function(s, p) { return s + rowMap[p]; }, 0) / parents.length
@@ -387,9 +387,9 @@
                         return { alias: a, target: target };
                     });
                     assignments.sort(function(a, b) { return a.target - b.target; });
-                    var usedRows = {};
+                    let usedRows = {};
                     assignments.forEach(function(item) {
-                        var row = item.target;
+                        let row = item.target;
                         while (usedRows[row]) row++;
                         usedRows[row] = true;
                         rowMap[item.alias] = row;
@@ -399,18 +399,18 @@
 
             // --- Wrap long chains ---
             // Find the distinct row count within this component (before wrapping)
-            var compMaxCol = 0;
+            let compMaxCol = 0;
             comp.forEach(function(a) { if (colMap[a] > compMaxCol) compMaxCol = colMap[a]; });
 
             if (compMaxCol >= maxColumns) {
                 // Count the distinct rows used in the original layout
-                var rowSet = {};
+                let rowSet = {};
                 comp.forEach(function(a) { rowSet[rowMap[a]] = true; });
-                var rowsPerFold = Object.keys(rowSet).length;
+                let rowsPerFold = Object.keys(rowSet).length;
                 if (rowsPerFold < 1) rowsPerFold = 1;
 
                 comp.forEach(function(a) {
-                    var fold = Math.floor(colMap[a] / maxColumns);
+                    let fold = Math.floor(colMap[a] / maxColumns);
                     if (fold > 0) {
                         colMap[a] = colMap[a] % maxColumns;
                         rowMap[a] = rowMap[a] + fold * (rowsPerFold + 1);
@@ -419,7 +419,7 @@
             }
 
             // Compute max row for this component
-            var maxRow = globalRowOffset - 1;
+            let maxRow = globalRowOffset - 1;
             comp.forEach(function(a) {
                 if (rowMap[a] !== undefined && rowMap[a] > maxRow) maxRow = rowMap[a];
             });
@@ -454,17 +454,17 @@
     function toNodeRed(intermediate, options) {
         if (!intermediate || !intermediate.nodes) return [];
 
-        var opts = options || {};
-        var workspace      = opts.workspace      || '';
-        var startX         = opts.startX         || LAYOUT_DEFAULTS.startX;
-        var startY         = opts.startY         || LAYOUT_DEFAULTS.startY;
-        var spacingX       = opts.spacingX       || LAYOUT_DEFAULTS.spacingX;
-        var spacingY       = opts.spacingY       || LAYOUT_DEFAULTS.spacingY;
-        var maxColumns     = opts.maxColumns     || LAYOUT_DEFAULTS.maxColumns;
-        var preserveAlias  = !!opts.preserveAlias;
+        let opts = options || {};
+        let workspace      = opts.workspace      || '';
+        let startX         = opts.startX         || LAYOUT_DEFAULTS.startX;
+        let startY         = opts.startY         || LAYOUT_DEFAULTS.startY;
+        let spacingX       = opts.spacingX       || LAYOUT_DEFAULTS.spacingX;
+        let spacingY       = opts.spacingY       || LAYOUT_DEFAULTS.spacingY;
+        let maxColumns     = opts.maxColumns     || LAYOUT_DEFAULTS.maxColumns;
+        let preserveAlias  = !!opts.preserveAlias;
 
         // --- Work on a shallow copy so we never mutate the caller's object ---
-        var nodeSpecs = {};
+        let nodeSpecs = {};
         Object.keys(intermediate.nodes).forEach(function(k) {
             nodeSpecs[k] = intermediate.nodes[k];
         });
@@ -474,65 +474,65 @@
         // defining them.  Detect such dangling references and create stubs.
         //
         // Detection strategies:
-        //  1. Props keys ending in "config" (e.g. venvconfig → venv-config)
+        //  1. Props keys ending in "config" (e.g. venvconfig ↁEvenv-config)
         //  2. Well-known reference keys that commonly point to config nodes
-        var CONFIG_REF_KEYS = {
+        let CONFIG_REF_KEYS = {
             'broker': 'mqtt-broker',
-            'server': null,          // type varies — skip auto-create
+            'server': null,          // type varies  Eskip auto-create
             'group': 'ui-group',
             'tab': 'ui-tab',
             'base': 'ui-base',
             'serialport': 'serial-port'
         };
         Object.keys(nodeSpecs).forEach(function(alias) {
-            var spec = nodeSpecs[alias];
+            let spec = nodeSpecs[alias];
             if (!spec || !spec.props) return;
             Object.keys(spec.props).forEach(function(key) {
-                var refAlias = spec.props[key];
+                let refAlias = spec.props[key];
                 if (typeof refAlias !== 'string') return;
                 if (nodeSpecs[refAlias]) return;           // already defined
                 if (!/^[a-z][a-z0-9_]*$/i.test(refAlias)) return; // not alias-shaped
 
                 // Strategy 1: key ends in "config"
                 if (/config$/i.test(key)) {
-                    var typeName = key.replace(/config$/i, '-config');
+                    let typeName = key.replace(/config$/i, '-config');
                     nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, _autoStub: true, props: {} };
                     return;
                 }
 
                 // Strategy 2: well-known reference key
-                var lowerKey = key.toLowerCase();
+                let lowerKey = key.toLowerCase();
                 if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey]) {
                     nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, _autoStub: true, props: {} };
                 }
             });
         });
 
-        var aliases = Object.keys(nodeSpecs);
+        let aliases = Object.keys(nodeSpecs);
         if (aliases.length === 0) return [];
 
         // --- Generate real IDs ---
-        var aliasToId = {};
+        let aliasToId = {};
         aliases.forEach(function(alias) {
             aliasToId[alias] = genId();
         });
 
         // --- Separate config nodes from canvas nodes for layout ---
-        var canvasAliases = aliases.filter(function(a) {
-            var spec = nodeSpecs[a];
+        let canvasAliases = aliases.filter(function(a) {
+            let spec = nodeSpecs[a];
             return !(isConfigType(spec.type) || spec.config === true);
         });
 
         // --- Build adjacency lists (skip dangling references) ---
-        var outgoing = {};
-        var incoming = {};
+        let outgoing = {};
+        let incoming = {};
         canvasAliases.forEach(function(a) { outgoing[a] = []; incoming[a] = []; });
 
-        var connections = intermediate.connections || [];
+        let connections = intermediate.connections || [];
         connections.forEach(function(conn) {
             if (outgoing[conn.from] && incoming[conn.to]) {
                 // Skip connections targeting nodes that cannot accept input
-                var targetSpec = nodeSpecs[conn.to];
+                let targetSpec = nodeSpecs[conn.to];
                 if (targetSpec && isNoInputType(targetSpec.type)) return;
                 outgoing[conn.from].push(conn.to);
                 incoming[conn.to].push(conn.from);
@@ -540,18 +540,18 @@
         });
 
         // --- Layout (canvas nodes only; config nodes have no coordinates) ---
-        var layout = layoutNodes(canvasAliases, outgoing, incoming, maxColumns);
+        let layout = layoutNodes(canvasAliases, outgoing, incoming, maxColumns);
 
         // --- Build wires map (guard against dangling aliases) ---
-        var wiresMap = {};
+        let wiresMap = {};
         aliases.forEach(function(a) { wiresMap[a] = []; });
 
         connections.forEach(function(conn) {
             if (!wiresMap[conn.from] || !aliasToId[conn.to]) return;
             // Skip connections targeting nodes that cannot accept input
-            var targetSpec = nodeSpecs[conn.to];
+            let targetSpec = nodeSpecs[conn.to];
             if (targetSpec && isNoInputType(targetSpec.type)) return;
-            var port = Math.max(0, Math.min(conn.fromPort || 0, 32));
+            let port = Math.max(0, Math.min(conn.fromPort || 0, 32));
             while (wiresMap[conn.from].length <= port) {
                 wiresMap[conn.from].push([]);
             }
@@ -569,9 +569,9 @@
             if (!code || typeof code !== 'string') return code;
 
             // Heuristic: if there are already a reasonable number of newlines,
-            // the code is already formatted — leave it alone.
-            var lines = code.split('\n');
-            var semis = (code.match(/;/g) || []).length;
+            // the code is already formatted  Eleave it alone.
+            let lines = code.split('\n');
+            let semis = (code.match(/;/g) || []).length;
             if (lines.length > 3 || (lines.length > 1 && lines.length >= semis * 0.3)) {
                 return code;
             }
@@ -580,21 +580,21 @@
             //  - nesting depth of () [] for skipping semicolons in for(;;) etc.
             //  - brace depth {} for indentation
             //  - string context (' " `)
-            var result = [];
-            var indent = 0;
-            var i = 0;
-            var len = code.length;
-            var parenDepth = 0;    // () and []
-            var inString = false;  // false, or the opening quote char
-            var INDENT = '  ';
+            let result = [];
+            let indent = 0;
+            let i = 0;
+            let len = code.length;
+            let parenDepth = 0;    // () and []
+            let inString = false;  // false, or the opening quote char
+            let INDENT = '  ';
 
             function pushIndent() {
                 result.push('\n');
-                for (var k = 0; k < indent; k++) result.push(INDENT);
+                for (let k = 0; k < indent; k++) result.push(INDENT);
             }
 
             while (i < len) {
-                var ch = code[i];
+                let ch = code[i];
 
                 // --- String tracking ---
                 if (inString) {
@@ -654,16 +654,16 @@
                     }
                     // If next non-space is ) or . keep it on the same line
                     // (method chains like }).on(...) and callback closes like }))
-                    var peekJ = i;
+                    let peekJ = i;
                     while (peekJ < len && code[peekJ] === ' ') peekJ++;
                     if (peekJ < len && (code[peekJ] === ')' || code[peekJ] === '.')) {
-                        // Stay on same line — don't add newline
+                        // Stay on same line  Edon't add newline
                         while (i < len && code[i] === ' ') i++;
                     } else if (peekJ < len && code[peekJ] !== '}') {
                         pushIndent();
                         while (i < len && code[i] === ' ') i++;
                     } else {
-                        // Next is } or end — let the next iteration handle it
+                        // Next is } or end  Elet the next iteration handle it
                         while (i < len && code[i] === ' ') i++;
                     }
                     continue;
@@ -687,7 +687,7 @@
                 i++;
             }
 
-            var formatted = result.join('');
+            let formatted = result.join('');
             // Clean up: remove trailing whitespace on each line, collapse blank lines
             formatted = formatted.split('\n').map(function(l) { return l.replace(/\s+$/, ''); }).join('\n');
             formatted = formatted.replace(/\n{3,}/g, '\n\n');
@@ -703,25 +703,25 @@
         function normalizeFunctionNode(node) {
             if (!node.func || typeof node.func !== 'string') return;
 
-            // Match require() patterns ANYWHERE in the code — not just at
+            // Match require() patterns ANYWHERE in the code  Enot just at
             // the start of a line.  LLMs often emit the entire function
             // body on one line separated by semicolons.
             //
             // Matches:
             //   const net = require('net');
-            //   var net = require("net");
+            //   let net = require("net");
             //   let  net = require( 'net' );
             //   const { Socket } = require('net');
             //   …also mid-line: "…[]; const net = require('net'); …"
-            var requireRe = /\b(?:const|let|var)\s+(?:\{[^}]+\}|([a-zA-Z_$][a-zA-Z0-9_$]*))\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)\s*;?/g;
-            var libs = Array.isArray(node.libs) ? node.libs.slice() : [];
-            var existingModules = {};
+            let requireRe = /\b(?:const|let|var)\s+(?:\{[^}]+\}|([a-zA-Z_$][a-zA-Z0-9_$]*))\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)\s*;?/g;
+            let libs = Array.isArray(node.libs) ? node.libs.slice() : [];
+            let existingModules = {};
             libs.forEach(function(l) { existingModules[l.module] = true; });
 
-            var cleaned = node.func.replace(requireRe, function(match, varName, moduleName) {
+            let cleaned = node.func.replace(requireRe, function(match, varName, moduleName) {
                 if (existingModules[moduleName]) return '';   // already declared
-                // For destructured imports use the module name as the var name
-                var v = varName || moduleName.replace(/[^a-zA-Z0-9_$]/g, '_');
+                // For destructured imports use the module name as the let name
+                let v = varName || moduleName.replace(/[^a-zA-Z0-9_$]/g, '_');
                 libs.push({ var: v, module: moduleName });
                 existingModules[moduleName] = true;
                 return '';  // remove the require statement
@@ -758,7 +758,7 @@
 
             // Build the internal props descriptor array expected by the editor.
             if (!Array.isArray(node.props)) {
-                var injectProps = [{ p: 'payload' }];
+                let injectProps = [{ p: 'payload' }];
                 if (node.topic !== undefined) {
                     injectProps.push({ p: 'topic', vt: 'str' });
                 }
@@ -795,9 +795,9 @@
         // If outputs stays at 1, Node-RED can collapse branch wires on import.
         function normalizeSwitchNode(node) {
             if (node.type !== 'switch') return;
-            var rulesLen = Array.isArray(node.rules) ? node.rules.length : 0;
-            var wiresLen = Array.isArray(node.wires) ? node.wires.length : 0;
-            var current = (typeof node.outputs === 'number' && node.outputs > 0) ? node.outputs : 0;
+            let rulesLen = Array.isArray(node.rules) ? node.rules.length : 0;
+            let wiresLen = Array.isArray(node.wires) ? node.wires.length : 0;
+            let current = (typeof node.outputs === 'number' && node.outputs > 0) ? node.outputs : 0;
             node.outputs = Math.max(current, rulesLen, wiresLen, 1);
         }
 
@@ -826,23 +826,23 @@
 
         // Compute per-component Y offsets so disconnected flows stack with
         // Gap between disconnected flows: 2 grid squares (40px) visible gap.
-        // Node effective height ≈ 40px, so center-to-center = 40 + 40 = 80px.
-        var componentGapPx = LAYOUT_DEFAULTS.componentGap;
+        // Node effective height ≁E40px, so center-to-center = 40 + 40 = 80px.
+        let componentGapPx = LAYOUT_DEFAULTS.componentGap;
         function buildComponentYOffsets(layoutMap, aliases) {
-            var compInfo = {};  // comp → { minRow, maxRow }
+            let compInfo = {};  // comp ↁE{ minRow, maxRow }
             aliases.forEach(function(a) {
-                var pos = layoutMap[a];
+                let pos = layoutMap[a];
                 if (!pos || pos.comp === undefined) return;
-                var ci = pos.comp;
+                let ci = pos.comp;
                 if (!compInfo[ci]) compInfo[ci] = { minRow: pos.row, maxRow: pos.row };
                 if (pos.row < compInfo[ci].minRow) compInfo[ci].minRow = pos.row;
                 if (pos.row > compInfo[ci].maxRow) compInfo[ci].maxRow = pos.row;
             });
-            var compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
-            var offsets = {};
-            var nextY = startY;
+            let compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
+            let offsets = {};
+            let nextY = startY;
             compKeys.forEach(function(ci) {
-                var info = compInfo[ci];
+                let info = compInfo[ci];
                 // Offset so this component's minRow maps to nextY
                 offsets[ci] = nextY - info.minRow * spacingY;
                 // Next component starts after this one's maxRow + gap
@@ -851,16 +851,16 @@
             return offsets;
         }
 
-        var compYOffsets = buildComponentYOffsets(layout, canvasAliases);
+        let compYOffsets = buildComponentYOffsets(layout, canvasAliases);
 
         // --- Assemble Node-RED nodes ---
-        var result = [];
+        let result = [];
         aliases.forEach(function(alias) {
-            var spec = nodeSpecs[alias];
-            var isConfig = isConfigType(spec.type) || spec.config === true;
-            var pos  = layout[alias] || { col: 0, row: 0 };
+            let spec = nodeSpecs[alias];
+            let isConfig = isConfigType(spec.type) || spec.config === true;
+            let pos  = layout[alias] || { col: 0, row: 0 };
 
-            var node = {
+            let node = {
                 id:   aliasToId[alias],
                 type: spec.type
             };
@@ -875,16 +875,16 @@
             if (spec.name) node.name = spec.name;
             if (workspace && !isConfig) node.z = workspace;
 
-            // Config nodes don't appear on the canvas — skip coordinates
+            // Config nodes don't appear on the canvas  Eskip coordinates
             if (!isConfig) {
                 node.x = startX + pos.col * spacingX;
-                var yOff = (pos.comp !== undefined && compYOffsets[pos.comp] !== undefined)
+                let yOff = (pos.comp !== undefined && compYOffsets[pos.comp] !== undefined)
                     ? compYOffsets[pos.comp] : 0;
                 node.y = Math.round(pos.row * spacingY + yOff);
             }
 
             // Flatten type-specific props (from both spec.props and root spec)
-            var mergedProps = {};
+            let mergedProps = {};
             if (typeof spec.props === 'object' && spec.props !== null && !Array.isArray(spec.props)) {
                 Object.keys(spec.props).forEach(function(key) {
                     mergedProps[key] = spec.props[key];
@@ -896,7 +896,7 @@
 
             // Flatten spec root keys into mergedProps, skipping META_KEYS
             // and Vibe-Schema-only keys (props, _llmAlias, config, flow).
-            var SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config', 'flow']);
+            let SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config', 'flow']);
             Object.keys(spec).forEach(function(key) {
                 if (SPEC_SKIP_KEYS.indexOf(key) === -1) {
                     mergedProps[key] = spec[key];
@@ -907,9 +907,9 @@
                 node[key] = mergedProps[key];
             });
 
-            // Resolve alias references in props → real IDs.
+            // Resolve alias references in props ↁEreal IDs.
             // Only resolve type-specific properties (config-node references like
-            // venvconfig: "my_venv" → "id_xxx"). Skip META_KEYS (id, type, name,
+            // venvconfig: "my_venv" ↁE"id_xxx"). Skip META_KEYS (id, type, name,
             // z, x, y, wires, g) and _llmAlias to avoid corrupting node identity
             // when an alias happens to match a type or name (e.g. alias "inject"
             // colliding with type "inject").

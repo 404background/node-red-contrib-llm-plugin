@@ -8,10 +8,6 @@ module.exports = function(RED) {
         if (server && typeof server.createLLMPluginServer === 'function') {
             server.createLLMPluginServer(RED);
             RED.log && RED.log.info && RED.log.info('[LLM Plugin] Server routes registered');
-        } else if (typeof server === 'function') {
-            // support older export style
-            server(RED);
-            RED.log && RED.log.info && RED.log.info('[LLM Plugin] Server initialized (function export)');
         } else {
             RED.log && RED.log.warn && RED.log.warn('[LLM Plugin] No server initializer found in src/server.js');
         }

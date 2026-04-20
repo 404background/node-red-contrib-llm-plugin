@@ -1,7 +1,7 @@
-// UI core module — vanilla JS (no jQuery).
+// UI core module  Evanilla JS (no jQuery).
 // Handles message rendering, flow context export, and retry logic.
 (function(){
-    var UI = {};
+    let UI = {};
 
     // Escape HTML special characters to prevent XSS
     function escapeHtml(str) {
@@ -9,18 +9,15 @@
     }
 
     function formatMessage(text) {
-        // Use marked library if available for proper Markdown rendering
+        // Run with marked.js (assumed present in modern Node-RED environments)
         if (typeof marked !== 'undefined' && marked.parse) {
-            // If the whole response is raw JSON, render it as a formatted
-            // code block so UI can fold it like fenced JSON output.
-            var raw = String(text || '').trim();
+            let raw = String(text || '').trim();
             if (raw && (raw.charAt(0) === '{' || raw.charAt(0) === '[')) {
                 try {
-                    var parsedRaw = JSON.parse(raw);
+                    let parsedRaw = JSON.parse(raw);
                     if (parsedRaw && typeof parsedRaw === 'object') {
-                        var descHtml = '';
-                        var displayObj = parsedRaw;
-                        // Vibe Schema with description: show description as text
+                        let descHtml = '';
+                        let displayObj = parsedRaw;
                         if (parsedRaw.nodes && parsedRaw.connections &&
                             parsedRaw.description && typeof parsedRaw.description === 'string') {
                             descHtml = '<p>' + escapeHtml(parsedRaw.description) + '</p>';
@@ -34,60 +31,23 @@
                 } catch (e) { /* not raw JSON */ }
             }
 
-            // Prevent raw HTML injection from model responses while preserving markdown.
-            var safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            var html = marked.parse(safeText);
-            // Defend against javascript: URI protocol XSS
+            let safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            let html = marked.parse(safeText);
             return html.replace(/href\s*=\s*(["'])\s*javascript:/gi, 'href=$1#blocked:');
         }
-
-        // Fallback simple formatter (deprecated but kept for safety)
-        // Escape HTML first to prevent XSS, then apply formatting
-        text = escapeHtml(text);
-        text = text.replace(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/gi, function(match, jsonContent) {
-            try {
-                var unescaped = jsonContent.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
-                var parsed = JSON.parse(unescaped);
-                if (parsed && (Array.isArray(parsed) || parsed.nodes)) {
-                    // Re-escape: use the parsed object to produce clean JSON, then escape for safe HTML display
-                    return '<pre class="raw-json">' + escapeHtml(JSON.stringify(parsed, null, 2)) + '</pre>';
-                }
-            } catch (e) {}
-            return '';
-        });
-        text = text.replace(/```(\w+)?\s*\n([\s\S]*?)\n\s*```/g, '<pre><code class="language-$1">$2</code></pre>');
-        text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
-        text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
-        text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
-        text = text.replace(/^---$/gm, '<hr>');
-        text = text.replace(/^(\s*)[-*] (.*)$/gm, '$1<li>$2</li>');
-        text = text.replace(/(<li>.*<\/li>)/g, function(match) {
-            if (!/^<ul>/.test(match)) return '<ul>' + match + '</ul>';
-            return match;
-        });
-        text = text.replace(/^(\s*)\d+\. (.*)$/gm, '$1<li>$2</li>');
-        text = text.replace(/(<li>.*<\/li>)/g, function(match) {
-            if (!/^<ol>/.test(match) && !/^<ul>/.test(match)) return '<ol>' + match + '</ol>';
-            return match;
-        });
-        text = text.replace(/<\/ol>\s*<ol>/g, '');
-        text = text.replace(/<\/ul>\s*<ul>/g, '');
-        text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
-        text = text.replace(/\n/g, '<br>');
-        return text;
+        
+        return escapeHtml(text);
     }
 
     function createRestoreCheckpointButton(checkpointId) {
-        var btn = document.createElement('button');
+        let btn = document.createElement('button');
         btn.className = 'restore-btn';
         btn.textContent = 'Restore Checkpoint';
         btn.dataset.checkpointId = checkpointId;
         btn.addEventListener('click', function() {
-            var cpId = btn.dataset.checkpointId;
-            if (!cpId || !(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.restoreCheckpoint)) return;
-            var ok = confirm('Restore the flow from this checkpoint? Current flow in the active tab will be replaced.');
+            let cpId = btn.dataset.checkpointId;
+            if (!cpId || !LLMPlugin.Importer) return;
+            let ok = confirm('Restore the flow from this checkpoint? Current flow in the active tab will be replaced.');
             if (!ok) return;
             btn.disabled = true;
             LLMPlugin.Importer.restoreCheckpoint(cpId)
@@ -109,43 +69,43 @@
     }
 
     UI.addMessageToUI = function(content, isUser, showActions, messageMeta) {
-        var chatArea = document.getElementById('llm-plugin-chat');
+        let chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea) return null;
 
-        var message = document.createElement('div');
+        let message = document.createElement('div');
         message.className = 'llm-plugin-message ' + (isUser ? 'user-message' : 'assistant-message');
         if (messageMeta && messageMeta.id) {
             message.dataset.messageId = messageMeta.id;
         }
 
-        var messageContent = document.createElement('div');
+        let messageContent = document.createElement('div');
         messageContent.className = 'message-content';
         messageContent.innerHTML = formatMessage(content);
 
         // Wrap JSON / Vibe-Schema code blocks in a collapsible <details> element
-        var codeBlocks = messageContent.querySelectorAll('pre');
-        for (var i = 0; i < codeBlocks.length; i++) {
-            var pre = codeBlocks[i];
-            var codeEl = pre.querySelector('code') || pre;
+        let codeBlocks = messageContent.querySelectorAll('pre');
+        for (let i = 0; i < codeBlocks.length; i++) {
+            let pre = codeBlocks[i];
+            let codeEl = pre.querySelector('code') || pre;
             try {
-                var text = codeEl.textContent || '';
-                var parsed = JSON.parse(text);
+                let text = codeEl.textContent || '';
+                let parsed = JSON.parse(text);
                 if (parsed && typeof parsed === 'object') {
-                    var details = document.createElement('details');
+                    let details = document.createElement('details');
                     details.className = 'json-collapsible';
-                    var summary = document.createElement('summary');
+                    let summary = document.createElement('summary');
 
-                    var isVibeSchema = parsed.nodes && parsed.connections;
+                    let isVibeSchema = parsed.nodes && parsed.connections;
                     if (isVibeSchema) {
                         summary.textContent = 'Vibe Schema JSON';
                         // If the LLM included a description inside the JSON,
                         // show it as a text paragraph and strip from the JSON display.
                         if (parsed.description && typeof parsed.description === 'string') {
-                            var descPara = document.createElement('p');
+                            let descPara = document.createElement('p');
                             descPara.textContent = parsed.description;
                             pre.parentNode.insertBefore(descPara, pre);
                             // Re-render the code block without the description field
-                            var display = JSON.parse(JSON.stringify(parsed));
+                            let display = JSON.parse(JSON.stringify(parsed));
                             delete display.description;
                             codeEl.textContent = JSON.stringify(display, null, 2);
                         }
@@ -158,17 +118,17 @@
                     details.appendChild(summary);
                     details.appendChild(pre);
                 }
-            } catch (e) { /* not JSON — leave as-is */ }
+            } catch (e) { /* not JSON  Eleave as-is */ }
         }
 
         message.appendChild(messageContent);
 
         if (!isUser) {
-            var meta = messageMeta && messageMeta.meta ? messageMeta.meta : null;
+            let meta = messageMeta && messageMeta.meta ? messageMeta.meta : null;
             if (meta && typeof meta.elapsedMs === 'number' && isFinite(meta.elapsedMs)) {
-                var elapsed = document.createElement('div');
+                let elapsed = document.createElement('div');
                 elapsed.className = 'message-elapsed';
-                var elapsedText = (meta.elapsedMs / 1000).toFixed(1) + 's';
+                let elapsedText = (meta.elapsedMs / 1000).toFixed(1) + 's';
                 if (meta.model && typeof meta.model === 'string') {
                     elapsedText = meta.model + ' / ' + elapsedText;
                 }
@@ -178,11 +138,11 @@
         }
 
         if (!isUser && showActions) {
-            var messageActions = document.createElement('div');
+            let messageActions = document.createElement('div');
             messageActions.className = 'message-actions';
-            var retryBtn = document.createElement('button');
+            let retryBtn = document.createElement('button');
             retryBtn.className = 'retry-btn';
-            var retryIcon = document.createElement('i');
+            let retryIcon = document.createElement('i');
             retryIcon.className = 'fa fa-redo';
             retryIcon.setAttribute('aria-hidden', 'true');
             retryIcon.style.color = '#222';
@@ -195,29 +155,25 @@
 
         if (!isUser) {
             try {
-                var flowNodes = (window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.extractFlowNodes)
-                    ? LLMPlugin.Importer.extractFlowNodes(content)
-                    : null;
-                var hasDirectivesOnly = !flowNodes || flowNodes.length === 0
-                    ? !!(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.hasFlowDirectives && LLMPlugin.Importer.hasFlowDirectives(content))
+                let flowNodes = LLMPlugin.Importer ? LLMPlugin.Importer.extractFlowNodes(content) : null;
+                let hasDirectivesOnly = !flowNodes || flowNodes.length === 0
+                    ? !!(LLMPlugin.Importer && LLMPlugin.Importer.hasFlowDirectives(content))
                     : false;
                 if ((flowNodes && flowNodes.length > 0) || hasDirectivesOnly) {
-                    var flowActions = document.createElement('div');
+                    let flowActions = document.createElement('div');
                     flowActions.className = 'flow-actions';
-                    var importBtn = document.createElement('button');
+                    let importBtn = document.createElement('button');
                     importBtn.className = 'import-btn';
                     importBtn.textContent = 'Import Flow';
                     
-                    var isAgent = messageMeta && messageMeta.meta && messageMeta.meta.mode === 'agent';
+                    let isAgent = messageMeta && messageMeta.meta && messageMeta.meta.mode === 'agent';
                     if (isAgent) importBtn.style.display = 'none';
 
                     importBtn.addEventListener('click', function() {
-                        if (!(window.LLMPlugin && LLMPlugin.Importer && LLMPlugin.Importer.importFlowFromMessage)) return;
+                        if (!LLMPlugin.Importer) return;
                         importBtn.disabled = true;
-                        var chatId = (window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.getCurrentChatId)
-                            ? LLMPlugin.ChatManager.getCurrentChatId()
-                            : null;
-                        var selectedApplyMode = 'auto';
+                        let chatId = LLMPlugin.ChatManager ? LLMPlugin.ChatManager.getCurrentChatId() : null;
+                        let selectedApplyMode = 'auto';
                         if (messageMeta && messageMeta.meta && messageMeta.meta.applyMode) {
                             selectedApplyMode = messageMeta.meta.applyMode;
                         }
@@ -232,11 +188,11 @@
                             // Restore targets the pre-send snapshot saved by
                             // ChatManager.savePreSendCheckpoint when this message
                             // was dispatched; no post-apply checkpoint exists.
-                            var checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.preSendCheckpointId
+                            let checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.preSendCheckpointId
                                 ? messageMeta.meta.preSendCheckpointId
                                 : null;
                             if (checkpointId) {
-                                var preChatActions = message.querySelector('.pre-chat-actions');
+                                let preChatActions = message.querySelector('.pre-chat-actions');
                                 if (!preChatActions) {
                                     preChatActions = document.createElement('div');
                                     preChatActions.className = 'flow-actions pre-chat-actions';
@@ -246,7 +202,7 @@
                                 }
                                 preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
                                 preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
-                                if (messageMeta && messageMeta.id && window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.updateMessageMeta) {
+                                if (messageMeta && messageMeta.id && LLMPlugin.ChatManager) {
                                     LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
                                         pluginEdited: true,
                                         checkpointId: checkpointId
@@ -261,11 +217,11 @@
                     flowActions.appendChild(importBtn);
 
                     // Rebuild restore button for previously edited plugin messages.
-                    var existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
+                    let existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
                         ? messageMeta.meta.checkpointId
                         : null;
                     if (existingCheckpointId) {
-                        var preChatActions = document.createElement('div');
+                        let preChatActions = document.createElement('div');
                         preChatActions.className = 'flow-actions pre-chat-actions';
                         preChatActions.style.marginTop = '0';
                         preChatActions.style.marginBottom = '10px';
@@ -287,16 +243,16 @@
 
     UI.retryLastUserMessage = function() {
         try {
-            if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                var chatId = LLMPlugin.ChatManager.getCurrentChatId();
-                var history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
-                var chat = history[chatId];
+            if (LLMPlugin.ChatManager) {
+                let chatId = LLMPlugin.ChatManager.getCurrentChatId();
+                let history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
+                let chat = history[chatId];
                 if (chat && chat.messages) {
-                    var userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
+                    let userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
                     if (userMessages.length > 0) {
-                        var lastUserMsg = userMessages[userMessages.length - 1];
-                        var promptInput = document.getElementById('llm-plugin-prompt');
-                        var generateBtn = document.getElementById('llm-plugin-generate');
+                        let lastUserMsg = userMessages[userMessages.length - 1];
+                        let promptInput = document.getElementById('llm-plugin-prompt');
+                        let generateBtn = document.getElementById('llm-plugin-generate');
                         if (promptInput && generateBtn) {
                             promptInput.value = lastUserMsg.content;
                             generateBtn.click();
@@ -311,25 +267,24 @@
 
     UI.getFlowsByIds = function(flowIds) {
         try {
-            if (!window.RED || !RED.nodes || typeof RED.nodes.filterNodes !== 'function') return null;
-            var ids = Array.isArray(flowIds) ? flowIds.filter(Boolean) : [];
+            if (!window.RED || !RED.nodes) return null;
+            let ids = Array.isArray(flowIds) ? flowIds.filter(Boolean) : [];
             if (ids.length === 0) return null;
 
-            var seenIds = {};
-            var nodes = [];
+            let seenIds = {};
+            let nodes = [];
             // Include tab definition nodes so the server can resolve
             // flow names when grouping multi-flow context for the LLM.
-            if (typeof RED.nodes.workspace === 'function') {
-                ids.forEach(function(zid) {
-                    var ws = RED.nodes.workspace(zid);
-                    if (ws && ws.id && !seenIds[ws.id]) {
-                        seenIds[ws.id] = true;
-                        nodes.push(ws);
-                    }
-                });
-            }
             ids.forEach(function(zid) {
-                var n = RED.nodes.filterNodes({z: zid}) || [];
+                let ws = RED.nodes.workspace(zid);
+                if (ws && ws.id && !seenIds[ws.id]) {
+                    seenIds[ws.id] = true;
+                    nodes.push(ws);
+                }
+            });
+            
+            ids.forEach(function(zid) {
+                let n = RED.nodes.filterNodes({z: zid}) || [];
                 n.forEach(function(node) {
                     if (node && node.id && !seenIds[node.id]) {
                         seenIds[node.id] = true;
@@ -339,18 +294,10 @@
             });
             if (nodes.length === 0) return null;
 
-            var configNodes = collectReferencedConfigs(nodes, seenIds);
-            var allNodes = nodes.concat(configNodes);
+            let configNodes = collectReferencedConfigs(nodes, seenIds);
+            let allNodes = nodes.concat(configNodes);
 
-            if (typeof RED.nodes.createExportableNodeSet === 'function') {
-                return RED.nodes.createExportableNodeSet(allNodes);
-            }
-            return allNodes.map(function(node) {
-                var copy = Object.assign({}, node);
-                delete copy._def;
-                delete copy.credentials;
-                return copy;
-            });
+            return RED.nodes.createExportableNodeSet(allNodes);
         } catch (error) {
             console.error('Error getting flows by ids:', error);
             return null;
@@ -358,7 +305,7 @@
     };
 
     function collectReferencedConfigs(nodes, seenIds) {
-        var configNodes = [];
+        let configNodes = [];
         if (RED.nodes.eachConfig) {
             RED.nodes.eachConfig(function(cn) {
                 if (cn && (!seenIds || !seenIds[cn.id])) {
@@ -373,7 +320,7 @@
      * Get the ID of the currently active workspace/tab.
      */
     UI.getActiveWorkspaceId = function() {
-        if (window.RED && RED.workspaces && typeof RED.workspaces.active === 'function') {
+        if (window.RED && RED.workspaces) {
             return RED.workspaces.active() || null;
         }
         return null;
@@ -384,7 +331,7 @@
      */
     UI.extractWorkspaceIds = function(nodes) {
         if (!Array.isArray(nodes)) return [];
-        var workspaceIds = {};
+        let workspaceIds = {};
         nodes.forEach(function(n) {
             if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
             if (n && n.z) workspaceIds[n.z] = true;
@@ -397,8 +344,8 @@
      * including nodes, subflows, and config nodes that are referenced by nodes on these tabs.
      */
     UI.getCurrentFlow = function(flowIds) {
-        var active = UI.getActiveWorkspaceId();
-        var targetIds = [];
+        let active = UI.getActiveWorkspaceId();
+        let targetIds = [];
         if (flowIds && Array.isArray(flowIds) && flowIds.length > 0) {
             targetIds = flowIds;
         } else if (typeof flowIds === 'string' && flowIds.trim() !== '') {

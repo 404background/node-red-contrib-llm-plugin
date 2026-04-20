@@ -1,10 +1,10 @@
-// Chat management module — vanilla JS (no jQuery).
+// Chat management module  Evanilla JS (no jQuery).
 // Uses fetch API for server communication and native DOM for UI.
 (function(){
-    var ChatManager = {};
+    let ChatManager = {};
 
-    var currentChatId = null;
-    var chatHistory = {};
+    let currentChatId = null;
+    let chatHistory = {};
 
     function generateChatId() {
         return 'chat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -16,7 +16,7 @@
 
     /** Tiny DOM helper: createElement with optional className and textContent. */
     function el(tag, className, text) {
-        var node = document.createElement(tag);
+        let node = document.createElement(tag);
         if (className) node.className = className;
         if (text !== undefined) node.textContent = text;
         return node;
@@ -48,19 +48,19 @@
             created: new Date().toISOString(),
             baselineCheckpointId: null
         };
-        var chatArea = document.getElementById('llm-plugin-chat');
+        let chatArea = document.getElementById('llm-plugin-chat');
         while (chatArea && chatArea.firstChild) chatArea.removeChild(chatArea.firstChild);
         if (window.RED && RED.notify) RED.notify('Started new chat', 'success');
     };
 
     function renderBaselineCheckpointUI(checkpointId) {
-        var chatArea = document.getElementById('llm-plugin-chat');
+        let chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea || !checkpointId) return;
-        var existing = chatArea.querySelector('.baseline-checkpoint-row');
+        let existing = chatArea.querySelector('.baseline-checkpoint-row');
         if (existing) existing.remove();
-        var row = document.createElement('div');
+        let row = document.createElement('div');
         row.className = 'baseline-checkpoint-row flow-actions';
-        var btn = document.createElement('button');
+        let btn = document.createElement('button');
         btn.className = 'restore-btn';
         btn.textContent = 'Restore Checkpoint';
         btn.dataset.checkpointId = checkpointId;
@@ -86,12 +86,12 @@
     }
 
     ChatManager.ensureBaselineCheckpoint = function(chatId, targetFlowIds) {
-        var id = chatId || ChatManager.getCurrentChatId();
-        var chat = chatHistory[id];
+        let id = chatId || ChatManager.getCurrentChatId();
+        let chat = chatHistory[id];
         if (!chat || chat.baselineCheckpointId || chat._baselinePending) return;
         if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) return;
 
-        var flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
+        let flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
         if (!Array.isArray(flow) || flow.length === 0) return;
 
         chat._baselinePending = true;
@@ -122,8 +122,8 @@
     };
 
     ChatManager.getBaselineCheckpointId = function(chatId) {
-        var id = chatId || ChatManager.getCurrentChatId();
-        var chat = chatHistory[id];
+        let id = chatId || ChatManager.getCurrentChatId();
+        let chat = chatHistory[id];
         return chat ? (chat.baselineCheckpointId || null) : null;
     };
 
@@ -135,11 +135,11 @@
      * separate post-apply checkpoint.
      */
     ChatManager.savePreSendCheckpoint = function(chatId, targetFlowIds) {
-        var id = chatId || ChatManager.getCurrentChatId();
+        let id = chatId || ChatManager.getCurrentChatId();
         if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) {
             return Promise.resolve(null);
         }
-        var flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
+        let flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
         if (!Array.isArray(flow) || flow.length === 0) return Promise.resolve(null);
 
         return fetch('llm-plugin/checkpoint/save', {
@@ -158,7 +158,7 @@
     };
 
     ChatManager.saveChatToServer = function(chatId) {
-        var chat = chatHistory[chatId];
+        let chat = chatHistory[chatId];
         if (chat) {
             fetch('llm-plugin/save-chat', {
                 method: 'POST',
@@ -178,7 +178,7 @@
                     chatHistory = data.chatHistories;
                     // If we don't already have a current chat, pick the most recent one and load it
                     if (!currentChatId) {
-                        var chatsArray = Object.values(chatHistory || {});
+                        let chatsArray = Object.values(chatHistory || {});
                         if (chatsArray.length > 0) {
                             chatsArray.sort(function(a,b){ return new Date(b.created) - new Date(a.created); });
                             currentChatId = chatsArray[0].id;
@@ -196,41 +196,41 @@
         // Remove any existing modal to avoid stacking
         document.querySelectorAll('.chat-modal').forEach(function(m) { m.remove(); });
 
-        var chats = Object.values(chatHistory).sort(function(a, b) {
+        let chats = Object.values(chatHistory).sort(function(a, b) {
             return new Date(b.created) - new Date(a.created);
         });
 
-        var modal        = el('div', 'chat-modal');
-        var modalContent = el('div', 'chat-modal-content');
+        let modal        = el('div', 'chat-modal');
+        let modalContent = el('div', 'chat-modal-content');
 
-        var modalHeader  = el('div', 'modal-header');
+        let modalHeader  = el('div', 'modal-header');
         modalHeader.appendChild(el('h3', null, 'Chat History'));
-        var closeBtn     = el('button', 'close-btn', '\u00d7');
+        let closeBtn     = el('button', 'close-btn', '\u00d7');
         closeBtn.title   = 'Close';
         closeBtn.addEventListener('click', function() { modal.remove(); });
         modalHeader.appendChild(closeBtn);
 
-        var chatList = el('div', 'chat-list');
+        let chatList = el('div', 'chat-list');
 
         if (chats.length === 0) {
             chatList.appendChild(el('p', null, 'No chat history found.'));
         } else {
             chats.forEach(function(chat) {
-                var chatItem = el('div', 'chat-item');
+                let chatItem = el('div', 'chat-item');
                 if (chat.id === currentChatId) chatItem.classList.add('current-chat');
 
-                var chatInfo = el('div', 'chat-info');
+                let chatInfo = el('div', 'chat-info');
                 chatInfo.appendChild(el('div', 'chat-title', chat.title));
                 chatInfo.appendChild(el('div', 'chat-date', new Date(chat.created).toLocaleString()));
                 chatInfo.appendChild(el('div', 'message-count', (chat.messages || []).length + ' messages'));
 
-                var chatActions = el('div', 'chat-actions');
-                var loadBtn = el('button', 'load-btn', 'Load');
+                let chatActions = el('div', 'chat-actions');
+                let loadBtn = el('button', 'load-btn', 'Load');
                 loadBtn.addEventListener('click', function() {
                     ChatManager.loadChat(chat.id);
                     modal.remove();
                 });
-                var deleteBtn = el('button', 'delete-btn', 'Delete');
+                let deleteBtn = el('button', 'delete-btn', 'Delete');
                 deleteBtn.addEventListener('click', function() {
                     ChatManager.deleteChat(chat.id, function(success) {
                         modal.remove();
@@ -255,7 +255,7 @@
     ChatManager.loadChat = function(chatId) {
         if (chatHistory[chatId]) {
             currentChatId = chatId;
-            var chatArea = document.getElementById('llm-plugin-chat');
+            let chatArea = document.getElementById('llm-plugin-chat');
             while (chatArea && chatArea.firstChild) chatArea.removeChild(chatArea.firstChild);
             (chatHistory[chatId].messages||[]).forEach(function(msg) {
                 if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
@@ -270,14 +270,14 @@
     };
 
     ChatManager.updateMessageMeta = function(messageId, patch) {
-        var chatId = ChatManager.getCurrentChatId();
-        var chat = chatHistory[chatId];
+        let chatId = ChatManager.getCurrentChatId();
+        let chat = chatHistory[chatId];
         if (!chat || !chat.messages) return;
-        for (var i = chat.messages.length - 1; i >= 0; i--) {
+        for (let i = chat.messages.length - 1; i >= 0; i--) {
             if (chat.messages[i].id === messageId) {
-                var base = chat.messages[i].meta || {};
-                var next = patch || {};
-                var merged = {};
+                let base = chat.messages[i].meta || {};
+                let next = patch || {};
+                let merged = {};
                 Object.keys(base).forEach(function(k) { merged[k] = base[k]; });
                 Object.keys(next).forEach(function(k) { merged[k] = next[k]; });
                 chat.messages[i].meta = merged;
@@ -292,8 +292,8 @@
             if (typeof callback === 'function') callback(false);
             return;
         }
-        var chat = chatHistory[chatId] || {};
-        var payload = {};
+        let chat = chatHistory[chatId] || {};
+        let payload = {};
         if (chat.__file) payload.filename = chat.__file;
         else payload.chatId = chatId;
 
@@ -311,11 +311,11 @@
     };
 
     ChatManager.addMessage = function(content, isUser, metaOverwrite, targetFlowIds) {
-        var chatId = ChatManager.getCurrentChatId();
-        var chat = chatHistory[chatId];
+        let chatId = ChatManager.getCurrentChatId();
+        let chat = chatHistory[chatId];
         if (isUser) ChatManager.ensureBaselineCheckpoint(chatId, targetFlowIds);
 
-        var message = {
+        let message = {
             id: generateMessageId(),
             content: content,
             isUser: isUser,
@@ -331,9 +331,9 @@
             return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser, message);
         }
         // fallback: append simple message
-        var chatArea = document.getElementById('llm-plugin-chat');
+        let chatArea = document.getElementById('llm-plugin-chat');
         if (chatArea) {
-            var msg = el('div', null, content);
+            let msg = el('div', null, content);
             chatArea.appendChild(msg);
             chatArea.scrollTop = chatArea.scrollHeight;
         }

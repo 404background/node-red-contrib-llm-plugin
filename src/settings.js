@@ -1,20 +1,20 @@
-// Settings UI manager — vanilla JS (no jQuery).
+// Settings UI manager  Evanilla JS (no jQuery).
 // Accepts a raw DOM element as root (the settings dialog container).
 (function() {
-    var DEFAULT_SYSTEM_PROMPT = 'Take priority in using core nodes';
+    let DEFAULT_SYSTEM_PROMPT = 'Take priority in using core nodes';
 
     function createSettingsManager(root) {
-        var providerSelect    = root.querySelector('#llm-provider');
-        var ollamaSettings    = root.querySelector('#ollama-settings');
-        var openaiSettings    = root.querySelector('#openai-settings');
-        var ollamaUrlInput    = root.querySelector('#ollama-url');
-        var apiKeyInput       = root.querySelector('#openai-api-key');
-        var systemPromptInput = root.querySelector('#llm-system-prompt');
-        var resetPromptBtn    = root.querySelector('#llm-system-prompt-reset');
-        var maxPromptLenInput = root.querySelector('#llm-max-prompt-length');
+        let providerSelect    = root.querySelector('#llm-provider');
+        let ollamaSettings    = root.querySelector('#ollama-settings');
+        let openaiSettings    = root.querySelector('#openai-settings');
+        let ollamaUrlInput    = root.querySelector('#ollama-url');
+        let apiKeyInput       = root.querySelector('#openai-api-key');
+        let systemPromptInput = root.querySelector('#llm-system-prompt');
+        let resetPromptBtn    = root.querySelector('#llm-system-prompt-reset');
+        let maxPromptLenInput = root.querySelector('#llm-max-prompt-length');
 
         function updateVisibleSettings() {
-            var isOllama = providerSelect.value === 'ollama';
+            let isOllama = providerSelect.value === 'ollama';
             ollamaSettings.style.display = isOllama ? '' : 'none';
             openaiSettings.style.display = isOllama ? 'none' : '';
         }
@@ -29,7 +29,7 @@
 
         return {
             load: function(settings) {
-                var data = settings || {};
+                let data = settings || {};
                 providerSelect.value = data.provider || 'ollama';
                 ollamaUrlInput.value = '';
                 ollamaUrlInput.placeholder = data.ollamaUrlMasked || 'http://localhost:11434';
@@ -42,7 +42,7 @@
                 }
                 if (systemPromptInput) {
                     // Show saved prompt, or default if never set
-                    var saved = data.systemPrompt;
+                    let saved = data.systemPrompt;
                     systemPromptInput.value = (saved !== undefined && saved !== null) ? saved : DEFAULT_SYSTEM_PROMPT;
                 }
                 if (maxPromptLenInput) {
