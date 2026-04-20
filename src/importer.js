@@ -346,13 +346,7 @@
         if (!node || typeof node !== 'object') return false;
         if (typeof node.type !== 'string' || !node.type.trim()) return false;
         if (node.type === 'tab' || String(node.type).indexOf('subflow:') === 0) return false;
-        return (
-            (typeof node.z === 'string' && node.z.length > 0) ||
-            typeof node.x === 'number' ||
-            typeof node.y === 'number' ||
-            Array.isArray(node.wires) ||
-            (typeof node.g === 'string' && node.g.length > 0)
-        );
+        return !isConfigNodeObj(node);
     }
 
     // ================================================================== //
