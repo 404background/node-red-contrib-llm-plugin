@@ -1585,7 +1585,7 @@
                     RED.actions.invoke('core:select-none');
                 } catch (e) { /* ignore */ }
 
-                // Clear ONLY the nodes in the target workspaces
+                // Clear ONLY the canvas nodes in the target workspaces
                 ids.forEach(function(wsId) {
                     let list = RED.nodes.filterNodes({ z: wsId }) || [];
                     if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: wsId }) || []);
@@ -1595,8 +1595,43 @@
                     });
                 });
 
-                // Import the snapshot verbatim (do not alter `z` so nodes return to their original tabs)
-                RED.nodes.import(nodes, { generateIds: false, reimport: true, addFlow: false });
+                let configNodesToUpdate = [];
+                let importNodes = (nodes || []).filter(function(n) {
+                    if (n.type === 'tab') return false; // Do not touch tabs via import, keep existing
+                    if (!isCanvasNode(n)) {
+                        let existing = RED.nodes.node(n.id);
+                        if (existing) {
+                            configNodesToUpdate.push(n);
+                        }
+                        return false; // Do not pass config nodes to RED.nodes.import (avoids duplicates/deletion)
+                    }
+                    return true;
+                });
+
+                configNodesToUpdate.forEach(function(nn) {
+                    try {
+                        let existing = RED.nodes.node(nn.id);
+                        if (!existing) return;
+
+                        let isDirty = false;
+                        Object.keys(nn).forEach(function(key) {
+                            if (key === 'id' || key === 'type') return;
+                            if (existing[key] !== nn[key] &&
+                                JSON.stringify(existing[key]) !== JSON.stringify(nn[key])) {
+                                existing[key] = nn[key];
+                                isDirty = true;
+                            }
+                        });
+
+                        if (isDirty) {
+                            existing.dirty = true;
+                            existing.changed = true;
+                        }
+                    } catch(e) {}
+                });
+
+                // Import the canvas nodes verbatim (do not alter `z` so nodes return to their original tabs)
+                RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
 
                 // Force UI synchronization
                 RED.view.redraw(true);

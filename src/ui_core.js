@@ -39,35 +39,6 @@
         return escapeHtml(text);
     }
 
-    function createRestoreCheckpointButton(checkpointId) {
-        let btn = document.createElement('button');
-        btn.className = 'restore-btn';
-        btn.textContent = 'Restore Checkpoint';
-        btn.dataset.checkpointId = checkpointId;
-        btn.addEventListener('click', function() {
-            let cpId = btn.dataset.checkpointId;
-            if (!cpId || !LLMPlugin.Importer) return;
-            let ok = confirm('Restore the flow from this checkpoint? Current flow in the active tab will be replaced.');
-            if (!ok) return;
-            btn.disabled = true;
-            LLMPlugin.Importer.restoreCheckpoint(cpId)
-                .then(function(result) {
-                    if (result && result.ok) {
-                        if (window.RED && RED.notify) RED.notify('Checkpoint restored', 'success');
-                    } else if (window.RED && RED.notify) {
-                        RED.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
-                    }
-                })
-                .catch(function(err) {
-                    if (window.RED && RED.notify) RED.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
-                })
-                .finally(function() {
-                    btn.disabled = false;
-                });
-        });
-        return btn;
-    }
-
     UI.addMessageToUI = function(content, isUser, showActions, messageMeta) {
         let chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea) return null;
@@ -185,61 +156,29 @@
                         })
                         .then(function(result) {
                             if (!result || !result.ok) return;
-                            // Restore targets the pre-send snapshot saved by
-                            // ChatManager.savePreSendCheckpoint when this message
-                            // was dispatched; no post-apply checkpoint exists.
-                            let checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.preSendCheckpointId
-                                ? messageMeta.meta.preSendCheckpointId
-                                : null;
-                            if (checkpointId) {
-                                let preChatActions = message.querySelector('.pre-chat-actions');
-                                if (!preChatActions) {
-                                    preChatActions = document.createElement('div');
-                                    preChatActions.className = 'flow-actions pre-chat-actions';
-                                    preChatActions.style.marginTop = '0';
-                                    preChatActions.style.marginBottom = '10px';
-                                    message.insertBefore(preChatActions, message.firstChild);
-                                }
-                                preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
-                                preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
-                                if (messageMeta && messageMeta.id && LLMPlugin.ChatManager) {
-                                    LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
-                                        pluginEdited: true,
-                                        checkpointId: checkpointId
-                                    });
-                                }
-                            }
-                        })
-                        .finally(function() {
-                            importBtn.disabled = false;
-                        });
-                    });
-                    flowActions.appendChild(importBtn);
+                              if (messageMeta && messageMeta.id && LLMPlugin.ChatManager) {
+                                  LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
+                                      pluginEdited: true
+                                  });
+                              }
+                          })
+                          .finally(function() {
+                              importBtn.disabled = false;
+                          });
+                      });
+                      flowActions.appendChild(importBtn);
 
-                    // Rebuild restore button for previously edited plugin messages.
-                    let existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
-                        ? messageMeta.meta.checkpointId
-                        : null;
-                    if (existingCheckpointId) {
-                        let preChatActions = document.createElement('div');
-                        preChatActions.className = 'flow-actions pre-chat-actions';
-                        preChatActions.style.marginTop = '0';
-                        preChatActions.style.marginBottom = '10px';
-                        preChatActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
-                        message.insertBefore(preChatActions, message.firstChild);
-                    }
+                      message.appendChild(flowActions);
+                  }
+              } catch (e) {}
+          }
 
-                    message.appendChild(flowActions);
-                }
-            } catch (e) {}
-        }
+          chatArea.appendChild(message);
+          chatArea.scrollTop = chatArea.scrollHeight;
+          return message;
+      };
 
-        chatArea.appendChild(message);
-        chatArea.scrollTop = chatArea.scrollHeight;
-        return message;
-    };
-
-    UI.formatMessage = formatMessage;
+      UI.formatMessage = formatMessage;
 
     UI.retryLastUserMessage = function() {
         try {

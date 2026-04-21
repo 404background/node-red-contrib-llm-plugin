@@ -407,16 +407,9 @@
             let flowIdsToSend = getSelectedFlowIds();
 
             if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                LLMPlugin.ChatManager.addMessage(prompt, true, null, flowIdsToSend);
+                LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode }, flowIdsToSend);
             }
             promptInput.value = '';
-
-            // Snapshot the pre-change flow at send time so the assistant
-            // message's Restore Checkpoint rewinds to this state (no
-            // post-apply checkpoint is created by the importer).
-            let preSendCheckpointPromise = (window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.savePreSendCheckpoint)
-                ? LLMPlugin.ChatManager.savePreSendCheckpoint(null, flowIdsToSend)
-                : Promise.resolve(null);
 
             let loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
                 ? LLMPlugin.UI.addMessageToUI('Generating...', false, false)
@@ -464,32 +457,29 @@
                 return res.json();
             })
             .then(function(data) {
-                return preSendCheckpointPromise.then(function(preSendCheckpointId) {
-                    if (loadingMsg) loadingMsg.remove();
-                    let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
-                    let msgEl = null;
-                    let resolvedApplyMode = data && data.applyMode ? data.applyMode : 'auto';
-                    let usedModel = (data && data.model) ? data.model : model;
-                    let metaOpts = {
-                        mode: mode,
-                        applyMode: resolvedApplyMode,
-                        elapsedMs: totalElapsed,
-                        model: usedModel,
-                        preSendCheckpointId: preSendCheckpointId || null
-                    };
-                    if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                        msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
-                    } else if (window.LLMPlugin && LLMPlugin.UI) {
-                        msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
-                    }
+                if (loadingMsg) loadingMsg.remove();
+                let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
+                let msgEl = null;
+                let resolvedApplyMode = data && data.applyMode ? data.applyMode : 'auto';
+                let usedModel = (data && data.model) ? data.model : model;
+                let metaOpts = {
+                    mode: mode,
+                    applyMode: resolvedApplyMode,
+                    elapsedMs: totalElapsed,
+                    model: usedModel
+                };
+                if (window.LLMPlugin && LLMPlugin.ChatManager) {
+                    msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
+                } else if (window.LLMPlugin && LLMPlugin.UI) {
+                    msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
+                }
 
-                    if (mode === 'agent' && msgEl) {
-                        let importBtn = msgEl.querySelector('.import-btn');
-                        if (importBtn) {
-                            importBtn.click();
-                        }
+                if (mode === 'agent' && msgEl) {
+                    let importBtn = msgEl.querySelector('.import-btn');
+                    if (importBtn) {
+                        importBtn.click();
                     }
-                });
+                }
             })
             .catch(function(err) {
                 if (loadingMsg) loadingMsg.remove();

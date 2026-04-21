@@ -52,6 +52,13 @@ The model then follows real node/property patterns from that sample instead of r
 - Implementation guide: [src/README.md](src/README.md)
 - Prompt template: [src/prompt_system.txt](src/prompt_system.txt)
 
+## Security Notice
+
+When sharing your Node-RED project (e.g., via Git, exporting the user directory, or sharing the environment), please be aware that this plugin saves your API keys (like OpenAI) using the standard Node-RED settings API (`RED.settings`). 
+Depending on your Node-RED configuration, these settings may be stored in files such as `flows_cred.json` or `.config.json` within your Node-RED user directory. 
+**This is not unique to this plugin; any Node-RED node or plugin storing credentials works similarly.**
+Always ensure you ignore these credential files in your `.gitignore` and do not share them publicly to prevent accidental leakage of your private API keys. The plugin itself masks keys in the UI and redacts them from logs, but the underlying storage file on your disk remains sensitive.
+
 ## Notes
 
 - This plugin is under active development.
