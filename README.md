@@ -9,6 +9,10 @@ LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/mo
 Click the image below to watch the video:
 [![LLM Plugin screenshot](images/plugin.png)](https://youtu.be/Z8nCtEs4Ows)
 
+[![LLM Plugin with python-venv node](images/with_python_venv.png)](https://youtu.be/WAAmw7IXev0)
+
+[![LLM Plugin with Dashboard 2.0](images/with_dashboard.png)](https://youtu.be/HPYuoEL6y_o)
+
 ## Install
 
 ```bash
