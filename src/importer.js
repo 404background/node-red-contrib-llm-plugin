@@ -408,7 +408,14 @@
                 let t = String(tok || '').trim();
                 if (!t) return;
                 let id = lookup.resolve(t, { minLen: 8 });
-                if (id) removeIdSet[id] = true;
+                if (id) {
+                    let targetNode = lookup.byId[id];
+                    // FORCE PREVENT DELETION OF CONFIG NODES
+                    if (targetNode && !isCanvasNode(targetNode) && targetNode.type !== 'tab') {
+                        return;
+                    }
+                    removeIdSet[id] = true;
+                }
             });
 
             if (Object.keys(removeIdSet).length === 0) return nodes;
@@ -437,6 +444,11 @@
 
         updates.forEach(function(n) {
             if (!n || !n.id) return;
+            // Prevent LLM from creating brand new Configuration nodes.
+            // If it's a config node and it doesn't already exist in the base flow, DROP IT.
+            if (!isCanvasNode(n) && n.type !== 'tab' && !byId[n.id]) {
+                return;
+            }
             // Auto-created config stubs must not overwrite existing config nodes
             if (n._autoStub && byId[n.id]) return;
             let existing = byId[n.id];
@@ -1602,8 +1614,9 @@
                         let existing = RED.nodes.node(n.id);
                         if (existing) {
                             configNodesToUpdate.push(n);
+                            return false; // Do not pass existing config nodes to RED.nodes.import (avoids duplicates/deletion)
                         }
-                        return false; // Do not pass config nodes to RED.nodes.import (avoids duplicates/deletion)
+                        return true; // Config node is missing, so we must import it to fully restore the state.
                     }
                     return true;
                 });
