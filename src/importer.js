@@ -1634,6 +1634,7 @@
                 RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
 
                 // Force UI synchronization
+                RED.nodes.dirty(true);
                 RED.view.redraw(true);
                 RED.workspaces.refresh();
 
