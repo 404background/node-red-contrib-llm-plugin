@@ -6,12 +6,12 @@
 
 LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/modifying flows, and importing results into the active tab.
 
+## Demos
+
 Click the image below to watch the video:
 [![LLM Plugin screenshot](images/plugin.png)](https://youtu.be/Z8nCtEs4Ows)
 
-Nodes that are not core nodes are intended to be added to the flow before being passed to the LLM. This is because it is unclear how to specify the information required by the nodes.
-
-With [python-venv node](https://qiita.com/background/items/3244fc1b70cc454befef):
+With python-venv node:
 [![LLM Plugin with python-venv node](images/with_python_venv.png)](https://youtu.be/WAAmw7IXev0)
 
 With Dashboard 2.0:
@@ -40,8 +40,8 @@ Restart Node-RED after install.
 
 ## Recommended Usage
 
-For custom/community nodes, keep a small sample flow in the active tab so it is sent as *Current Open Flow*.
-The model then follows real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
+It is highly recommended to add custom or non-core nodes to your flow before passing them to the LLM. Since the LLM does not inherently know the required properties of custom nodes, keeping a small sample flow in the active tab ensures it is sent as the *Current Open Flow*.
+The model will then follow real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
 
 ## Features
 
@@ -54,8 +54,8 @@ The model then follows real node/property patterns from that sample instead of r
 - Supports Vibe Schema and raw Node-RED JSON.
 - Accepts mixed response text + JSON (with or without code fences).
 - Preserves robust parsing when function code contains comment tokens in JSON strings.
-- Agent mode supports connection updates, LLM-driven deletions, and checkpoint-based restore.
-- Apply mode is model-driven via top-level `applyMode` (`edit-only`, `merge`, `overwrite`, `delete-only`).
+- Agent mode seamlessly handles connection updates and LLM-driven deletions.
+- Apply strategy is model-driven via top-level `applyMode` (`edit-only`, `merge`, `overwrite`, `delete-only`, with a safe fallback to `edit-only`).
 
 ## More Docs
 
@@ -74,7 +74,8 @@ Always ensure you ignore these credential files in your `.gitignore` and do not 
 - This plugin is under active development.
 - Model output quality varies by model and prompt.
 
-## Feedback
+## Links
 
-Please report issues at:
-https://github.com/404background/node-red-contrib-llm-plugin/issues
+Please report issues at: [GitHub Issues](https://github.com/404background/node-red-contrib-llm-plugin/issues)
+
+My article: [『Node-REDのプラグインを開発してみる　その2（LLM Plugin v0.4.0）』](https://404background.com/program/node-red-plugin-2/)
