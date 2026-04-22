@@ -9,11 +9,17 @@ LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/mo
 Click the image below to watch the video:
 [![LLM Plugin screenshot](images/plugin.png)](https://youtu.be/Z8nCtEs4Ows)
 
+Nodes that are not core nodes are intended to be added to the flow before being passed to the LLM. This is because it is unclear how to specify the information required by the nodes.
+
+With [python-venv node](https://qiita.com/background/items/3244fc1b70cc454befef):
 [![LLM Plugin with python-venv node](images/with_python_venv.png)](https://youtu.be/WAAmw7IXev0)
 
+With Dashboard 2.0:
 [![LLM Plugin with Dashboard 2.0](images/with_dashboard.png)](https://youtu.be/HPYuoEL6y_o)
 
 ## Install
+
+Add from "Manage palette" or
 
 ```bash
 npm install @background404/node-red-contrib-llm-plugin
@@ -27,10 +33,10 @@ Restart Node-RED after install.
 2. Configure provider in Settings:
 - Ollama: set URL (default `http://localhost:11434`)
 - OpenAI: set API key
-3. Enter model and prompt.
-4. Pick which flow tabs to include via the **flow selector** (defaults to *Current Open Flow*; check additional tabs in the dropdown to send them too).
-5. Use **Agent** mode for auto-apply, or **Ask** mode for manual import.
-6. Apply strategy is decided by the model (`applyMode`) and enforced by the importer (safe fallback: `edit-only`).
+3. Pick which flow tabs to include via the **flow selector** (defaults to *Current Open Flow*; check additional tabs in the dropdown to send them too).
+4. Select **Agent** mode for auto-apply, or **Ask** mode for manual import.
+5. Enter model and prompt.
+6. Click **Send** to generate and/or apply the flow.
 
 ## Recommended Usage
 
