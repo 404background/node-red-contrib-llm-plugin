@@ -13,8 +13,11 @@ llm-plugin_styles.css  All plugin CSS
 src/
   client.js            Browser entry — sequential script loader
   core/
-    flow_converter_core.js  Independent Vibe Schema ⇄ Node-RED JSON converter core (UMD)
+    canvas_layout.js        Standalone layout engine (UMD) — see core/LAYOUT.md
+    flow_converter_core.js  Vibe Schema ⇄ Node-RED JSON converter (UMD) — see core/VIBE_SCHEMA.md
     llm_json_parser.js      LLM output parsing utilities — JSON repair, fuzzy matching, schema extraction (UMD)
+    LAYOUT.md               Layout engine reference
+    VIBE_SCHEMA.md          Intermediate-format reference
   chat_manager.js      Chat CRUD, server persistence (fetch API)
   importer.js          JSON extraction from LLM output + Node-RED import
   ui_core.js           Message rendering, flow export, retry logic
@@ -29,7 +32,8 @@ src/
 1. Node-RED loads `llm_plugin.html` which includes CDN resources (Font Awesome, marked.js) and the settings form template.
 2. `llm_plugin.html` loads `llm-plugin/src/client.js`.
 3. `client.js` dynamically injects the remaining scripts **in order**:
-  `core/flow_converter_core.js` → `core/llm_json_parser.js` → `chat_manager.js` → `importer.js` → `ui_core.js` → `settings.js` → `vibe_ui.js`
+  `core/canvas_layout.js` → `core/flow_converter_core.js` → `core/llm_json_parser.js` → `chat_manager.js` → `importer.js` → `ui_core.js` → `settings.js` → `vibe_ui.js`
+  (`canvas_layout` must precede `flow_converter_core` because the converter's `toNodeRed` delegates layout to it.)
 4. `vibe_ui.js` polls for `RED.sidebar` availability, then registers the sidebar tab.
 
 All client modules use the **IIFE pattern** `(function(){ ... })()` and communicate through the shared `window.LLMPlugin` namespace.
@@ -42,17 +46,31 @@ All client modules use the **IIFE pattern** `(function(){ ... })()` and communic
 
 Minimal sequential script loader. Loads each module via dynamic `<script>` tags. Order matters because later modules depend on earlier ones.
 
-### core/flow_converter_core.js  — Vibe Schema Converter Core
+### core/flow_converter_core.js — Vibe Schema converter
 
-**UMD module** — works both as CommonJS (direct import) and as a browser global (`window.LLMPlugin.FlowConverterCore`).
+**UMD module** (`window.LLMPlugin.FlowConverterCore`, also aliased as
+`Configurator`). Bi-directional converter between LLM-friendly Vibe
+Schema and Node-RED's native JSON, plus type-detection helpers
+(`isConfigNode`, `isCanvasNode`, `isNoInputType`, `isNoOutputType`,
+`setRuntimeGetType`).
 
-The core is intentionally plugin-independent so the conversion logic can be reused in other projects.
+Full reference: **[core/VIBE_SCHEMA.md](./core/VIBE_SCHEMA.md)** — schema
+shape, alias rules, round-trip semantics, detection helpers.
 
-### core/llm_json_parser.js  — LLM Output Parser
+### core/canvas_layout.js — layout engine
 
-**UMD module** — works both as CommonJS and as a browser global (`window.LLMPlugin.LLMJsonParser`). No dependency on plugin globals; callers pass a `cfg` (Configurator) object explicitly.
+**UMD module** (`window.LLMPlugin.CanvasLayout`). Standalone layout for
+Node-RED node arrays. No dependency on the converter; can be used by any
+tool that produces Node-RED flows.
 
-Handles the ambiguity that LLMs produce when generating JSON:
+Full reference: **[core/LAYOUT.md](./core/LAYOUT.md)** — `layoutNodes` /
+`reflowCanvasNodes` / `placeAddedNodesNearNeighbors` with every pass
+documented, plus standalone usage examples.
+
+### core/llm_json_parser.js — LLM output parser
+
+**UMD module** (`window.LLMPlugin.LLMJsonParser`). Handles the ambiguity
+that LLMs produce when generating JSON:
 
 | Category | Functions |
 |---|---|
@@ -63,78 +81,8 @@ Handles the ambiguity that LLMs produce when generating JSON:
 | Schema resolution | `resolveAliasInSchema`, `mergeAgentPartialSchemaWithCurrentFlow` |
 | Flow node extraction | `normalizeSchemaForConversion`, `tryParseFlowNodes`, `extractFlowNodes` |
 
-The converter core (`flow_converter_core.js`) implements a **bi-directional conversion layer** between LLM-friendly "Vibe Schema" and Node-RED's native JSON format. This dramatically improves flow generation stability by removing the need for LLMs to handle random IDs, coordinates, and complex `wires` arrays.
-
-#### Vibe Schema format
-
-```json
-{
-  "description": "Brief flow summary",
-  "nodes": {
-    "inject_sensor":    { "type": "inject",   "name": "Sensor",  "props": { "payload": "timestamp", "payloadType": "date" } },
-    "function_format":  { "type": "function", "name": "Format",  "props": { "func": "msg.payload = {ts: msg.payload}; return msg;" } },
-    "debug_output":     { "type": "debug",    "name": "Output",  "props": { "active": true } }
-  },
-  "connections": [
-    { "from": "inject_sensor",   "to": "function_format" },
-    { "from": "function_format", "to": "debug_output" }
-  ]
-}
-```
-
-Key properties:
-- **`nodes`**: An object keyed by human-readable alias IDs (not random hex). Each value has `type` (required), `name` (optional), and `props` (type-specific properties).
-- **`connections`**: An array of `{ from, to, fromPort? }` objects. `fromPort` defaults to 0; use it for multi-output nodes (e.g., switch).
-- No `id`, `x`, `y`, `z`, or `wires` — these are generated by the Configurator.
-
-#### API
-
-| Function | Description |
-|----------|-------------|
-| `toIntermediate(nodeRedJson)` | Node-RED array → Vibe Schema object. Generates aliases from node names/types, extracts connections from wires, strips coordinates and IDs. |
-| `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED array. Generates real IDs, auto-layouts nodes via `layoutNodes`, converts connections to wires. Options: `workspace`, `startX`, `startY`, `spacingX`, `spacingY`, `maxColumns`, `preserveAlias`. |
-| `isVibeSchema(obj)` | Returns `true` if the object has `nodes` (object) + `connections` (array). Used by the importer to detect format. |
-| `isConfigType(type)` | Returns `true` if the type string is a known config node type (static list + runtime check). |
-| `isConfigNode(node)` | Returns `true` if the node object is a config node (structural + type-based detection). |
-| `isCanvasNode(node)` | Returns `true` if the node belongs on the canvas (excludes tab / subflow / config). |
-| `isNoInputType(type)` | Returns `true` if the type cannot accept incoming wires (e.g., inject, catch, status, comment). |
-| `isNoOutputType(type)` | Returns `true` if the type emits no outgoing wires (e.g., comment). |
-| `layoutNodes(ids, outgoing, incoming, maxColumns)` | Pure topological layout. Returns `{ id: { col, row, comp } }` logical positions; no pixel coordinates. |
-| `reflowCanvasNodes(nodes, options?)` | Full canvas re-layout. Mutates `x` / `y` on canvas nodes using `layoutNodes` and the spacing options. |
-| `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Conservative incremental layout: preserves existing node coordinates, places only new nodes near their connected neighbors, then shifts the downstream chain to make room for inserts. |
-| `setRuntimeGetType(fn)` | Register a runtime type-info callback (typically `RED.nodes.getType`). Enables config-node detection and I/O-count checks for community/custom nodes. Called automatically on sidebar init. |
-
-#### Layout System
-
-Three primitives work at increasing levels of granularity. All operate on canvas nodes only (config / tab / subflow are skipped).
-
-**1. `layoutNodes(aliases, outgoing, incoming, maxColumns)` — logical positions**
-- Discovers connected components via undirected BFS.
-- Assigns columns via directed BFS from each component's roots.
-- Within a column, rows are inherited from the parents' row (average), so straight chains stay horizontal.
-- Wraps a chain whose `col >= maxColumns` onto the next row-set.
-- Returns `{ alias: { col, row, comp } }`. Pixel translation is the caller's job.
-
-**2. `reflowCanvasNodes(nodes, options)` — full canvas layout**
-- Drops non-canvas nodes; builds adjacency from each node's `wires`.
-- Calls `layoutNodes`, then translates `col → startX + col * spacingX` and `row → row * spacingY + componentYOffset`.
-- Stacks disconnected components vertically with `componentGap` between them.
-- Use when applying a full overwrite (no existing layout to preserve).
-
-**3. `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options)` — incremental**
-
-Designed for merge mode: existing nodes (ids in `existingIdMap`) retain their original coordinates from `basePositions`; only new nodes are positioned. Five passes:
-
-| Pass | Purpose |
-|------|---------|
-| **Step 1** Restore | Copy each existing node's `(x, y)` from `basePositions`. |
-| **Step 2** Adjacency | Build directed `outgoing` / `incoming` maps from `wires`. |
-| **Step 3** Place new nodes | For each new node, look at its positioned neighbors: <br>• both preds and succs → `x = max(pred.x) + spacingX`, `y = mid(avg(pred.y), avg(succ.y))` <br>• preds only → `x = max(pred.x) + spacingX`, `y = avg(pred.y)` <br>• succs only → `x = min(succ.x) - spacingX`, `y = avg(succ.y)` <br>New-only chains resolve over multiple iterations. |
-| **Step 3.4** Downstream shift | For each (new node N, existing succ S) pair, if `(N.x + spacingX) > S.x`, BFS forward from S through `outgoing` and shift every reachable node right by `(N.x + spacingX) - S.x`. This is what makes "inserting between A and B" visually open up the chain. |
-| **Step 3.5** Overlap fix | Push any newly-placed node down by `spacingY` if it lies within `spacingX*0.5` horizontally and `spacingY*0.8` vertically of any other positioned node. Re-runs until stable. |
-| **Step 4** Orphans | New nodes with no positioned neighbor (entire chain is new) are laid out as a self-contained graph via `layoutNodes`, placed below all positioned nodes at `maxY + bandGap`, left-aligned to `minX`. |
-
-Default spacing constants (`LAYOUT_DEFAULTS`): `startX=60, startY=60, spacingX=180, spacingY=80, componentGap=80, maxColumns=5`. Each function accepts an `options` override.
+No dependency on plugin globals; callers pass a converter object
+explicitly.
 
 ### chat_manager.js
 

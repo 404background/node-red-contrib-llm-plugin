@@ -541,23 +541,25 @@
         // Fix config nodes that were incorrectly given canvas properties
         fixConfigNodeProperties(rebuilt);
 
-        // Canvas layout is delegated to FlowConverterCore so the same
-        // engine can be used from non-plugin contexts. See the "Canvas-level
-        // layout" section header in src/core/flow_converter_core.js for a
-        // detailed description of each pass.
-        let cfg = getConfigurator();
-        if (cfg) {
+        // Canvas layout is delegated to the standalone CanvasLayout module.
+        // See src/core/LAYOUT.md for the full per-pass description.
+        let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
+        if (layout) {
             let layoutOpts = {
                 startX: LAYOUT.startX, startY: LAYOUT.startY,
                 spacingX: LAYOUT.spacingX, spacingY: LAYOUT.spacingY,
                 componentGap: LAYOUT.componentGap,
                 bandGap: LAYOUT.componentGap,
-                maxColumns: LAYOUT.maxColumns
+                maxColumns: LAYOUT.maxColumns,
+                // Inject the plugin's canvas-node predicate so config nodes
+                // are excluded from layout (the default predicate only
+                // excludes tab / subflow definitions).
+                isCanvasNode: isCanvasNode
             };
             if (mode === 'overwrite' || Object.keys(baseIds).length === 0) {
-                cfg.reflowCanvasNodes(rebuilt, layoutOpts);
+                layout.reflowCanvasNodes(rebuilt, layoutOpts);
             } else {
-                cfg.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, layoutOpts);
+                layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, layoutOpts);
             }
         }
 
