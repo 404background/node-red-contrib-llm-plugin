@@ -403,30 +403,6 @@
 
         function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-        function hasAnyOutgoing(wires) {
-            if (!Array.isArray(wires)) return false;
-            for (let i = 0; i < wires.length; i++) {
-                if (Array.isArray(wires[i]) && wires[i].length > 0) return true;
-            }
-            return false;
-        }
-
-        let hintedSourceKeys = {};
-        (connectionHints || []).forEach(function(h) {
-            if (!h || typeof h.from !== 'string') return;
-            let k = normalizeToken(h.from);
-            if (k) hintedSourceKeys[k] = true;
-        });
-
-        function isHintedSource(node) {
-            if (!node) return false;
-            let keys = [normalizeToken(node.id), normalizeToken(node.name), normalizeToken(node._llmAlias)];
-            for (let i = 0; i < keys.length; i++) {
-                if (keys[i] && hintedSourceKeys[keys[i]]) return true;
-            }
-            return false;
-        }
-
         // Delete nodes by token using shared lookup
         function removeNodesByTokens(nodes, removeTokens) {
             if (!Array.isArray(removeTokens) || removeTokens.length === 0) return nodes;
@@ -483,20 +459,33 @@
 
         /**
          * Merge an LLM-proposed node `n` over an `existing` snapshot node.
-         * Every property the LLM did NOT explicitly mention (`_llmSpecKeys`)
-         * is restored from `existing`, so a partial edit like
+         * Every property the LLM did NOT explicitly mention is restored
+         * from `existing`, so a partial edit like
          *   { "type": "mqtt out", "name": "v2" }
          * preserves the existing `topic`, `broker`, `qos`, `retain`,
-         * `outputs`, etc. Without this, those properties end up missing
-         * (LLM didn't include them) or reset to a normaliser default.
+         * `outputs`, etc.
+         *
+         * Two strategies for determining "LLM explicitly set" depending on
+         * which extraction path produced `n`:
+         *   - Vibe Schema path (FlowConverterCore.toNodeRed) attaches
+         *     `_llmSpecKeys`, the exact list of keys from the schema spec.
+         *     This is precise and ignores type-normaliser defaults (e.g.
+         *     function nodes get `outputs:1` from the normaliser, which
+         *     should NOT override the user's existing `outputs:3`).
+         *   - Raw Node-RED JSON path (legacy) has no _llmSpecKeys, so we
+         *     fall back to "defined in n means LLM set it" - the LLM
+         *     supplied every property it cared about as-is.
          */
         function preserveUnmentionedProperties(n, existing) {
             if (!existing) return;
-            let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : [];
+            let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : null;
             Object.keys(existing).forEach(function(key) {
                 if (MERGE_SKIP_KEYS[key]) return;
                 if (key.charAt(0) === '_') return;     // editor / plugin internals
-                if (llmKeys.indexOf(key) !== -1) return; // LLM explicitly set this
+                let llmExplicitlySet = llmKeys
+                    ? (llmKeys.indexOf(key) !== -1)
+                    : (n[key] !== undefined);
+                if (llmExplicitlySet) return;
                 n[key] = deepClone(existing[key]);
             });
         }
