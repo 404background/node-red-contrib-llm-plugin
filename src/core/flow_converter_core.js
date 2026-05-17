@@ -316,8 +316,8 @@
      * @param  {string} [options.workspace]  Tab ID to assign (z).
      * @param  {number} [options.startX]    Defaults to LAYOUT_DEFAULTS.startX.
      * @param  {number} [options.startY]    Defaults to LAYOUT_DEFAULTS.startY.
-     * @param  {number} [options.spacingX]  Defaults to LAYOUT_DEFAULTS.spacingX.
      * @param  {number} [options.spacingY]  Defaults to LAYOUT_DEFAULTS.spacingY.
+     * @param  {number} [options.edgeGap]   Pixels between adjacent node edges.
      * @param  {number} [options.maxColumns] Defaults to LAYOUT_DEFAULTS.maxColumns.
      * @return {Array}  Node-RED JSON nodes array.
      */
@@ -325,12 +325,12 @@
         if (!intermediate || !intermediate.nodes) return [];
 
         let opts = options || {};
-        let workspace      = opts.workspace      || '';
-        let startX         = opts.startX         || LAYOUT_DEFAULTS.startX;
-        let startY         = opts.startY         || LAYOUT_DEFAULTS.startY;
-        let spacingX       = opts.spacingX       || LAYOUT_DEFAULTS.spacingX;
-        let spacingY       = opts.spacingY       || LAYOUT_DEFAULTS.spacingY;
-        let maxColumns     = opts.maxColumns     || LAYOUT_DEFAULTS.maxColumns;
+        let workspace      = opts.workspace || '';
+        let startX         = (typeof opts.startX     === 'number') ? opts.startX     : LAYOUT_DEFAULTS.startX;
+        let startY         = (typeof opts.startY     === 'number') ? opts.startY     : LAYOUT_DEFAULTS.startY;
+        let spacingY       = (typeof opts.spacingY   === 'number') ? opts.spacingY   : LAYOUT_DEFAULTS.spacingY;
+        let edgeGap        = (typeof opts.edgeGap    === 'number') ? opts.edgeGap    : LAYOUT_DEFAULTS.edgeGap;
+        let maxColumns     = (typeof opts.maxColumns === 'number') ? opts.maxColumns : LAYOUT_DEFAULTS.maxColumns;
         let preserveAlias  = !!opts.preserveAlias;
 
         // --- Work on a shallow copy so we never mutate the caller's object ---
@@ -707,6 +707,31 @@
             canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap
         );
 
+        // Width-aware column positioning: each column's x-centre is the
+        // previous column's right edge plus edgeGap plus half this column's
+        // max node width. Mirrors CanvasLayout.reflowCanvasNodes so a
+        // toNodeRed call produces the same coordinates as an explicit
+        // reflow over the resulting array.
+        let colMaxWidth = {};
+        canvasAliases.forEach(function(alias) {
+            let spec = nodeSpecs[alias];
+            let col = (layout[alias] || {}).col || 0;
+            // Pass a node-shaped object (type + name) so estimateNodeWidth
+            // measures the same label that Node-RED would render.
+            let probe = { type: spec.type, name: spec.name || '' };
+            let w = CanvasLayout.getNodeWidth(probe, opts);
+            if (!colMaxWidth[col] || colMaxWidth[col] < w) colMaxWidth[col] = w;
+        });
+        let _colKeys = Object.keys(colMaxWidth).map(Number).sort(function(a, b) { return a - b; });
+        let colX = {};
+        let _cursorRight = startX;
+        _colKeys.forEach(function(col, idx) {
+            let w = colMaxWidth[col];
+            let centre = (idx === 0) ? (_cursorRight + w / 2) : (_cursorRight + edgeGap + w / 2);
+            colX[col] = centre;
+            _cursorRight = centre + w / 2;
+        });
+
         // --- Assemble Node-RED nodes ---
         let result = [];
         aliases.forEach(function(alias) {
@@ -731,7 +756,7 @@
 
             // Config nodes don't appear on the canvas — skip coordinates
             if (!isConfig) {
-                node.x = startX + pos.col * spacingX;
+                node.x = Math.round(colX[pos.col] !== undefined ? colX[pos.col] : startX);
                 let yOff = (pos.comp !== undefined && compYOffsets[pos.comp] !== undefined)
                     ? compYOffsets[pos.comp] : 0;
                 node.y = Math.round(pos.row * spacingY + yOff);
