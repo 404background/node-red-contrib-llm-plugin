@@ -1,4 +1,4 @@
-﻿// Loader for modularized LLM Plugin client code
+// Loader for modularized LLM Plugin client code
 (function() {
     let scripts = [
         // canvas_layout.js must load before flow_converter_core.js (toNodeRed

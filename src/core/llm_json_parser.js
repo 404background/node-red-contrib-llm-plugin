@@ -9,7 +9,7 @@
 //  - Partial schema merging and flow node extraction
 //
 // Works as both a CommonJS module (server/tests) and a browser global.
-// Has NO dependency on plugin globals  Epass `cfg` (Configurator) explicitly
+// Has NO dependency on plugin globals — pass `cfg` (Configurator) explicitly
 // to any function that needs Vibe Schema conversion.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
@@ -78,8 +78,8 @@
             let nk = normalizeToken(rawKey);
             if (!nk || nk === k) return;
             // Reject matches where one token is much shorter than the other.
-            // e.g. "venv" (4) vs "venv_square" (11) ↁEratio 0.36 ↁEskip.
-            // Legitimate fuzzy: "inject_trigger" vs "inject_trigger_1" ↁE0.875 ↁEok.
+            // e.g. "venv" (4) vs "venv_square" (11) → ratio 0.36 → skip.
+            // Legitimate fuzzy: "inject_trigger" vs "inject_trigger_1" → 0.875 → ok.
             let shorter = Math.min(nk.length, k.length);
             let longer  = Math.max(nk.length, k.length);
             if (shorter / longer < 0.5) return;
@@ -254,7 +254,7 @@
 
     /**
      * Extract the last Vibe Schema object from LLM message text.
-     * Search order: code fences (last first) ↁEfull text ↁEbalanced objects.
+     * Search order: code fences (last first) → full text → balanced objects.
      *
      * @param {string} messageContent  Raw LLM assistant message.
      * @param {Object} cfg             Configurator with `isVibeSchema(obj)` method.
@@ -349,7 +349,7 @@
      * node IDs from a Node-RED flow snapshot.
      *
      * Resolution cascade (resolve method):
-     *   exact ID ↁEexact alias ↁEnormalized alias ↁEnode name ↁEloose alias ↁEfuzzy
+     *   exact ID → exact alias → normalized alias → node name → loose alias → fuzzy
      *
      * @param {Array}  flowNodes  Node-RED flow nodes array.
      * @param {Object} [cfg]      Configurator with `toIntermediate` method (for alias maps).
@@ -441,7 +441,7 @@
 
     /**
      * Resolve a Vibe Schema alias token against the intermediate nodes of the
-     * current flow. Falls back through normalized alias ↁEname ↁEfuzzy.
+     * current flow. Falls back through normalized alias → name → fuzzy.
      *
      * @param {string} token          Alias to resolve.
      * @param {Object} currentNodes   Intermediate node map from toIntermediate().
@@ -588,7 +588,7 @@
                     spec = JSON.parse(JSON.stringify(spec));
                     spec.type = inferred;
                 } else {
-                    return; // skip  Eno type, can't convert
+                    return; // skip — no type, can't convert
                 }
             }
             out.nodes[alias] = JSON.parse(JSON.stringify(spec));
@@ -664,7 +664,7 @@
 
     /**
      * Extract Node-RED flow nodes from LLM message content.
-     * Tries (in order): code fences ↁEfull text ↁEbalanced objects ↁEbalanced arrays.
+     * Tries (in order): code fences → full text → balanced objects → balanced arrays.
      *
      * @param {string} messageContent
      * @param {Object} options         { mode: string, currentFlow: Array }

@@ -281,10 +281,10 @@ User types prompt
 ## Development Notes
 
 - **No jQuery**: All client modules use vanilla DOM APIs and the `fetch` API. jQuery is available in the Node-RED editor environment but is intentionally not used.
-- **Module communication**: Via `window.LLMPlugin` namespace (`ChatManager`, `UI`, `Importer`, `Configurator`, `LLMJsonParser`).
-- **Vibe Schema**: The Configurator module provides bi-directional conversion. It is loaded first by `client.js` and required by `server.js`.
+- **Module communication**: Via `window.LLMPlugin` namespace (`CanvasLayout`, `FlowConverterCore` / `Configurator`, `LLMJsonParser`, `ChatManager`, `UI`, `Importer`).
+- **Core load order**: `canvas_layout.js` first (no deps), then `flow_converter_core.js` (depends on it), then `llm_json_parser.js` (independent). Both the converter and the parser are also required by `server.js`.
 - **Backward compatibility**: The importer auto-detects both Vibe Schema and raw Node-RED JSON. If an LLM outputs the old format, it still works.
 - **Adding a new endpoint**: Add the route in the *HTTP admin endpoints* section of `server.js`. Restart Node-RED to apply.
 - **Adding a new client module**: Create a new file under `src/`, add it to the load list in `client.js`, and expose its API on `window.LLMPlugin`.
-- **Chat storage**: JSON files in `llm-plugin-data/chats/` (within the Node-RED `userDir`) with pattern `YYYY-MM-DD-<title>-<id>.json`.
+- **Chat storage**: JSON files in `<plugin-root>/.logs/llm-plugin/chats/` with pattern `YYYY-MM-DD-<title>-<id>.json`. Checkpoints live alongside in `.logs/llm-plugin/checkpoints/`.
 - **Settings storage**: `RED.settings.get/set('llmPluginSettings')` — persisted in Node-RED's internal config, not in exported flows.

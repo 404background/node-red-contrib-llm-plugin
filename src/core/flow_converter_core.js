@@ -72,8 +72,8 @@
 
     function isConfigType(type) {
         if (typeof type !== 'string') return false;
-        // Runtime detection first (covers every installed node  Ecore,
-        // community, custom  Evia RED.nodes.getType().category).
+        // Runtime detection first (covers every installed node — core,
+        // community, custom — via RED.nodes.getType().category).
         if (_runtimeGetType) {
             let def = _runtimeGetType(type);
             if (def && def.category === 'config') return true;
@@ -194,7 +194,7 @@
     }
 
     // ------------------------------------------------------------------ //
-    //  Node-RED JSON  ↁE Intermediate (Vibe Schema)                       //
+    //  Node-RED JSON  →  Intermediate (Vibe Schema)                       //
     // ------------------------------------------------------------------ //
 
     /**
@@ -240,12 +240,12 @@
             });
 
             // Inject nodes have an internal "props" array that collides with
-            // the Vibe Schema concept.  Strip it  EtoNodeRed will regenerate it.
+            // the Vibe Schema concept.  Strip it — toNodeRed will regenerate it.
             if (node.type === 'inject' && Array.isArray(props.props)) {
                 delete props.props;
             }
 
-            // Resolve config-node ID references in props ↁEaliases.
+            // Resolve config-node ID references in props → aliases.
             // Any string prop whose value is a known node ID is replaced
             // with that node's alias so the intermediate format stays
             // portable (IDs are instance-specific).
@@ -265,7 +265,7 @@
 
             intermediateNodes[alias] = entry;
 
-            // wires ↁEconnections
+            // wires → connections
             if (Array.isArray(node.wires)) {
                 node.wires.forEach(function(output, portIndex) {
                     if (!Array.isArray(output)) return;
@@ -304,7 +304,7 @@
     }
 
     // ------------------------------------------------------------------ //
-    //  Intermediate (Vibe Schema)  ↁE Node-RED JSON                       //
+    //  Intermediate (Vibe Schema)  →  Node-RED JSON                       //
     // ------------------------------------------------------------------ //
 
 
@@ -344,11 +344,11 @@
         // defining them.  Detect such dangling references and create stubs.
         //
         // Detection strategies:
-        //  1. Props keys ending in "config" (e.g. venvconfig ↁEvenv-config)
+        //  1. Props keys ending in "config" (e.g. venvconfig → venv-config)
         //  2. Well-known reference keys that commonly point to config nodes
         let CONFIG_REF_KEYS = {
             'broker': 'mqtt-broker',
-            'server': null,          // type varies  Eskip auto-create
+            'server': null,          // type varies — skip auto-create
             'group': 'ui-group',
             'tab': 'ui-tab',
             'base': 'ui-base',
@@ -446,7 +446,7 @@
             if (!code || typeof code !== 'string') return code;
 
             // Heuristic: if there are already a reasonable number of newlines,
-            // the code is already formatted  Eleave it alone.
+            // the code is already formatted — leave it alone.
             let lines = code.split('\n');
             let semis = (code.match(/;/g) || []).length;
             if (lines.length > 3 || (lines.length > 1 && lines.length >= semis * 0.3)) {
@@ -534,13 +534,13 @@
                     let peekJ = i;
                     while (peekJ < len && code[peekJ] === ' ') peekJ++;
                     if (peekJ < len && (code[peekJ] === ')' || code[peekJ] === '.')) {
-                        // Stay on same line  Edon't add newline
+                        // Stay on same line — don't add newline
                         while (i < len && code[i] === ' ') i++;
                     } else if (peekJ < len && code[peekJ] !== '}') {
                         pushIndent();
                         while (i < len && code[i] === ' ') i++;
                     } else {
-                        // Next is } or end  Elet the next iteration handle it
+                        // Next is } or end — let the next iteration handle it
                         while (i < len && code[i] === ' ') i++;
                     }
                     continue;
@@ -580,7 +580,7 @@
         function normalizeFunctionNode(node) {
             if (!node.func || typeof node.func !== 'string') return;
 
-            // Match require() patterns ANYWHERE in the code  Enot just at
+            // Match require() patterns ANYWHERE in the code — not just at
             // the start of a line.  LLMs often emit the entire function
             // body on one line separated by semicolons.
             //
@@ -729,7 +729,7 @@
             if (spec.name) node.name = spec.name;
             if (workspace && !isConfig) node.z = workspace;
 
-            // Config nodes don't appear on the canvas  Eskip coordinates
+            // Config nodes don't appear on the canvas — skip coordinates
             if (!isConfig) {
                 node.x = startX + pos.col * spacingX;
                 let yOff = (pos.comp !== undefined && compYOffsets[pos.comp] !== undefined)
@@ -761,9 +761,9 @@
                 node[key] = mergedProps[key];
             });
 
-            // Resolve alias references in props ↁEreal IDs.
+            // Resolve alias references in props → real IDs.
             // Only resolve type-specific properties (config-node references like
-            // venvconfig: "my_venv" ↁE"id_xxx"). Skip META_KEYS (id, type, name,
+            // venvconfig: "my_venv" → "id_xxx"). Skip META_KEYS (id, type, name,
             // z, x, y, wires, g) and _llmAlias to avoid corrupting node identity
             // when an alias happens to match a type or name (e.g. alias "inject"
             // colliding with type "inject").
