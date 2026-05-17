@@ -221,6 +221,19 @@
             generateBtn.disabled = false;
             generateBtn.classList.remove('stop-btn');
             generateBtn.textContent = 'Send';
+            // Re-enable the mode dropdown after a request finishes so the
+            // user can change it for the next turn.
+            if (modeSelect) modeSelect.disabled = false;
+        }
+
+        // Visually confirm mode changes so the user can see the dropdown
+        // actually registered the click (the next Send will use this value).
+        if (modeSelect) {
+            modeSelect.addEventListener('change', function() {
+                if (window.RED && RED.notify) {
+                    RED.notify('LLM Plugin: Mode = ' + modeSelect.value, { type: 'info', timeout: 1500 });
+                }
+            });
         }
 
         // --- Flow selector ---
@@ -464,6 +477,11 @@
             generateBtn.disabled = false;
             generateBtn.classList.add('stop-btn');
             generateBtn.innerHTML = '<i class="fa fa-stop" aria-hidden="true"></i>';
+            // Lock the mode dropdown while a request is in flight. The mode
+            // for this turn is already captured in `mode`; preventing changes
+            // here makes it obvious that switching the dropdown mid-request
+            // only takes effect on the *next* Send.
+            if (modeSelect) modeSelect.disabled = true;
 
             let currentFlow = null;
             if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI && 

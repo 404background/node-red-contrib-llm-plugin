@@ -128,11 +128,18 @@
             if (meta && typeof meta.elapsedMs === 'number' && isFinite(meta.elapsedMs)) {
                 let elapsed = document.createElement('div');
                 elapsed.className = 'message-elapsed';
-                let elapsedText = (meta.elapsedMs / 1000).toFixed(1) + 's';
-                if (meta.model && typeof meta.model === 'string') {
-                    elapsedText = meta.model + ' / ' + elapsedText;
+                let parts = [];
+                // Show the turn's mode (ask / agent) so the user can tell at a
+                // glance which mode produced this response - especially useful
+                // after switching modes mid-conversation.
+                if (meta.mode === 'ask' || meta.mode === 'agent') {
+                    parts.push(meta.mode);
                 }
-                elapsed.textContent = elapsedText;
+                if (meta.model && typeof meta.model === 'string') {
+                    parts.push(meta.model);
+                }
+                parts.push((meta.elapsedMs / 1000).toFixed(1) + 's');
+                elapsed.textContent = parts.join(' / ');
                 message.appendChild(elapsed);
             }
         }
