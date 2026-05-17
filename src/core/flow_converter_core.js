@@ -734,7 +734,7 @@
 
         // --- Assemble Node-RED nodes ---
         let result = [];
-        aliases.forEach(function(alias) {
+        aliases.forEach(function(alias, schemaIndex) {
             let spec = nodeSpecs[alias];
             let isConfig = isConfigType(spec.type) || spec.config === true;
             let pos  = layout[alias] || { col: 0, row: 0 };
@@ -743,6 +743,11 @@
                 id:   aliasToId[alias],
                 type: spec.type
             };
+            // Record the LLM's schema declaration order so downstream
+            // layout passes can place ordering-sensitive nodes (notably
+            // `comment` nodes that have no wires) near the canvas nodes
+            // the LLM listed them next to.
+            node._llmOrder = schemaIndex;
             if (preserveAlias) node._llmAlias = alias;
             // Preserve the Vibe Schema `flow` field as `_llmFlow` so the
             // importer can route this node to the correct workspace in

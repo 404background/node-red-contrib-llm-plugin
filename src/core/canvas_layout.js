@@ -338,6 +338,63 @@
         return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
     }
 
+    /**
+     * Re-place `comment` nodes next to the canvas nodes they were listed
+     * adjacent to in the Vibe Schema. Comments have no wires, so the
+     * topological layout treats them as orphan components and parks them
+     * below the chain; this helper restores their intended placement by
+     * reading `_llmOrder` (set on each node by FlowConverterCore.toNodeRed
+     * from the Vibe Schema declaration order) and positioning each
+     * comment relative to its schema-order canvas neighbours.
+     *
+     * Only repositions nodes for which `shouldReposition(c)` returns true
+     * (callers can use this to skip comments whose user-set position must
+     * be preserved). `shouldReposition` defaults to repositioning every
+     * comment that carries `_llmOrder`.
+     */
+    function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
+        let edgeGap  = pickOption(opts, 'edgeGap',  LAYOUT_DEFAULTS.edgeGap);
+        let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
+
+        let comments = [];
+        let ordered = [];
+        canvasNodes.forEach(function(n) {
+            if (!n || typeof n._llmOrder !== 'number') return;
+            if (n.type === 'comment') comments.push(n);
+            else ordered.push(n);
+        });
+        if (comments.length === 0 || ordered.length === 0) return;
+        ordered.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
+
+        comments.forEach(function(c) {
+            if (typeof shouldReposition === 'function' && !shouldReposition(c)) return;
+            // Find schema-order neighbours among LLM-proposed canvas nodes
+            let prev = null;
+            let next = null;
+            for (let i = 0; i < ordered.length; i++) {
+                if (ordered[i]._llmOrder < c._llmOrder) prev = ordered[i];
+                else if (ordered[i]._llmOrder > c._llmOrder) { next = ordered[i]; break; }
+            }
+            let cw = getNodeWidth(c, opts);
+            if (prev && next && Math.abs((prev.y || 0) - (next.y || 0)) <= spacingY / 2) {
+                // Both neighbours on a similar row: place comment above the
+                // wire between them, horizontally between their centres.
+                c.x = Math.round(((prev.x || 0) + (next.x || 0)) / 2);
+                c.y = Math.round((prev.y || 0) - spacingY);
+            } else if (prev) {
+                // Trailing comment - place one column to the right of and
+                // above its predecessor.
+                c.x = Math.round((prev.x || 0) + getNodeWidth(prev, opts) / 2 + edgeGap + cw / 2);
+                c.y = Math.round((prev.y || 0) - spacingY);
+            } else if (next) {
+                // Leading comment - place one column before and above its
+                // successor.
+                c.x = Math.round((next.x || 0) - getNodeWidth(next, opts) / 2 - edgeGap - cw / 2);
+                c.y = Math.round((next.y || 0) - spacingY);
+            }
+        });
+    }
+
     // ------------------------------------------------------------------ //
     //  Canvas-level layout                                                //
     // ------------------------------------------------------------------ //
@@ -399,6 +456,10 @@
             node.x = Math.round(colX[pos.col] !== undefined ? colX[pos.col] : startX);
             node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
         });
+
+        // Re-place comment nodes near their schema-order neighbours so they
+        // don't get parked below the chain as orphan components.
+        repositionCommentsByLlmOrder(canvasNodes, opts);
         return nodes;
     }
 
@@ -563,6 +624,25 @@
                 }
             }
         }
+
+        // Step 3.6: Re-place new comment nodes (which have no wires and so
+        // never get placed by the wire-based passes above) near the
+        // canvas nodes they were listed adjacent to in the Vibe Schema.
+        // Existing comments retain their user-set positions and so are
+        // excluded from this pass.
+        repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
+            return !existingIdMap[c.id];
+        });
+        // Any comment we just placed should not fall into Step 4's orphan
+        // band. Mark them positioned and drop from `remaining`.
+        remaining = remaining.filter(function(n) {
+            if (n.type === 'comment' && typeof n._llmOrder === 'number'
+                && typeof n.x === 'number' && typeof n.y === 'number') {
+                positioned[n.id] = true;
+                return false;
+            }
+            return true;
+        });
 
         // Step 4: Orphan placement (chain entirely new) below all positioned
         if (remaining.length > 0) {

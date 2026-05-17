@@ -512,11 +512,27 @@
             if (n._autoStub && byId[n.id]) return;
             let existing = byId[n.id];
             if (existing) {
-                // Wire preservation: LLM-supplied empty wires fall back to
-                // the existing routing so the chain isn't broken by an edit
-                // that didn't talk about connections at all.
-                if (!isHintedSource(n) && !hasAnyOutgoing(n.wires) && hasAnyOutgoing(existing.wires)) {
-                    n.wires = deepClone(existing.wires);
+                // Wire merge (additive). Existing connections are NEVER cut
+                // as a side-effect of an edit - the user can only remove a
+                // connection by asking for it explicitly (`remove` directive
+                // -> directives.removeConnections, processed below). When
+                // the LLM proposes adding a node mid-chain (A -> N -> B by
+                // adding A -> N and N -> B), this means A keeps its original
+                // edge to B and also gains an edge to N. The user can prune
+                // A -> B with a `remove` directive in the same message if
+                // they want a true insertion.
+                if (Array.isArray(existing.wires) && existing.wires.length > 0) {
+                    let maxPorts = Math.max(
+                        Array.isArray(n.wires) ? n.wires.length : 0,
+                        existing.wires.length
+                    );
+                    let merged = [];
+                    for (let p = 0; p < maxPorts; p++) {
+                        let oldPort = Array.isArray(existing.wires[p]) ? existing.wires[p] : [];
+                        let newPort = (Array.isArray(n.wires) && Array.isArray(n.wires[p])) ? n.wires[p] : [];
+                        merged[p] = mergeWireIds(oldPort, newPort);
+                    }
+                    n.wires = merged;
                 }
                 // Property preservation: keep every user-set field (mqtt
                 // topic, broker, qos, function outputs, ui-group settings,
@@ -565,6 +581,9 @@
 
         applyConnectionHints(rebuilt, connectionHints || []);
 
+        // Strip plugin-only metadata that the layout passes don't need.
+        // `_llmOrder` is kept until after layout runs because the layout
+        // passes use it to place ordering-sensitive nodes (comments).
         rebuilt.forEach(function(n) {
             if (!n) return;
             delete n._llmAlias;
@@ -602,6 +621,9 @@
                 layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, layoutOpts);
             }
         }
+
+        // Final cleanup of the layout-only metadata.
+        rebuilt.forEach(function(n) { if (n) delete n._llmOrder; });
 
         return rebuilt;
     }
