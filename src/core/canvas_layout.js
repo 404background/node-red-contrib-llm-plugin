@@ -1,28 +1,6 @@
 // Canvas Layout - standalone layout engine for Node-RED node arrays.
-//
-// Three primitives are exposed:
-//
-//   layoutNodes(aliases, outgoing, incoming, maxColumns)
-//     Pure topological layout. Returns logical positions
-//     { alias: { col, row, comp } }. No pixel coordinates.
-//
-//   reflowCanvasNodes(nodes, options)
-//     Full canvas re-layout. Filters to canvas nodes (tab / subflow
-//     dropped by default; pass `options.isCanvasNode` for stricter
-//     filtering such as config-node exclusion), builds adjacency from
-//     each node's `wires`, calls `layoutNodes`, then translates the
-//     logical positions to pixels and mutates each node's x / y in place.
-//
-//   placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options)
-//     Conservative incremental layout. Existing nodes keep their
-//     coordinates from `basePositions`; only new nodes are positioned,
-//     then the downstream chain is shifted right by `spacingX` to keep
-//     inserted nodes from overlapping their existing successors.
-//
-// See ./LAYOUT.md for the full per-pass description and examples.
-//
-// This module has NO dependency on flow_converter_core.js so it can be
-// used standalone wherever a Node-RED node array needs to be laid out.
+// Public API: layoutNodes, reflowCanvasNodes, placeAddedNodesNearNeighbors,
+// estimateNodeWidth, getNodeWidth, pairSpacing. See ./LAYOUT.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -33,29 +11,20 @@
 })(function() {
     'use strict';
 
-    // Default spacing constants. Override per-call via `options`.
-    //
-    // The layout is width-aware: the centre-to-centre distance between two
-    // horizontally adjacent nodes is `(widthA + widthB)/2 + edgeGap`, so
-    // wide-named nodes get pushed apart automatically while narrow ones
-    // pack tighter. `edgeGap` is the visible pixel gap between their edges.
+    // See ./LAYOUT.md for the meaning of each constant and the width-aware
+    // spacing rule (`distance = (widthA + widthB)/2 + edgeGap`).
     let LAYOUT_DEFAULTS = {
         startX:        60,
         startY:        60,
-        spacingY:      80,    // row height (centre-to-centre, fixed)
-        componentGap:  80,    // pixels between disconnected components
-        edgeGap:       40,    // pixels between right edge of A and left edge of B
-                              // (== 2 Node-RED grid squares of 20 px each)
-        minNodeWidth: 100,    // Node-RED's MIN_NODE_WIDTH; fallback for empty labels
-        gridSize:      20,    // Node-RED canvas grid; widths snap to multiples of this
+        spacingY:      80,
+        componentGap:  80,
+        edgeGap:       40,
+        minNodeWidth: 100,
+        gridSize:      20,
         maxColumns:     5
     };
 
-    /**
-     * Default canvas-node predicate: accepts anything with a non-empty type
-     * that isn't a tab definition or subflow definition. Callers needing
-     * config-node exclusion should pass their own predicate.
-     */
+    // Default predicate when caller doesn't supply `options.isCanvasNode`.
     function defaultIsCanvasNode(node) {
         if (!node || typeof node !== 'object') return false;
         let type = node.type;
@@ -64,25 +33,7 @@
         return true;
     }
 
-    // ------------------------------------------------------------------ //
-    //  Pure topological layout                                            //
-    // ------------------------------------------------------------------ //
-
-    /**
-     * Topological layout engine with parallel-branch support and line wrapping.
-     *  1. Discover connected components via undirected BFS.
-     *  2. Lay out each component independently; nodes in a straight chain
-     *     share the same row so branches stay visually horizontal.
-     *  3. When a chain exceeds maxColumns, wrap to the next row set.
-     *  4. Components are packed back-to-back row-wise; pixel gap is added
-     *     by the caller.
-     *
-     * @param  {string[]} aliases
-     * @param  {Object}   outgoing  alias -> [target aliases]
-     * @param  {Object}   incoming  alias -> [source aliases]
-     * @param  {number}   [maxColumns=5]
-     * @return {Object}   alias -> { col, row, comp }
-     */
+    // --- Pure topological layout (./LAYOUT.md §1) ---
     function layoutNodes(aliases, outgoing, incoming, maxColumns) {
         if (!maxColumns || maxColumns < 2) maxColumns = 5;
         let positions = {};
@@ -231,14 +182,8 @@
         return positions;
     }
 
-    // ------------------------------------------------------------------ //
-    //  Helpers                                                            //
-    // ------------------------------------------------------------------ //
+    // --- Helpers ---
 
-    /**
-     * Build directed adjacency from each node's `wires` array. Edges that
-     * point to ids not in `byId` are ignored.
-     */
     function buildWireAdjacency(nodes, byId) {
         let outgoing = {};
         let incoming = {};
@@ -261,13 +206,6 @@
         return { outgoing: outgoing, incoming: incoming };
     }
 
-    /**
-     * Stack disconnected components vertically. Returns
-     *   { componentIndex: yOffsetPx }
-     * such that `y = positions[id].row * spacingY + offsets[positions[id].comp]`
-     * places each component starting at `startY` and packs the next
-     * component `gap` pixels below the previous one's bottom row.
-     */
     function computeComponentYOffsets(ids, positions, startY, spacingY, gap) {
         let info = {};
         ids.forEach(function(id) {
@@ -296,28 +234,19 @@
         return (opts && typeof opts[key] === 'number') ? opts[key] : fallback;
     }
 
-    /**
-     * Estimate the rendered pixel width of a Node-RED node based on its
-     * label length. The Node-RED editor itself measures labels via a hidden
-     * SVG <text> element, which is unavailable to a standalone module, so
-     * this is a character-count approximation that matches the editor's
-     * `Math.max(MIN_NODE_WIDTH, labelWidth + chrome)` rule, snapped to the
-     * grid. Pass `options.getNodeWidth(node)` if you can supply an
-     * accurate measurement (e.g. via DOM).
-     */
+    // Approximate Node-RED's label-based width when no DOM measurement is
+    // available. 6.5 px/char + 38 px chrome (icon strip + padding) matches
+    // the editor's `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule.
     function estimateNodeWidth(node, opts) {
         let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
         let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
         if (!node || typeof node !== 'object') return minW;
         let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
-        // 6.5 px / char is a fair approximation for the editor's default font.
-        // 38 px chrome covers the type icon strip on the left plus inner padding.
         let estimated = label.length * 6.5 + 38;
         let w = Math.max(minW, estimated);
         return Math.ceil(w / grid) * grid;
     }
 
-    /** Resolve a node's width, preferring the caller's `getNodeWidth` hook. */
     function getNodeWidth(node, opts) {
         if (opts && typeof opts.getNodeWidth === 'function') {
             let w = opts.getNodeWidth(node);
@@ -329,29 +258,14 @@
     function nodeRightEdge(node, opts) { return (node.x || 0) + getNodeWidth(node, opts) / 2; }
     function nodeLeftEdge (node, opts) { return (node.x || 0) - getNodeWidth(node, opts) / 2; }
 
-    /**
-     * Centre-to-centre distance ensuring `edgeGap` pixels between the right
-     * edge of `a` and the left edge of `b`. Width-aware.
-     */
+    // Width-aware centre-to-centre distance (./LAYOUT.md §"Width-aware…").
     function pairSpacing(a, b, opts) {
         let gap = pickOption(opts, 'edgeGap', LAYOUT_DEFAULTS.edgeGap);
         return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
     }
 
-    /**
-     * Re-place `comment` nodes next to the canvas nodes they were listed
-     * adjacent to in the Vibe Schema. Comments have no wires, so the
-     * topological layout treats them as orphan components and parks them
-     * below the chain; this helper restores their intended placement by
-     * reading `_llmOrder` (set on each node by FlowConverterCore.toNodeRed
-     * from the Vibe Schema declaration order) and positioning each
-     * comment relative to its schema-order canvas neighbours.
-     *
-     * Only repositions nodes for which `shouldReposition(c)` returns true
-     * (callers can use this to skip comments whose user-set position must
-     * be preserved). `shouldReposition` defaults to repositioning every
-     * comment that carries `_llmOrder`.
-     */
+    // Position comments next to their Vibe Schema declaration-order
+    // neighbours (./LAYOUT.md §"Comment placement").
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let edgeGap  = pickOption(opts, 'edgeGap',  LAYOUT_DEFAULTS.edgeGap);
         let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
@@ -368,7 +282,6 @@
 
         comments.forEach(function(c) {
             if (typeof shouldReposition === 'function' && !shouldReposition(c)) return;
-            // Find schema-order neighbours among LLM-proposed canvas nodes
             let prev = null;
             let next = null;
             for (let i = 0; i < ordered.length; i++) {
@@ -377,33 +290,20 @@
             }
             let cw = getNodeWidth(c, opts);
             if (prev && next && Math.abs((prev.y || 0) - (next.y || 0)) <= spacingY / 2) {
-                // Both neighbours on a similar row: place comment above the
-                // wire between them, horizontally between their centres.
                 c.x = Math.round(((prev.x || 0) + (next.x || 0)) / 2);
                 c.y = Math.round((prev.y || 0) - spacingY);
             } else if (prev) {
-                // Trailing comment - place one column to the right of and
-                // above its predecessor.
                 c.x = Math.round((prev.x || 0) + getNodeWidth(prev, opts) / 2 + edgeGap + cw / 2);
                 c.y = Math.round((prev.y || 0) - spacingY);
             } else if (next) {
-                // Leading comment - place one column before and above its
-                // successor.
                 c.x = Math.round((next.x || 0) - getNodeWidth(next, opts) / 2 - edgeGap - cw / 2);
                 c.y = Math.round((next.y || 0) - spacingY);
             }
         });
     }
 
-    // ------------------------------------------------------------------ //
-    //  Canvas-level layout                                                //
-    // ------------------------------------------------------------------ //
+    // --- Canvas-level layout (./LAYOUT.md §§ 2 and 3) ---
 
-    /**
-     * Full canvas re-layout. Mutates `nodes` (sets x / y on each canvas
-     * node). Non-canvas entries are left untouched.
-     * @return The same nodes array (for chaining).
-     */
     function reflowCanvasNodes(nodes, options) {
         let opts = options || {};
         let isCanvas    = resolveCanvasFilter(opts);
@@ -427,8 +327,6 @@
         let adj = buildWireAdjacency(canvasNodes, byId);
         let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
 
-        // Width-aware column placement: each column's centre is offset by
-        // half of its max width plus the previous column's half plus edgeGap.
         let colMaxWidth = {};
         ids.forEach(function(id) {
             let col = (positions[id] || {}).col || 0;
@@ -437,7 +335,7 @@
         });
         let colKeys = Object.keys(colMaxWidth).map(Number).sort(function(a, b) { return a - b; });
         let colX = {};
-        let cursorRight = startX;     // x of the right edge of the most recent column
+        let cursorRight = startX;
         colKeys.forEach(function(col, idx) {
             let w = colMaxWidth[col];
             let centre = (idx === 0)
@@ -457,24 +355,10 @@
             node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
         });
 
-        // Re-place comment nodes near their schema-order neighbours so they
-        // don't get parked below the chain as orphan components.
         repositionCommentsByLlmOrder(canvasNodes, opts);
         return nodes;
     }
 
-    /**
-     * Conservative incremental layout. Existing-node coordinates are
-     * sourced from `basePositions`; only nodes NOT in `existingIdMap` are
-     * positioned. The downstream chain is then shifted right so inserted
-     * nodes don't overlap. See ./LAYOUT.md for the full pass description.
-     *
-     * @param  {Array}  nodes           All canvas nodes (existing + new).
-     * @param  {Object} existingIdMap   Set of ids whose position must be preserved.
-     * @param  {Object} basePositions   { id: { x, y } } for preserved positions.
-     * @param  {Object} [options]       Layout overrides.
-     * @return The same nodes array (for chaining).
-     */
     function placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options) {
         let opts = options || {};
         let isCanvas = resolveCanvasFilter(opts);
@@ -552,8 +436,7 @@
             remaining = next;
         }
 
-        // Step 3.4: Shift downstream chains so inserted nodes don't overlap
-        // (width-aware: required gap = edgeGap between right(N) and left(S))
+        // Step 3.4 (./LAYOUT.md): shift downstream chains to clear inserted nodes.
         let seedDeltas = {};
         canvasNodes.forEach(function(n) {
             if (!positioned[n.id] || existingIdMap[n.id]) return;
@@ -590,7 +473,7 @@
             });
         }
 
-        // Step 3.5: Resolve remaining overlaps among new nodes (width-aware)
+        // Step 3.5: push new nodes down on residual overlap.
         let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
         let newlyPlaced = canvasNodes.filter(function(n) {
             return !existingIdMap[n.id] && positioned[n.id];
@@ -625,16 +508,11 @@
             }
         }
 
-        // Step 3.6: Re-place new comment nodes (which have no wires and so
-        // never get placed by the wire-based passes above) near the
-        // canvas nodes they were listed adjacent to in the Vibe Schema.
-        // Existing comments retain their user-set positions and so are
-        // excluded from this pass.
+        // Step 3.6: position new comments by schema declaration order so
+        // they don't fall into the orphan band below.
         repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
             return !existingIdMap[c.id];
         });
-        // Any comment we just placed should not fall into Step 4's orphan
-        // band. Mark them positioned and drop from `remaining`.
         remaining = remaining.filter(function(n) {
             if (n.type === 'comment' && typeof n._llmOrder === 'number'
                 && typeof n.x === 'number' && typeof n.y === 'number') {
@@ -644,7 +522,7 @@
             return true;
         });
 
-        // Step 4: Orphan placement (chain entirely new) below all positioned
+        // Step 4: orphan band — entirely-new chains land below at maxY + bandGap.
         if (remaining.length > 0) {
             let maxY = Number.NEGATIVE_INFINITY;
             let minX = Number.POSITIVE_INFINITY;
@@ -674,10 +552,6 @@
             let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
             let orphanOffsets = computeComponentYOffsets(orphanIds, orphanPositions, orphanStartY, spacingY, bandGap);
 
-            // Width-aware column placement for the orphan band, mirroring
-            // reflowCanvasNodes: each column's x-centre is offset by half
-            // its max width plus edgeGap from the previous column's right
-            // edge. Band starts at `minX` (left edge of leftmost column).
             let orphanColMaxWidth = {};
             orphanIds.forEach(function(id) {
                 let col = (orphanPositions[id] || {}).col || 0;

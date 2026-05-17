@@ -1,69 +1,33 @@
-// Flow Converter Core: bi-directional converter between Node-RED JSON
-// and Vibe Schema (intermediate JSON).
-//
-// This module is intentionally independent from plugin UI/server code so it
-// can be reused by other projects.
-//
-// Vibe Schema:
-//   {
-//     "description": "...",
-//     "nodes": { "alias": { "type": "...", "name": "...", "props": { ... } } },
-//     "connections": [{ "from": "a", "to": "b", "fromPort": 0 }]
-//   }
-//
+// Flow Converter Core: Node-RED JSON ↔ Vibe Schema converter + type
+// detection helpers. See ./VIBE_SCHEMA.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory(require('./canvas_layout.js'));
     } else {
         window.LLMPlugin = window.LLMPlugin || {};
-        // canvas_layout.js MUST be loaded first (see ../client.js).
+        // canvas_layout.js must be loaded first (see ../client.js).
         window.LLMPlugin.FlowConverterCore = factory(window.LLMPlugin.CanvasLayout);
         window.LLMPlugin.Configurator = window.LLMPlugin.FlowConverterCore;
     }
 })(function(CanvasLayout) {
     'use strict';
 
-    // Layout primitives (layoutNodes / reflowCanvasNodes / etc.) live in
-    // src/core/canvas_layout.js. See src/core/LAYOUT.md for documentation.
     let layoutNodes              = CanvasLayout.layoutNodes;
     let computeComponentYOffsets = CanvasLayout.computeComponentYOffsets;
     let LAYOUT_DEFAULTS          = CanvasLayout.LAYOUT_DEFAULTS;
 
-    // Node-RED config node types end with "-config" and live outside the
-    // canvas (no x, y, wires).  Detect them so we can handle them specially.
     let CONFIG_TYPE_SUFFIX = '-config';
 
-    // Well-known node types that have 0 input ports (source-only / event nodes).
-    // Connections targeting these types are invalid and should be dropped.
     let NO_INPUT_TYPES = {
-        'inject': true,
-        'catch': true,
-        'status': true,
-        'complete': true,
-        'http in': true,
-        'mqtt in': true,
-        'websocket in': true,
-        'tcp in': true,
-        'udp in': true,
-        // The comment node has no I/O - it's a canvas-only annotation node.
-        // Listing it here ensures the static fallback still drops wires
-        // targeting comments when the runtime type registry is unavailable.
-        'comment': true
+        'inject': true, 'catch': true, 'status': true, 'complete': true,
+        'http in': true, 'mqtt in': true, 'websocket in': true,
+        'tcp in': true, 'udp in': true,
+        'comment': true   // canvas-only annotation, no I/O
     };
+    let NO_OUTPUT_TYPES = { 'comment': true };
 
-    // Well-known node types that have 0 output ports. Wires originating from
-    // these types are visually drawn but never carry messages; the LLM
-    // should never produce them. Currently only the comment annotation node.
-    let NO_OUTPUT_TYPES = {
-        'comment': true
-    };
-
-    /**
-     * Optional runtime type-info callback.  When set (typically by the browser
-     * environment), it is called with a node type string and should return the
-     * node definition object (same shape as RED.nodes.getType) or null.
-     * This allows non-core / community nodes to be detected correctly.
-     */
+    // Optional `RED.nodes.getType` adapter. Injected by setRuntimeGetType
+    // so the helpers below can see community / custom node defs.
     let _runtimeGetType = null;
 
     function setRuntimeGetType(fn) {
@@ -72,65 +36,37 @@
 
     function isConfigType(type) {
         if (typeof type !== 'string') return false;
-        // Runtime detection first (covers every installed node — core,
-        // community, custom — via RED.nodes.getType().category).
         if (_runtimeGetType) {
             let def = _runtimeGetType(type);
             if (def && def.category === 'config') return true;
         }
-        // Static fallback: the "-config" suffix is the Node-RED convention
-        // for config node types (e.g. venv-config, mongodb-config).
         if (type.length > CONFIG_TYPE_SUFFIX.length &&
             type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX) return true;
         return false;
     }
 
-    /**
-     * Determine whether a node object is a config node by combining
-     * type-based detection (runtime + static) with structural detection.
-     * In a valid Node-RED flow, config nodes lack x, y, and wires because
-     * they live outside the canvas.  This structural check serves as a
-     * reliable fallback when the runtime type registry is unavailable and
-     * the type name does not match a known config-type pattern.
-     */
     function isConfigNode(node) {
         if (!node || typeof node !== 'object') return false;
         let type = node.type;
         if (typeof type !== 'string' || !type.trim()) return false;
-        // Type-based detection (runtime + static suffix/list)
         if (isConfigType(type)) return true;
-        // Structural detection: config nodes have no canvas properties.
-        // Exclude tab and subflow definitions which also lack x/y/wires.
         if (type === 'tab' || type.indexOf('subflow:') === 0) return false;
-        let hasZ = false; // Ignore z (config nodes can be workspace scoped)
+        // Structural fallback: no canvas properties => looks like a config node.
         let hasXY = typeof node.x === 'number' || typeof node.y === 'number';
         let hasWires = Array.isArray(node.wires);
         let hasGroup = typeof node.g === 'string' && node.g.length > 0;
-        return !hasZ && !hasXY && !hasWires && !hasGroup;
+        return !hasXY && !hasWires && !hasGroup;
     }
 
-    /** Check whether a node type has zero input ports. */
     function isNoInputType(type) {
         if (typeof type !== 'string') return false;
-        // Runtime detection first (covers all installed nodes)
         if (_runtimeGetType) {
             let def = _runtimeGetType(type);
-            if (def && typeof def.inputs === 'number') {
-                return def.inputs === 0;
-            }
+            if (def && typeof def.inputs === 'number') return def.inputs === 0;
         }
-        // Static fallback
         return NO_INPUT_TYPES[type] === true;
     }
 
-    /**
-     * Determine whether a node belongs on the canvas (has x/y coordinates).
-     * Excludes:
-     *   - tab definition nodes (workspace metadata)
-     *   - subflow definition nodes ("subflow:NAME" instances are canvas nodes,
-     *     but the bare "subflow" or "subflow:" definitions are not)
-     *   - config nodes (live outside the canvas)
-     */
     function isCanvasNode(node) {
         if (!node || typeof node !== 'object') return false;
         let type = node.type;
@@ -139,20 +75,16 @@
         return !isConfigNode(node);
     }
 
-    /** Check whether a node type has zero output ports. */
     function isNoOutputType(type) {
         if (typeof type !== 'string') return false;
         if (_runtimeGetType) {
             let def = _runtimeGetType(type);
-            if (def && typeof def.outputs === 'number') {
-                return def.outputs === 0;
-            }
+            if (def && typeof def.outputs === 'number') return def.outputs === 0;
         }
         return NO_OUTPUT_TYPES[type] === true;
     }
 
-    // Keys that belong to the Node-RED runtime/editor and should NOT be treated
-    // as type-specific properties ("props") in the intermediate format.
+    // Runtime keys never treated as type-specific `props`.
     let META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
 
     // ------------------------------------------------------------------ //

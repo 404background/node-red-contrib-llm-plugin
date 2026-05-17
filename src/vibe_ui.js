@@ -221,13 +221,10 @@
             generateBtn.disabled = false;
             generateBtn.classList.remove('stop-btn');
             generateBtn.textContent = 'Send';
-            // Re-enable the mode dropdown after a request finishes so the
-            // user can change it for the next turn.
             if (modeSelect) modeSelect.disabled = false;
         }
 
-        // Visually confirm mode changes so the user can see the dropdown
-        // actually registered the click (the next Send will use this value).
+        // Toast on mode change so the user sees the dropdown took effect.
         if (modeSelect) {
             modeSelect.addEventListener('change', function() {
                 if (window.RED && RED.notify) {
@@ -415,12 +412,8 @@
                 }
             });
             if (window.RED && RED.events && typeof RED.events.on === 'function') {
-                // Documented Node-RED events:
-                //   flows:add / flows:change / flows:remove — flow tab CRUD
-                //   workspace:change                        — active tab switch
-                // flows:remove is the critical one: without it, deleted flow
-                // IDs would linger in selectedFlowIds and surface as raw IDs
-                // in the selector label.
+                // flows:remove is critical — without it, deleted flow IDs
+                // would linger in selectedFlowIds and surface as raw IDs.
                 RED.events.on('workspace:change', refreshFlowSelector);
                 RED.events.on('flows:add', refreshFlowSelector);
                 RED.events.on('flows:change', refreshFlowSelector);
@@ -434,11 +427,7 @@
 
         // --- Core generation flow ---
         function handleGenerate() {
-            // Guard against double-trigger: when generation is already in
-            // flight the Send button is showing as Stop. Pressing Ctrl+Enter
-            // (which routes here directly) would otherwise duplicate the
-            // user's message in chat history and start a second fetch while
-            // the first is still running.
+            // Block Ctrl+Enter while a request is in flight (Send is Stop).
             if (generateBtn.classList.contains('stop-btn')) return;
 
             let model  = modelInput.value.trim();
@@ -462,9 +451,8 @@
             }
             promptInput.value = '';
 
-            // Snapshot the pre-change flow at send time so the assistant
-            // message's Restore Checkpoint rewinds to this state.
-            // Create checkpoint ONLY in agent mode.
+            // Agent mode: snapshot the pre-edit flow so the assistant
+            // message's Restore Checkpoint can rewind to this state.
             let preSendCheckpointPromise = (mode === 'agent' && window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.savePreSendCheckpoint)
                 ? LLMPlugin.ChatManager.savePreSendCheckpoint(null, flowIdsToSend)
                 : Promise.resolve(null);
@@ -477,10 +465,8 @@
             generateBtn.disabled = false;
             generateBtn.classList.add('stop-btn');
             generateBtn.innerHTML = '<i class="fa fa-stop" aria-hidden="true"></i>';
-            // Lock the mode dropdown while a request is in flight. The mode
-            // for this turn is already captured in `mode`; preventing changes
-            // here makes it obvious that switching the dropdown mid-request
-            // only takes effect on the *next* Send.
+            // Mode for this turn is already captured in `mode`; lock the
+            // dropdown so mid-flight switches obviously target only the next Send.
             if (modeSelect) modeSelect.disabled = true;
 
             let currentFlow = null;
@@ -578,12 +564,8 @@
                     try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
                 });
             }
-            // Documented props (RED.sidebar.addTab): id, label, name,
-            // iconClass, content, toolbar, enableOnEdit, action.
-            // `closeable` is a de-facto-supported flag used by Node-RED's
-            // own debug/info tabs to render the close-X button; we rely on
-            // that behavior so users can dismiss the plugin tab and re-open
-            // it later from the sidebar overflow menu.
+            // `closeable` is undocumented but matches Node-RED's own
+            // debug/info tabs (close-X + re-open from the overflow menu).
             RED.sidebar.addTab({
                 id: "llm-plugin-tab",
                 label: "LLM Plugin",

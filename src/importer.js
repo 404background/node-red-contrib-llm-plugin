@@ -117,15 +117,8 @@
         } catch (e) {}
     }
 
-    // ------------------------------------------------------------------ //
-    //  Runtime Node-Type Helpers (uses RED.nodes.getType when available) //
-    // ------------------------------------------------------------------ //
+    // --- Runtime node-type helpers (thin wrappers over FlowConverterCore) ---
 
-    /**
-     * Check whether a node type can accept incoming wires (has input ports).
-     * Delegates to FlowConverterCore which handles both runtime detection
-     * (via setRuntimeGetType) and static fallback.
-     */
     function nodeCanAcceptInput(type) {
         if (!type || typeof type !== 'string') return true;
         let cfg = getConfigurator();
@@ -133,12 +126,6 @@
         return true;
     }
 
-    /**
-     * Check whether a node type can emit outgoing wires (has output ports).
-     * Comment nodes are the main case - they live on the canvas but have
-     * no outputs, so any wires attached would render visually without ever
-     * carrying messages.
-     */
     function nodeCanEmitOutput(type) {
         if (!type || typeof type !== 'string') return true;
         let cfg = getConfigurator();
@@ -146,11 +133,6 @@
         return true;
     }
 
-    /**
-     * Check whether a node type is a config node (lives outside the canvas).
-     * Delegates to FlowConverterCore which handles both runtime detection
-     * (via setRuntimeGetType) and static fallback.
-     */
     function isConfigNodeType(type) {
         if (!type || typeof type !== 'string') return false;
         let cfg = getConfigurator();
@@ -158,11 +140,6 @@
         return false;
     }
 
-    /**
-     * Check whether a node object is a config node using both type-based
-     * and structural detection.  Falls back to type-only check if the
-     * core function is unavailable.
-     */
     function isConfigNodeObj(node) {
         if (!node || typeof node !== 'object') return false;
         let cfg = getConfigurator();
@@ -170,10 +147,7 @@
         return isConfigNodeType(node.type);
     }
 
-    /**
-     * Remove wires targeting nodes that cannot accept input.
-     * Iterates all nodes and prunes invalid wire entries.
-     */
+    // Drop wires targeting nodes with no inputs (inject / comment / ...).
     function pruneInvalidInputWires(flowNodes) {
         if (!Array.isArray(flowNodes)) return;
         let noInputIds = {};
@@ -190,11 +164,7 @@
         });
     }
 
-    /**
-     * Force-empty the wires array on nodes that cannot emit output. Defends
-     * against an LLM emitting raw Node-RED JSON (bypassing Vibe Schema) with
-     * outgoing wires on, for example, a comment node.
-     */
+    // Strip stray wires from nodes with no outputs (comment).
     function pruneInvalidOutputWires(flowNodes) {
         if (!Array.isArray(flowNodes)) return;
         flowNodes.forEach(function(n) {
@@ -209,10 +179,8 @@
         });
     }
 
-    /**
-     * Strip canvas properties (x, y, wires, z) from nodes that are detected
-     * as config nodes at runtime but were not caught by the static check.
-     */
+    // Remove x/y/wires/z from runtime-detected config nodes that the static
+    // suffix check missed.
     function fixConfigNodeProperties(flowNodes) {
         if (!Array.isArray(flowNodes)) return;
         flowNodes.forEach(function(n) {
@@ -347,11 +315,6 @@
         return LLMPlugin.UI ? LLMPlugin.UI.getActiveWorkspaceId() : null;
     }
 
-    /**
-     * Thin wrapper around FlowConverterCore.isCanvasNode so the importer
-     * gets the same canvas-vs-config classification as the layout engine.
-     * Falls back to a structural check if the core is unavailable.
-     */
     function isCanvasNode(node) {
         let cfg = getConfigurator();
         if (cfg && typeof cfg.isCanvasNode === 'function') return cfg.isCanvasNode(node);
@@ -361,10 +324,9 @@
         return !isConfigNodeObj(node);
     }
 
-    // Force Node-RED to fully re-render the canvas after a destructive
-    // workspace mutation. RED.view.redraw() can run before newly imported
-    // nodes have attached their SVG elements; without a deferred second
-    // redraw the wires render but the node bodies do not.
+    // After a destructive workspace mutation, force Node-RED to re-render
+    // the canvas. A second deferred `redraw` is needed because the first
+    // can run before newly imported nodes have attached SVG elements.
     function stabilizeWorkspaceView() {
         try { RED.actions.invoke('core:select-none'); } catch (e) { /* ignore */ }
         try {
@@ -388,7 +350,8 @@
             ? JSON.parse(JSON.stringify(updateNodes))
             : [];
 
-        // Capture original positions before any mutations so we can restore them later
+        // Snapshot existing positions so placeAddedNodesNearNeighbors can
+        // restore them when only new nodes need placing.
         let basePositions = {};
         base.forEach(function(n) {
             if (n && n.id && typeof n.x === 'number' && typeof n.y === 'number') {
@@ -403,7 +366,6 @@
 
         function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-        // Delete nodes by token using shared lookup
         function removeNodesByTokens(nodes, removeTokens) {
             if (!Array.isArray(removeTokens) || removeTokens.length === 0) return nodes;
             let cfg = getConfigurator();
@@ -416,7 +378,7 @@
                 let id = lookup.resolve(t, { minLen: 8 });
                 if (id) {
                     let targetNode = lookup.byId[id];
-                    // FORCE PREVENT DELETION OF CONFIG NODES
+                    // Config nodes are never deleted by the LLM.
                     if (targetNode && !isCanvasNode(targetNode) && targetNode.type !== 'tab') {
                         return;
                     }
@@ -448,34 +410,17 @@
         let byId = {};
         base.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
-        // Keys we never copy across when merging an LLM update into an
-        // existing node. These are either identity (id/type), runtime
-        // editor state, or handled separately by other passes (wires, z,
-        // x, y, group).
+        // Identity / placement / editor-state keys never carried over from
+        // existing to proposed during the merge.
         let MERGE_SKIP_KEYS = {
             id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1, g: 1,
             dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
         };
 
-        /**
-         * Merge an LLM-proposed node `n` over an `existing` snapshot node.
-         * Every property the LLM did NOT explicitly mention is restored
-         * from `existing`, so a partial edit like
-         *   { "type": "mqtt out", "name": "v2" }
-         * preserves the existing `topic`, `broker`, `qos`, `retain`,
-         * `outputs`, etc.
-         *
-         * Two strategies for determining "LLM explicitly set" depending on
-         * which extraction path produced `n`:
-         *   - Vibe Schema path (FlowConverterCore.toNodeRed) attaches
-         *     `_llmSpecKeys`, the exact list of keys from the schema spec.
-         *     This is precise and ignores type-normaliser defaults (e.g.
-         *     function nodes get `outputs:1` from the normaliser, which
-         *     should NOT override the user's existing `outputs:3`).
-         *   - Raw Node-RED JSON path (legacy) has no _llmSpecKeys, so we
-         *     fall back to "defined in n means LLM set it" - the LLM
-         *     supplied every property it cared about as-is.
-         */
+        // Restore every existing-node property the LLM did not explicitly
+        // touch. "Explicitly touched" = key listed in n._llmSpecKeys (Vibe
+        // Schema path), or key has a defined value on n (raw JSON path).
+        // See src/README.md "importFlowFromMessage" for the rationale.
         function preserveUnmentionedProperties(n, existing) {
             if (!existing) return;
             let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : null;
@@ -492,24 +437,16 @@
 
         updates.forEach(function(n) {
             if (!n || !n.id) return;
-            // Prevent LLM from creating brand new Configuration nodes.
-            // If it's a config node and it doesn't already exist in the base flow, DROP IT.
+            // Config Node Protection: the LLM may only reference existing
+            // config nodes, never create new ones.
             if (!isCanvasNode(n) && n.type !== 'tab' && !byId[n.id]) {
                 return;
             }
-            // Auto-created config stubs must not overwrite existing config nodes
             if (n._autoStub && byId[n.id]) return;
             let existing = byId[n.id];
             if (existing) {
-                // Wire merge (additive). Existing connections are NEVER cut
-                // as a side-effect of an edit - the user can only remove a
-                // connection by asking for it explicitly (`remove` directive
-                // -> directives.removeConnections, processed below). When
-                // the LLM proposes adding a node mid-chain (A -> N -> B by
-                // adding A -> N and N -> B), this means A keeps its original
-                // edge to B and also gains an edge to N. The user can prune
-                // A -> B with a `remove` directive in the same message if
-                // they want a true insertion.
+                // Additive wire merge — existing connections are only ever
+                // severed by `directives.removeConnections` below.
                 if (Array.isArray(existing.wires) && existing.wires.length > 0) {
                     let maxPorts = Math.max(
                         Array.isArray(n.wires) ? n.wires.length : 0,
@@ -523,9 +460,6 @@
                     }
                     n.wires = merged;
                 }
-                // Property preservation: keep every user-set field (mqtt
-                // topic, broker, qos, function outputs, ui-group settings,
-                // ...) unless the LLM explicitly proposed a new value.
                 preserveUnmentionedProperties(n, existing);
             }
             byId[n.id] = n;
@@ -533,10 +467,9 @@
 
         let rebuilt = Object.keys(byId).map(function(id) { return byId[id]; });
 
-        // Second pass deletion (catches nodes added by updates that should also be removed)
+        // Second deletion pass catches nodes that updates just added.
         rebuilt = removeNodesByTokens(rebuilt, directives.removeTokens);
 
-        // Remove specific connections
         if (Array.isArray(directives.removeConnections) && directives.removeConnections.length > 0) {
             let rcLookup = buildFlowLookup(rebuilt, getConfigurator());
 
@@ -570,9 +503,7 @@
 
         applyConnectionHints(rebuilt, connectionHints || []);
 
-        // Strip plugin-only metadata that the layout passes don't need.
-        // `_llmOrder` is kept until after layout runs because the layout
-        // passes use it to place ordering-sensitive nodes (comments).
+        // _llmOrder is stripped after layout — the layout passes consume it.
         rebuilt.forEach(function(n) {
             if (!n) return;
             delete n._llmAlias;
@@ -581,15 +512,10 @@
             delete n._llmSpecKeys;
         });
 
-        // Prune wires targeting nodes that cannot accept input, then strip
-        // wires from nodes that cannot emit output (e.g. comment nodes).
         pruneInvalidInputWires(rebuilt);
         pruneInvalidOutputWires(rebuilt);
-        // Fix config nodes that were incorrectly given canvas properties
         fixConfigNodeProperties(rebuilt);
 
-        // Canvas layout is delegated to the standalone CanvasLayout module.
-        // See src/core/LAYOUT.md for the full per-pass description.
         let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
         if (layout) {
             let layoutOpts = {
@@ -599,9 +525,6 @@
                 componentGap: LAYOUT.componentGap,
                 bandGap: LAYOUT.componentGap,
                 maxColumns: LAYOUT.maxColumns,
-                // Inject the plugin's canvas-node predicate so config nodes
-                // are excluded from layout (the default predicate only
-                // excludes tab / subflow definitions).
                 isCanvasNode: isCanvasNode
             };
             if (mode === 'overwrite' || Object.keys(baseIds).length === 0) {
@@ -611,7 +534,6 @@
             }
         }
 
-        // Final cleanup of the layout-only metadata.
         rebuilt.forEach(function(n) { if (n) delete n._llmOrder; });
 
         return rebuilt;
@@ -649,11 +571,9 @@
             return { ok: false, error: 'Failed to clear current workspace nodes: ' + (e.message || e) };
         }
 
-        // Separate config nodes that already exist (update in-place) from
-        // nodes that need to be imported fresh.
-        // Drop tab definitions: generateIds would regenerate their ID and
-        // RED.nodes.import would create a duplicate workspace with the same
-        // label; canvas nodes should instead land on the active workspace.
+        // Tabs are dropped (RED.nodes.import would dup the workspace label);
+        // canvas nodes are pinned to workspaceId; already-present config
+        // nodes are diverted to an in-place update path.
         let configNodesToUpdate = [];
         let importNodes = (nodes || []).map(function(n) {
             let nn = JSON.parse(JSON.stringify(n));
@@ -664,7 +584,6 @@
             if (!isCanvasNode(nn)) {
                 let existing = RED.nodes.node(nn.id);
                 if (existing) {
-                    // Config node already exists  - collect for in-place update
                     configNodesToUpdate.push(nn);
                     return false;
                 }
@@ -700,8 +619,7 @@
         });
 
         try {
-            // Intentionally bypass RED.history.push so users can't Ctrl+Z away
-            // the entire imported flow; rewind via the plugin's checkpoints.
+            // Bypass RED.history — rewind via the plugin's checkpoints instead.
             RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
             stabilizeWorkspaceView();
             return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
@@ -729,12 +647,9 @@
         return id;
     }
 
-    /**
-     * Group the LLM's proposed canvas nodes by their `flow` label so each
-     * group can target its own workspace. Untagged canvas nodes are folded
-     * into the active flow when any other node is tagged (mixed response);
-     * otherwise no groups are returned and the caller uses single-flow mode.
-     */
+    // Group canvas nodes by their Vibe Schema `flow` label so each group
+    // can target its own workspace. Untagged canvas nodes fall into the
+    // active flow when any other node is tagged.
     function collectFlowGroupsFromSchema(schema) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return null;
         let groups = {};
@@ -760,12 +675,8 @@
         return groups;
     }
 
-    /**
-     * Slice a schema down to a single flow: its tagged canvas nodes, any
-     * untagged nodes (config / shared), and connections where both endpoints
-     * belong to this flow. Cross-flow connections are dropped  - the prompt
-     * discourages them unless the user asks explicitly.
-     */
+    // Slice a schema down to one flow: its tagged canvas nodes, all
+    // untagged (config / shared) nodes, and connections internal to it.
     function buildSubSchemaForFlow(schema, aliases) {
         let aliasSet = {};
         aliases.forEach(function(a) { aliasSet[a] = true; });
@@ -860,11 +771,8 @@
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
         try {
-            // --- Multi-flow dispatch ---
-            // When the LLM response tags canvas nodes with "flow" fields,
-            // proposals may span several workspaces. Split them per-flow so
-            // each flow's existing nodes are only matched against proposals
-            // intended for that flow  - prevents cross-flow overwrites.
+            // Multi-flow dispatch: when the schema tags nodes with `flow`,
+            // split the proposal per workspace before importing.
             if (!options._isSubImport) {
                 let dispatchSchema = extractLastVibeSchema(messageContent);
                 let flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
@@ -968,10 +876,8 @@
                 ? buildFlowLookup(beforeFlow, cfg)
                 : buildFlowLookup([], null);
 
-            // Remap connection hints and directives using lookup.
-            // exactOnly prevents a new-node alias (e.g. "inject_py_1")
-            // from fuzzy-matching an unrelated existing node ("inject")
-            // and silently hijacking connections or deletions.
+            // Resolve hint/directive aliases to real IDs. exactOnly avoids
+            // a fuzzy match from hijacking unrelated nodes.
             connectionHints = (connectionHints || []).map(function(h) {
                 return {
                     from: lookup.resolve(h.from, { exactOnly: true }) || h.from,
@@ -994,9 +900,8 @@
                 });
             }
 
-            // Track existing IDs for downstream edit-only/patch-only checks.
-            // Checkpoints are saved at chat-send time by ChatManager.savePreSendCheckpoint,
-            // not here  - the import path no longer produces its own checkpoints.
+            // Checkpoints come from ChatManager.savePreSendCheckpoint at
+            // chat-send time; the import path doesn't produce its own.
             let beforeIdSet = new Set();
             (beforeFlow || []).forEach(function(n) {
                 if (n && n.id) beforeIdSet.add(n.id);
@@ -1055,13 +960,8 @@
                 }
             }
 
-            // ---- Pre-pass: exact-alias claims ----
-            // Run exact-only resolution for every proposed node first, so that
-            // strong matches reserve their existing IDs before any fuzzy/loose
-            // match in the main pass can steal them. This prevents a new node
-            // with alias "inject_trigger_1" from loose-matching an existing
-            // "inject_trigger" when the LLM also (intentionally) references
-            // "inject_trigger" as an edit target.
+            // Pre-pass: every proposed node claims its exact-alias match
+            // first, so a later fuzzy match can't steal those IDs.
             let preResolvedAlias = {};
             if (canModifyExisting) {
                 nodes.forEach(function(n, idx) {
@@ -1077,36 +977,28 @@
                 });
             }
 
-            // ---- Map each proposed node to existing or new ----
+            // Map each proposed node to an existing match or mark it new.
             let newNodes = nodes.map(function(n, idx) {
                 let nn = JSON.parse(JSON.stringify(n));
                 nn.type = String(nn.type || '').trim();
 
                 let replacedExisting = null;
 
-                // 1. Alias-based matching (primary  - uses _llmAlias from Vibe Schema conversion)
+                // 1. Alias-based matching (primary).
                 if (canModifyExisting && nn._llmAlias) {
                     let aliasId = preResolvedAlias[idx] || null;
-                    // Fallback to fuzzy/loose only when this node had no exact
-                    // match; skip any existing IDs already claimed by the
-                    // pre-pass or a prior proposal.
                     if (!aliasId) {
-                        // New-node signal: alias has a trailing digit run
-                        // (with or without underscore) and stripping it yields
-                        // an existing exact alias  - e.g. "inject_py1" vs
-                        // existing "inject_py", or "inject_trigger_2" vs
-                        // existing "inject_trigger". Treat as NEW so loose
-                        // fuzzy can't hijack an existing node.
+                        // Trailing-digit aliases like "inject_trigger_2" are
+                        // treated as new even if "inject_trigger" exists.
                         let stripped = nn._llmAlias
                             .replace(/_?\d+$/, '')
                             .replace(/_+$/, '');
                         let isNewNodeSignal = (stripped !== nn._llmAlias) &&
                             lookup.aliasToId && !!lookup.aliasToId[stripped];
-                        // Fuzzy matching is useful in edit-only mode where the
-                        // LLM may typo an alias it wants to modify. In merge
-                        // mode the LLM has every existing alias in its context
-                        // and the prompt forbids reusing them for new nodes  -                         // fuzzy here only causes accidental overwrites of
-                        // same-type existing nodes.
+                        // Fuzzy alias match is only allowed in edit-only mode
+                        // (the LLM may have typo'd an alias to modify); in
+                        // merge mode every existing alias is already in the
+                        // prompt context so fuzzy would just steal nodes.
                         if (!isNewNodeSignal && applyMode === 'edit-only') {
                             let fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
                             if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
@@ -1159,9 +1051,8 @@
                     }
                 }
 
-                // 4. Config node singleton matching: if a config node has no match
-                //    by alias or name, but exactly one existing config node of the
-                //    same type exists, reuse it rather than creating a duplicate.
+                // 4. Singleton config node: reuse the lone existing match
+                //    by type to avoid duplicating it.
                 if (!replacedExisting && canModifyExisting && isConfigNodeObj(nn)) {
                     let configTypeKey = String(nn.type).trim().toLowerCase();
                     let sameTypeCandidates = existingConfigByType[configTypeKey] || [];
@@ -1181,10 +1072,8 @@
                         remappedIds[originalId] = nn.id;
                     }
 
-                    // Auto-created config stubs (empty props) should not
-                    // overwrite the existing config node's real settings.
-                    // Keep the ID remap so canvas nodes point to the right
-                    // config, but drop the stub itself.
+                    // Stub-only payloads keep the ID remap (so refs are
+                    // rewired) but never overwrite the real config node.
                     if (nn._autoStub) {
                         existingIds.add(nn.id);
                         return null;
@@ -1222,12 +1111,8 @@
                 return nn;
             });
 
-            // Re-point wires AND string properties that reference pre-remap IDs.
-            // Config nodes (ui-group, ui-tab, ui-base, mqtt-broker, etc.) are
-            // referenced by canvas nodes via plain string properties such as
-            // "group", "tab", "server", "broker", etc.  When a config node's
-            // generated ID is remapped to an existing node's ID we must update
-            // every reference  - not just wires.
+            // After ID remapping, update both `wires` and any string props
+            // that referenced the pre-remap IDs (ui-group, mqtt-broker, …).
             if (Object.keys(remappedIds).length > 0) {
                 newNodes.forEach(function(n) {
                     if (!n) return;

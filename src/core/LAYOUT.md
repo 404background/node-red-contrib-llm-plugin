@@ -211,12 +211,12 @@ Width-aware step = `(100+100)/2 + 40 = 140`.
 
 #### Example — wide new node `A → N(wide) → B`
 
-If N's name is "Compute aggregated rolling average" (~260 px estimated):
+If N's name is "Compute aggregated rolling average" (260 px estimated):
 
 | After | A (100) | N (260) | B (100) |
 |-------|---------|---------|---------|
-| Step 3 | (100, 100) | (290, 100) | (240, 100) ← overlap |
-| Step 3.4 | (100, 100) | (290, 100) | (510, 100) ← shifted by enough |
+| Step 3 | (100, 100) | (320, 100) | (240, 100) ← overlap |
+| Step 3.4 | (100, 100) | (320, 100) | (540, 100) ← shifted +300 |
 
 Distance A→N = `(100+260)/2 + 40 = 220`. Distance N→B = `(260+100)/2 + 40 = 220`.
 

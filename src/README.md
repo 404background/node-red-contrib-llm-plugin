@@ -119,10 +119,12 @@ Extracts Node-RED flow JSON from LLM responses and imports it into the editor.
 
 **`importFlowFromMessage(messageContent, options)`** — Full import workflow:
 1. Extract nodes via `extractFlowNodes`.
-2. Resolve `applyMode` from top-level response JSON (`applyMode`) when available.
-3. Collect connection/deletion directives and rebuild a full workspace snapshot.
-4. Enforce mode policy (`edit-only`, `merge`, `overwrite`, `delete-only`) with safe fallback to `edit-only`.
-5. Replace active workspace flow atomically, then save post-import checkpoint.
+2. Resolve `applyMode` from the top-level response JSON when available; safe fallback to `edit-only`.
+3. Collect connection / deletion directives and rebuild a full workspace snapshot.
+4. **Additive wire merge**: when an LLM-proposed node matches an existing one, its proposed `wires` are unioned with the existing wires (per port). Connections are only severed by explicit `remove` directives in `connections`.
+5. **Property preservation**: properties the LLM did NOT mention are restored from the existing node. The exact "mentioned" set is taken from `_llmSpecKeys` (Vibe Schema path) or, for raw Node-RED JSON, every defined key on the proposed node.
+6. Comment nodes are repositioned by their schema declaration order so they land between the canvas nodes the LLM listed them next to (see [core/LAYOUT.md](./core/LAYOUT.md)).
+7. Replace active workspace flow atomically.
 
 **`restoreCheckpoint(checkpointId)`** — Loads a saved checkpoint from the server and replaces the active workspace flow.
 
@@ -159,10 +161,11 @@ The main entry module. Builds the entire sidebar DOM tree and wires up all inter
   - Schedules `initializeClientApp()` after a short delay.
 
 **`initializeClientApp(settingsManager)`**
-  - Binds all event listeners (generate, stop, settings open/close/save, Ctrl+Enter, model chips).
-  - Manages the generate/stop toggle using a single click handler + `classList` state.
-  - Uses `AbortController` for fetch cancellation (replaces jQuery's `jqXHR.abort()`).
-  - Exposes only Ask/Agent selector in UI; apply strategy is model-decided and returned as `applyMode`.
+  - Binds all event listeners (generate, stop, settings open/close/save, Ctrl+Enter).
+  - Manages the generate/stop toggle using a single click handler + `classList` state, with a Ctrl+Enter double-trigger guard.
+  - Uses `AbortController` for fetch cancellation.
+  - Mode UX: `change` toast confirms dropdown switches; mode dropdown is disabled while a request is in flight; assistant messages render a per-turn mode badge (`ask|agent / model / 1.5s`).
+  - Flow selector: subscribes to `flows:add/change/remove` + `workspace:change` to prune deleted flow IDs from the selection.
   - Settings dialog: focus management, Escape key, backdrop click.
 
 **`initializeWhenReady()`** — Polls `RED.sidebar` and calls `RED.sidebar.addTab(…)` to register the tab.
@@ -222,7 +225,6 @@ messages[0] = {
   role: "system",
   content: <user system prompt (from settings), if set>
            + <contents of prompt_system.txt>
-           + "APPLY MODE: auto"
            + optional "CURRENT FLOW (Vibe Schema): ..."
 }
 messages[1] = {
@@ -230,6 +232,8 @@ messages[1] = {
   content: <user prompt>
 }
 ```
+
+`prompt_system.txt` lists the four valid `applyMode` values; the LLM picks one in its JSON response (`detectApplyModeFromResponse` extracts it on the server side as a fallback).
 
 The existing flow is automatically converted to Vibe Schema via `Configurator.toIntermediate()` before being included in the prompt, so the LLM sees a consistent format in both directions.
 
@@ -254,7 +258,7 @@ User types prompt
       │                                          Configurator.toIntermediate(flow)
       │                                                     │
       │                                               buildMessages(prompt, currentFlow)
-      │                                              (system+user messages with APPLY MODE:auto)
+      │                                              (system message + user message; optional CURRENT FLOW)
       │                                                     │
       │                                         ┌───────────┴──────────┐
       │                                 Ollama chat adapter      OpenAI adapter
