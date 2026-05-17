@@ -129,6 +129,22 @@
         return NO_INPUT_TYPES[type] === true;
     }
 
+    /**
+     * Determine whether a node belongs on the canvas (has x/y coordinates).
+     * Excludes:
+     *   - tab definition nodes (workspace metadata)
+     *   - subflow definition nodes ("subflow:NAME" instances are canvas nodes,
+     *     but the bare "subflow" or "subflow:" definitions are not)
+     *   - config nodes (live outside the canvas)
+     */
+    function isCanvasNode(node) {
+        if (!node || typeof node !== 'object') return false;
+        let type = node.type;
+        if (typeof type !== 'string' || !type.trim()) return false;
+        if (type === 'tab' || type.indexOf('subflow:') === 0) return false;
+        return !isConfigNode(node);
+    }
+
     /** Check whether a node type has zero output ports. */
     function isNoOutputType(type) {
         if (typeof type !== 'string') return false;
@@ -459,6 +475,362 @@
         });
 
         return positions;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Canvas-level layout (Node-RED node arrays)                         //
+    // ------------------------------------------------------------------ //
+    //
+    // `layoutNodes()` above produces only logical positions (col / row /
+    // comp). The two functions below operate on actual Node-RED node
+    // arrays, translating those logical positions to pixel coordinates and
+    // mutating each node's `x` / `y` in place.
+    //
+    //   reflowCanvasNodes(nodes, options)
+    //     Full re-layout. Use when the entire canvas is being replaced and
+    //     there is no existing layout to preserve (e.g. importing a flow
+    //     from scratch, `overwrite` mode).
+    //       1. Filter to canvas nodes (tab / subflow / config dropped).
+    //       2. Build directed adjacency from each node's `wires` array.
+    //       3. Run layoutNodes() for col / row / comp positions.
+    //       4. Translate to pixels:
+    //            x = startX + col * spacingX
+    //            y = row * spacingY + componentYOffset
+    //          where componentYOffsets stack disconnected components
+    //          vertically with `componentGap` between them.
+    //
+    //   placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options)
+    //     Conservative incremental layout. Use when applying edits to a
+    //     user-curated flow so manual placements survive (`merge` mode).
+    //
+    //     Passes, in order:
+    //       Step 1  Restore existing positions
+    //         Every node id in `existingIdMap` gets its (x, y) copied back
+    //         from `basePositions[id]`. New nodes (not in the map) keep
+    //         whatever coordinates they were given (often 0 / 0).
+    //       Step 2  Build adjacency
+    //         Directed outgoing / incoming from `wires`. Edges that point
+    //         outside the canvas-node set are ignored.
+    //       Step 3  Iteratively place new nodes
+    //         For each new node, examine its already-positioned neighbors:
+    //           Both preds and succs positioned (the canonical "inserted
+    //             between A and B" case):
+    //               x = max(pred.x) + spacingX
+    //               y = mid( avg(pred.y), avg(succ.y) )
+    //           Only preds positioned (appended to chain):
+    //               x = max(pred.x) + spacingX,   y = avg(pred.y)
+    //           Only succs positioned (prepended to chain):
+    //               x = min(succ.x) - spacingX,   y = avg(succ.y)
+    //         New nodes whose neighbors are also new are placed on later
+    //         iterations once any neighbor has been positioned.
+    //       Step 3.4  Downstream horizontal shift
+    //         For every (new node N, existing succ S) pair where placing N
+    //         to the right of its pred put it close to S, the chain
+    //         starting at S (BFS via outgoing wires) is shifted right by
+    //         exactly enough to restore `spacingX` between N and S. This
+    //         is what makes an A -> N -> B insertion visually "open up"
+    //         the chain instead of overlapping or pushing N off-axis.
+    //       Step 3.5  Vertical overlap resolution
+    //         Any remaining new-node-vs-anything overlap (within half a
+    //         spacingX horizontally and 0.8 * spacingY vertically) is
+    //         resolved by pushing the new node down by spacingY. Re-runs
+    //         until stable.
+    //       Step 4  Orphan placement
+    //         New nodes with no positioned neighbor (their entire chain
+    //         is new) are laid out as a self-contained graph using
+    //         layoutNodes(), placed below all existing nodes at
+    //         `maxY + bandGap` and left-aligned to `minX`.
+    //
+    // Both functions share an options object with these keys (all optional):
+    //   startX, startY        canvas origin in px
+    //   spacingX, spacingY    pixel gap between node centres
+    //   componentGap          extra vertical pixels between disconnected components
+    //   bandGap               (placeAddedNodesNearNeighbors only) pixels between
+    //                         existing nodes and orphan band; defaults to componentGap
+    //   maxColumns            wrap long chains after this many columns
+
+    /**
+     * Build directed adjacency from each node's `wires` array.
+     * Edges to ids not in `byId` are skipped.
+     */
+    function buildWireAdjacency(nodes, byId) {
+        let outgoing = {};
+        let incoming = {};
+        nodes.forEach(function(n) {
+            if (!n || !n.id) return;
+            outgoing[n.id] = [];
+            incoming[n.id] = [];
+        });
+        nodes.forEach(function(n) {
+            if (!n || !n.id || !Array.isArray(n.wires)) return;
+            n.wires.forEach(function(port) {
+                if (!Array.isArray(port)) return;
+                port.forEach(function(toId) {
+                    if (!byId[toId]) return;
+                    outgoing[n.id].push(toId);
+                    incoming[toId].push(n.id);
+                });
+            });
+        });
+        return { outgoing: outgoing, incoming: incoming };
+    }
+
+    /**
+     * Stack disconnected components vertically. Returns a map
+     *   { componentIndex: yOffsetPx }
+     * such that `node.y = positions[id].row * spacingY + offsets[positions[id].comp]`
+     * places each component starting at the current cursor and packs them
+     * with `gap` pixels between component bottom and the next component
+     * top (center-to-center, since rows are measured at node centres).
+     */
+    function computeComponentYOffsets(ids, positions, startY, spacingY, gap) {
+        let info = {};
+        ids.forEach(function(id) {
+            let pos = positions[id] || { col: 0, row: 0 };
+            let ci = pos.comp || 0;
+            if (!info[ci]) info[ci] = { minRow: pos.row, maxRow: pos.row };
+            if (pos.row < info[ci].minRow) info[ci].minRow = pos.row;
+            if (pos.row > info[ci].maxRow) info[ci].maxRow = pos.row;
+        });
+        let keys = Object.keys(info).map(Number).sort(function(a, b) { return a - b; });
+        let offsets = {};
+        let nextY = startY;
+        keys.forEach(function(ci) {
+            let c = info[ci];
+            offsets[ci] = nextY - c.minRow * spacingY;
+            nextY = nextY + (c.maxRow - c.minRow) * spacingY + gap;
+        });
+        return offsets;
+    }
+
+    /**
+     * Full canvas re-layout. Mutates `nodes` (sets x / y on each canvas
+     * node). Config / tab / subflow nodes are left untouched.
+     * @return  The same nodes array (for chaining).
+     */
+    function reflowCanvasNodes(nodes, options) {
+        let opts = options || {};
+        let startX       = (typeof opts.startX === 'number')       ? opts.startX       : LAYOUT_DEFAULTS.startX;
+        let startY       = (typeof opts.startY === 'number')       ? opts.startY       : LAYOUT_DEFAULTS.startY;
+        let spacingX     = (typeof opts.spacingX === 'number')     ? opts.spacingX     : LAYOUT_DEFAULTS.spacingX;
+        let spacingY     = (typeof opts.spacingY === 'number')     ? opts.spacingY     : LAYOUT_DEFAULTS.spacingY;
+        let componentGap = (typeof opts.componentGap === 'number') ? opts.componentGap : LAYOUT_DEFAULTS.componentGap;
+        let maxColumns   = (typeof opts.maxColumns === 'number' && opts.maxColumns >= 2)
+            ? Math.floor(opts.maxColumns) : LAYOUT_DEFAULTS.maxColumns;
+
+        let canvasNodes = (nodes || []).filter(isCanvasNode);
+        if (canvasNodes.length < 2) return nodes;
+
+        let byId = {};
+        let ids = [];
+        canvasNodes.forEach(function(n) {
+            if (n && n.id) { byId[n.id] = n; ids.push(n.id); }
+        });
+
+        let adj = buildWireAdjacency(canvasNodes, byId);
+        let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
+        let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap);
+
+        ids.forEach(function(id) {
+            let node = byId[id];
+            let pos = positions[id] || { col: 0, row: 0 };
+            let ci = pos.comp || 0;
+            node.x = Math.round(startX + pos.col * spacingX);
+            node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
+        });
+        return nodes;
+    }
+
+    /**
+     * Conservative incremental layout. Restores existing positions and
+     * places only new nodes; shifts the downstream chain horizontally so
+     * inserted nodes don't overlap existing succs. See the section header
+     * comment above for the full pass description.
+     *
+     * @param  {Array}  nodes           All canvas nodes (existing + new).
+     * @param  {Object} existingIdMap   Set of ids whose position must be preserved.
+     * @param  {Object} basePositions   { id: { x, y } } source for preserved positions.
+     * @param  {Object} [options]       Layout overrides (see header comment).
+     * @return The same nodes array (for chaining).
+     */
+    function placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options) {
+        let opts = options || {};
+        let spacingX = (typeof opts.spacingX === 'number') ? opts.spacingX : LAYOUT_DEFAULTS.spacingX;
+        let spacingY = (typeof opts.spacingY === 'number') ? opts.spacingY : LAYOUT_DEFAULTS.spacingY;
+        let bandGap = (typeof opts.bandGap === 'number')
+            ? opts.bandGap
+            : ((typeof opts.componentGap === 'number') ? opts.componentGap : LAYOUT_DEFAULTS.componentGap);
+        let maxColumns = (typeof opts.maxColumns === 'number' && opts.maxColumns >= 2)
+            ? opts.maxColumns : LAYOUT_DEFAULTS.maxColumns;
+
+        existingIdMap = existingIdMap || {};
+        basePositions = basePositions || {};
+
+        let canvasNodes = (nodes || []).filter(isCanvasNode);
+        if (canvasNodes.length < 1) return nodes;
+
+        let byId = {};
+        canvasNodes.forEach(function(n) { byId[n.id] = n; });
+
+        // Step 1: Restore original positions for preserved nodes
+        canvasNodes.forEach(function(n) {
+            if (existingIdMap[n.id] && basePositions[n.id]) {
+                n.x = basePositions[n.id].x;
+                n.y = basePositions[n.id].y;
+            }
+        });
+
+        // Step 2: Wire adjacency
+        let adj = buildWireAdjacency(canvasNodes, byId);
+        let outgoing = adj.outgoing;
+        let incoming = adj.incoming;
+
+        // Step 3: Iteratively place new nodes
+        let positioned = {};
+        canvasNodes.forEach(function(n) {
+            if (existingIdMap[n.id]) positioned[n.id] = true;
+        });
+
+        function tryPlace(n) {
+            let preds = incoming[n.id].filter(function(id) { return positioned[id]; });
+            let succs = outgoing[n.id].filter(function(id) { return positioned[id]; });
+            if (preds.length === 0 && succs.length === 0) return false;
+
+            if (preds.length > 0 && succs.length > 0) {
+                let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
+                let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
+                let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
+                n.x = Math.round(maxPredX + spacingX);
+                n.y = Math.round((avgPredY + avgSuccY) / 2);
+            } else if (preds.length > 0) {
+                let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
+                let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
+                n.x = Math.round(maxPredX + spacingX);
+                n.y = Math.round(avgPredY);
+            } else {
+                let minSuccX = Math.min.apply(null, succs.map(function(id) { return byId[id].x || 0; }));
+                let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
+                n.x = Math.round(minSuccX - spacingX);
+                n.y = Math.round(avgSuccY);
+            }
+            positioned[n.id] = true;
+            return true;
+        }
+
+        let remaining = canvasNodes.filter(function(n) { return !existingIdMap[n.id]; });
+        let progress = true;
+        while (progress && remaining.length > 0) {
+            progress = false;
+            let next = [];
+            remaining.forEach(function(n) {
+                if (tryPlace(n)) { progress = true; } else { next.push(n); }
+            });
+            remaining = next;
+        }
+
+        // Step 3.4: Shift downstream chains so inserted nodes don't overlap
+        let seedDeltas = {};
+        canvasNodes.forEach(function(n) {
+            if (!positioned[n.id] || existingIdMap[n.id]) return;
+            (outgoing[n.id] || []).forEach(function(succId) {
+                let s = byId[succId];
+                if (!s || typeof s.x !== 'number') return;
+                let needed = ((n.x || 0) + spacingX) - s.x;
+                if (needed > 0) {
+                    seedDeltas[succId] = Math.max(seedDeltas[succId] || 0, needed);
+                }
+            });
+        });
+        let seedIds = Object.keys(seedDeltas);
+        if (seedIds.length > 0) {
+            let toShift = {};
+            let queue = [];
+            seedIds.forEach(function(id) { toShift[id] = seedDeltas[id]; queue.push(id); });
+            while (queue.length > 0) {
+                let id = queue.shift();
+                let dx = toShift[id];
+                (outgoing[id] || []).forEach(function(nextId) {
+                    if (toShift[nextId] === undefined || toShift[nextId] < dx) {
+                        toShift[nextId] = dx;
+                        queue.push(nextId);
+                    }
+                });
+            }
+            Object.keys(toShift).forEach(function(id) {
+                let node = byId[id];
+                if (node && typeof node.x === 'number') {
+                    node.x = Math.round(node.x + toShift[id]);
+                }
+            });
+        }
+
+        // Step 3.5: Resolve overlaps among new nodes (push down by spacingY)
+        let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
+        let newlyPlaced = canvasNodes.filter(function(n) {
+            return !existingIdMap[n.id] && positioned[n.id];
+        });
+        if (newlyPlaced.length > 0) {
+            newlyPlaced.sort(function(a, b) {
+                let dx = (a.x || 0) - (b.x || 0);
+                return dx !== 0 ? dx : ((a.y || 0) - (b.y || 0));
+            });
+            let changed = true;
+            let maxPasses = newlyPlaced.length * 2;
+            while (changed && maxPasses-- > 0) {
+                changed = false;
+                for (let ni = 0; ni < newlyPlaced.length; ni++) {
+                    let cur = newlyPlaced[ni];
+                    for (let oi = 0; oi < allPositioned.length; oi++) {
+                        let other = allPositioned[oi];
+                        if (other.id === cur.id) continue;
+                        if (Math.abs((cur.x || 0) - (other.x || 0)) < spacingX * 0.5 &&
+                            Math.abs((cur.y || 0) - (other.y || 0)) < spacingY * 0.8) {
+                            cur.y = (other.y || 0) + spacingY;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 4: Orphan placement (chain entirely new) below all positioned
+        if (remaining.length > 0) {
+            let maxY = Number.NEGATIVE_INFINITY;
+            let minX = Number.POSITIVE_INFINITY;
+            canvasNodes.forEach(function(n) {
+                if (!positioned[n.id] && !existingIdMap[n.id]) return;
+                if ((n.y || 0) > maxY) maxY = n.y;
+                if ((n.x || 0) < minX) minX = n.x;
+            });
+            if (!isFinite(maxY)) maxY = LAYOUT_DEFAULTS.startY;
+            if (!isFinite(minX)) minX = LAYOUT_DEFAULTS.startX;
+            let orphanStartY = maxY + bandGap;
+
+            let orphanIds = remaining.map(function(n) { return n.id; });
+            let orphanSet = {};
+            orphanIds.forEach(function(id) { orphanSet[id] = true; });
+            let orphanOut = {};
+            let orphanIn = {};
+            orphanIds.forEach(function(id) { orphanOut[id] = []; orphanIn[id] = []; });
+            remaining.forEach(function(n) {
+                (outgoing[n.id] || []).forEach(function(toId) {
+                    if (orphanSet[toId]) {
+                        orphanOut[n.id].push(toId);
+                        orphanIn[toId].push(n.id);
+                    }
+                });
+            });
+            let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
+            let orphanOffsets = computeComponentYOffsets(orphanIds, orphanPositions, orphanStartY, spacingY, bandGap);
+            remaining.forEach(function(n) {
+                let pos = orphanPositions[n.id] || { col: 0, row: 0 };
+                let ci = pos.comp || 0;
+                n.x = Math.round(minX + pos.col * spacingX);
+                n.y = Math.round(pos.row * spacingY + (orphanOffsets[ci] || 0));
+            });
+        }
+
+        return nodes;
     }
 
     /**
@@ -854,34 +1226,11 @@
             if (node.field === undefined) node.field = 'payload';
         }
 
-        // Compute per-component Y offsets so disconnected flows stack with
-        // Gap between disconnected flows: 2 grid squares (40px) visible gap.
-        // Node effective height ≁E40px, so center-to-center = 40 + 40 = 80px.
-        let componentGapPx = LAYOUT_DEFAULTS.componentGap;
-        function buildComponentYOffsets(layoutMap, aliases) {
-            let compInfo = {};  // comp ↁE{ minRow, maxRow }
-            aliases.forEach(function(a) {
-                let pos = layoutMap[a];
-                if (!pos || pos.comp === undefined) return;
-                let ci = pos.comp;
-                if (!compInfo[ci]) compInfo[ci] = { minRow: pos.row, maxRow: pos.row };
-                if (pos.row < compInfo[ci].minRow) compInfo[ci].minRow = pos.row;
-                if (pos.row > compInfo[ci].maxRow) compInfo[ci].maxRow = pos.row;
-            });
-            let compKeys = Object.keys(compInfo).map(Number).sort(function(a, b) { return a - b; });
-            let offsets = {};
-            let nextY = startY;
-            compKeys.forEach(function(ci) {
-                let info = compInfo[ci];
-                // Offset so this component's minRow maps to nextY
-                offsets[ci] = nextY - info.minRow * spacingY;
-                // Next component starts after this one's maxRow + gap
-                nextY = nextY + (info.maxRow - info.minRow) * spacingY + componentGapPx;
-            });
-            return offsets;
-        }
-
-        let compYOffsets = buildComponentYOffsets(layout, canvasAliases);
+        // Stack disconnected components vertically using the shared helper
+        // (also used by reflowCanvasNodes / placeAddedNodesNearNeighbors).
+        let compYOffsets = computeComponentYOffsets(
+            canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap
+        );
 
         // --- Assemble Node-RED nodes ---
         let result = [];
@@ -997,9 +1346,12 @@
         isVibeSchema:        isVibeSchema,
         isConfigType:        isConfigType,
         isConfigNode:        isConfigNode,
+        isCanvasNode:        isCanvasNode,
         isNoInputType:       isNoInputType,
         isNoOutputType:      isNoOutputType,
         setRuntimeGetType:   setRuntimeGetType,
-        layoutNodes:         layoutNodes
+        layoutNodes:         layoutNodes,
+        reflowCanvasNodes:   reflowCanvasNodes,
+        placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors
     };
 });

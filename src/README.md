@@ -92,22 +92,49 @@ Key properties:
 | Function | Description |
 |----------|-------------|
 | `toIntermediate(nodeRedJson)` | Node-RED array → Vibe Schema object. Generates aliases from node names/types, extracts connections from wires, strips coordinates and IDs. |
-| `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED array. Generates real IDs, auto-layouts nodes (BFS topological), converts connections to wires. Options: `workspace`, `startX`, `startY`, `spacingX`, `spacingY`. |
+| `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED array. Generates real IDs, auto-layouts nodes via `layoutNodes`, converts connections to wires. Options: `workspace`, `startX`, `startY`, `spacingX`, `spacingY`, `maxColumns`, `preserveAlias`. |
 | `isVibeSchema(obj)` | Returns `true` if the object has `nodes` (object) + `connections` (array). Used by the importer to detect format. |
 | `isConfigType(type)` | Returns `true` if the type string is a known config node type (static list + runtime check). |
 | `isConfigNode(node)` | Returns `true` if the node object is a config node (structural + type-based detection). |
-| `isNoInputType(type)` | Returns `true` if the type cannot accept incoming wires (e.g., inject, catch, status). |
-| `layoutNodes(ids, outgoing, incoming, maxColumns)` | BFS layout engine. Returns `{ id: { col, row, comp } }` positions. Used by both `toNodeRed()` and the importer. |
-| `setRuntimeGetType(fn)` | Register a runtime type-info callback (typically `RED.nodes.getType`). Enables config-node detection and no-input checks for community/custom nodes. Called automatically on sidebar init. |
+| `isCanvasNode(node)` | Returns `true` if the node belongs on the canvas (excludes tab / subflow / config). |
+| `isNoInputType(type)` | Returns `true` if the type cannot accept incoming wires (e.g., inject, catch, status, comment). |
+| `isNoOutputType(type)` | Returns `true` if the type emits no outgoing wires (e.g., comment). |
+| `layoutNodes(ids, outgoing, incoming, maxColumns)` | Pure topological layout. Returns `{ id: { col, row, comp } }` logical positions; no pixel coordinates. |
+| `reflowCanvasNodes(nodes, options?)` | Full canvas re-layout. Mutates `x` / `y` on canvas nodes using `layoutNodes` and the spacing options. |
+| `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Conservative incremental layout: preserves existing node coordinates, places only new nodes near their connected neighbors, then shifts the downstream chain to make room for inserts. |
+| `setRuntimeGetType(fn)` | Register a runtime type-info callback (typically `RED.nodes.getType`). Enables config-node detection and I/O-count checks for community/custom nodes. Called automatically on sidebar init. |
 
-#### Layout Engine
+#### Layout System
 
-The built-in layout engine assigns coordinates via BFS:
-1. Find root nodes (no incoming connections).
-2. BFS to assign column indices.
-3. Within each column, assign sequential row indices.
-4. Disconnected nodes are placed in column 0.
-5. Default spacing: 180px horizontal, 80px vertical.
+Three primitives work at increasing levels of granularity. All operate on canvas nodes only (config / tab / subflow are skipped).
+
+**1. `layoutNodes(aliases, outgoing, incoming, maxColumns)` — logical positions**
+- Discovers connected components via undirected BFS.
+- Assigns columns via directed BFS from each component's roots.
+- Within a column, rows are inherited from the parents' row (average), so straight chains stay horizontal.
+- Wraps a chain whose `col >= maxColumns` onto the next row-set.
+- Returns `{ alias: { col, row, comp } }`. Pixel translation is the caller's job.
+
+**2. `reflowCanvasNodes(nodes, options)` — full canvas layout**
+- Drops non-canvas nodes; builds adjacency from each node's `wires`.
+- Calls `layoutNodes`, then translates `col → startX + col * spacingX` and `row → row * spacingY + componentYOffset`.
+- Stacks disconnected components vertically with `componentGap` between them.
+- Use when applying a full overwrite (no existing layout to preserve).
+
+**3. `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options)` — incremental**
+
+Designed for merge mode: existing nodes (ids in `existingIdMap`) retain their original coordinates from `basePositions`; only new nodes are positioned. Five passes:
+
+| Pass | Purpose |
+|------|---------|
+| **Step 1** Restore | Copy each existing node's `(x, y)` from `basePositions`. |
+| **Step 2** Adjacency | Build directed `outgoing` / `incoming` maps from `wires`. |
+| **Step 3** Place new nodes | For each new node, look at its positioned neighbors: <br>• both preds and succs → `x = max(pred.x) + spacingX`, `y = mid(avg(pred.y), avg(succ.y))` <br>• preds only → `x = max(pred.x) + spacingX`, `y = avg(pred.y)` <br>• succs only → `x = min(succ.x) - spacingX`, `y = avg(succ.y)` <br>New-only chains resolve over multiple iterations. |
+| **Step 3.4** Downstream shift | For each (new node N, existing succ S) pair, if `(N.x + spacingX) > S.x`, BFS forward from S through `outgoing` and shift every reachable node right by `(N.x + spacingX) - S.x`. This is what makes "inserting between A and B" visually open up the chain. |
+| **Step 3.5** Overlap fix | Push any newly-placed node down by `spacingY` if it lies within `spacingX*0.5` horizontally and `spacingY*0.8` vertically of any other positioned node. Re-runs until stable. |
+| **Step 4** Orphans | New nodes with no positioned neighbor (entire chain is new) are laid out as a self-contained graph via `layoutNodes`, placed below all positioned nodes at `maxY + bandGap`, left-aligned to `minX`. |
+
+Default spacing constants (`LAYOUT_DEFAULTS`): `startX=60, startY=60, spacingX=180, spacingY=80, componentGap=80, maxColumns=5`. Each function accepts an `options` override.
 
 ### chat_manager.js
 
