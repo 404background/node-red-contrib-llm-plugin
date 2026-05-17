@@ -30,6 +30,93 @@ used by any tooling that produces or rearranges Node-RED node arrays.
 | `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options)` | Conservative incremental layout: preserves existing coordinates, places only new nodes, then shifts the downstream chain. |
 | `LAYOUT_DEFAULTS` | Default constants (see below). |
 
+## Pipeline overview
+
+```
+                       ┌──────────────────────────────┐
+                       │         layoutNodes          │
+                       │  (col / row / comp; logical  │
+                       │   positions, no pixels)      │
+                       └─────┬──────────────────┬─────┘
+                             │                  │
+                ┌────────────┘                  └────────────┐
+                ▼                                            ▼
+   ┌─────────────────────────┐              ┌──────────────────────────────────┐
+   │   reflowCanvasNodes     │              │ placeAddedNodesNearNeighbors     │
+   │   (overwrite mode -      │              │ (merge mode - keep existing      │
+   │    full re-layout)      │              │  coordinates, place new nodes)   │
+   └────────────┬────────────┘              └─────────────────┬────────────────┘
+                │                                             │
+                └─────────────────────┬───────────────────────┘
+                                      ▼
+                       ┌──────────────────────────────┐
+                       │ repositionCommentsByLlmOrder │
+                       │  (comments above their       │
+                       │   schema-order neighbours)   │
+                       └──────────────┬───────────────┘
+                                      ▼
+                             nodes mutated in place
+```
+
+### `reflowCanvasNodes` pipeline
+
+```
+nodes ──filter(isCanvasNode)──► canvas nodes
+                                     │
+                                     ▼
+                       buildWireAdjacency
+                                     │
+                                     ▼
+                          layoutNodes  ──►  { col, row, comp }
+                                     │
+                                     ▼
+                  max width per column (widths via getNodeWidth)
+                                     │
+                                     ▼
+                  colX[c] = colX[c-1] + half(c-1) + edgeGap + half(c)
+                                     │
+                                     ▼
+                  computeComponentYOffsets (stack components by spacingY+componentGap)
+                                     │
+                                     ▼
+                  node.x = colX[col]
+                  node.y = row * spacingY + componentYOffset[comp]
+                                     │
+                                     ▼
+                  repositionCommentsByLlmOrder
+```
+
+### `placeAddedNodesNearNeighbors` pipeline
+
+```
+canvas nodes (existing + new)
+            │
+            ▼
+   Step 1  Restore basePositions for ids in existingIdMap
+            │
+            ▼
+   Step 2  buildWireAdjacency over the canvas-node set
+            │
+            ▼
+   Step 3  Iteratively place each new node next to its
+           positioned predecessors / successors
+            │
+            ▼
+   Step 3.4  Downstream BFS shift - move existing successors
+             right by enough to keep `edgeGap` from each new node
+            │
+            ▼
+   Step 3.5  Push residual overlapping new nodes down by spacingY
+            │
+            ▼
+   Step 3.6  Reposition new comments by `_llmOrder` (above their
+             schema-order neighbours, stacked when grouped)
+            │
+            ▼
+   Step 4   Orphan band - chains with no positioned neighbour go
+            below maxY + bandGap, laid out via a fresh layoutNodes
+```
+
 ## Width-aware horizontal spacing
 
 The layout is **width-aware**: the centre-to-centre distance between two
@@ -39,7 +126,7 @@ horizontally adjacent nodes is
 distance = (width(a) + width(b)) / 2 + edgeGap
 ```
 
-This guarantees `edgeGap` pixels (default `40` = 2 Node-RED grid squares)
+This guarantees `edgeGap` pixels (default `60` = 3 Node-RED grid squares)
 of visible clearance between the right edge of `a` and the left edge of
 `b`, regardless of label length. A wide-named function node is pushed out
 more than a short one, and tight chains pack closer than before.
@@ -56,7 +143,7 @@ LAYOUT_DEFAULTS = {
     startY:         60,
     spacingY:       80,    // row height (fixed)
     componentGap:   80,    // vertical pixels between disconnected components
-    edgeGap:        40,    // visible gap between adjacent node edges
+    edgeGap:        60,    // visible gap between adjacent node edges (3 grid squares)
     minNodeWidth:  100,    // Node-RED MIN_NODE_WIDTH; fallback for empty labels
     gridSize:       20,    // Node-RED canvas grid
     maxColumns:      5
@@ -200,25 +287,25 @@ sending the new node down.
 
 #### Example — single insertion `A → N → B` (all default-width nodes, 100 px)
 
-Before: `A(100, 100) → B(240, 100)` (one width-aware step apart).
+Before: `A(100, 100) → B(260, 100)` (one width-aware step apart).
 
 | After | A | N | B |
 |-------|---|---|---|
-| Step 3 (no shift) | (100, 100) | (240, 100) | (240, 100) ← overlap |
-| Step 3.4 | (100, 100) | (240, 100) | (380, 100) ← shifted +140 |
+| Step 3 (no shift) | (100, 100) | (260, 100) | (260, 100) ← overlap |
+| Step 3.4 | (100, 100) | (260, 100) | (420, 100) ← shifted +160 |
 
-Width-aware step = `(100+100)/2 + 40 = 140`.
+Width-aware step = `(100+100)/2 + 60 = 160`.
 
 #### Example — wide new node `A → N(wide) → B`
 
-If N's name is "Compute aggregated rolling average" (260 px estimated):
+If N's name is "Compute aggregated rolling average" (280 px estimated):
 
-| After | A (100) | N (260) | B (100) |
+| After | A (100) | N (280) | B (100) |
 |-------|---------|---------|---------|
-| Step 3 | (100, 100) | (320, 100) | (240, 100) ← overlap |
-| Step 3.4 | (100, 100) | (320, 100) | (540, 100) ← shifted +300 |
+| Step 3 | (100, 100) | (350, 100) | (260, 100) ← overlap |
+| Step 3.4 | (100, 100) | (350, 100) | (600, 100) ← shifted +340 |
 
-Distance A→N = `(100+260)/2 + 40 = 220`. Distance N→B = `(260+100)/2 + 40 = 220`.
+Distance A→N = `(100+280)/2 + 60 = 250`. Distance N→B = `(280+100)/2 + 60 = 250`.
 
 ### Step 3.5 — Vertical overlap resolution
 
@@ -262,9 +349,9 @@ Layout.placeAddedNodesNearNeighbors(
     merged,
     { a: true, b: true },
     { a: { x: 100, y: 100 }, b: { x: 280, y: 100 } },
-    { edgeGap: 40, spacingY: 80 }
+    { edgeGap: 60, spacingY: 80 }
 );
-// a stays at 100, n placed at 240, b shifted to 380 (140 px steps for 100 px nodes).
+// a stays at 100, n placed at 260, b shifted to 420 (160 px steps for 100 px nodes).
 
 // 3. Bare topological layout (no pixels):
 const positions = Layout.layoutNodes(

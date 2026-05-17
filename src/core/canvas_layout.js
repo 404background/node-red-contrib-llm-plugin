@@ -18,7 +18,7 @@
         startY:        60,
         spacingY:      80,
         componentGap:  80,
-        edgeGap:       40,
+        edgeGap:       60,    // 3 Node-RED grid squares between adjacent node edges
         minNodeWidth: 100,
         gridSize:      20,
         maxColumns:     5
@@ -235,14 +235,15 @@
     }
 
     // Approximate Node-RED's label-based width when no DOM measurement is
-    // available. 6.5 px/char + 38 px chrome (icon strip + padding) matches
-    // the editor's `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule.
+    // available. 6.5 px/char + 50 px chrome (30 px icon strip + 14 px label
+    // padding + 6 px port indicators) matches the editor's
+    // `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule.
     function estimateNodeWidth(node, opts) {
         let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
         let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
         if (!node || typeof node !== 'object') return minW;
         let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
-        let estimated = label.length * 6.5 + 38;
+        let estimated = label.length * 6.5 + 50;
         let w = Math.max(minW, estimated);
         return Math.ceil(w / grid) * grid;
     }
@@ -266,8 +267,10 @@
 
     // Position comments next to their Vibe Schema declaration-order
     // neighbours (./LAYOUT.md §"Comment placement").
+    //   leading  (no prev, has next)  -> stacked above `next` at same x
+    //   trailing (has prev, no next)  -> stacked above `prev` at same x
+    //   between  (both, similar row)  -> midpoint x, one row above
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
-        let edgeGap  = pickOption(opts, 'edgeGap',  LAYOUT_DEFAULTS.edgeGap);
         let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
 
         let comments = [];
@@ -280,25 +283,55 @@
         if (comments.length === 0 || ordered.length === 0) return;
         ordered.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
 
+        let leadingByNext = {};
+        let trailingByPrev = {};
+        let between = [];
         comments.forEach(function(c) {
             if (typeof shouldReposition === 'function' && !shouldReposition(c)) return;
-            let prev = null;
-            let next = null;
+            let prev = null, next = null;
             for (let i = 0; i < ordered.length; i++) {
                 if (ordered[i]._llmOrder < c._llmOrder) prev = ordered[i];
                 else if (ordered[i]._llmOrder > c._llmOrder) { next = ordered[i]; break; }
             }
-            let cw = getNodeWidth(c, opts);
             if (prev && next && Math.abs((prev.y || 0) - (next.y || 0)) <= spacingY / 2) {
-                c.x = Math.round(((prev.x || 0) + (next.x || 0)) / 2);
-                c.y = Math.round((prev.y || 0) - spacingY);
-            } else if (prev) {
-                c.x = Math.round((prev.x || 0) + getNodeWidth(prev, opts) / 2 + edgeGap + cw / 2);
-                c.y = Math.round((prev.y || 0) - spacingY);
+                between.push({ c: c, prev: prev, next: next });
             } else if (next) {
-                c.x = Math.round((next.x || 0) - getNodeWidth(next, opts) / 2 - edgeGap - cw / 2);
-                c.y = Math.round((next.y || 0) - spacingY);
+                (leadingByNext[next.id] = leadingByNext[next.id] || []).push(c);
+            } else if (prev) {
+                (trailingByPrev[prev.id] = trailingByPrev[prev.id] || []).push(c);
             }
+        });
+
+        between.forEach(function(b) {
+            b.c.x = Math.round(((b.prev.x || 0) + (b.next.x || 0)) / 2);
+            b.c.y = Math.round((b.prev.y || 0) - spacingY);
+        });
+        // Leading: nearest-to-next sits at -1*spacingY, earlier ones stack upward.
+        Object.keys(leadingByNext).forEach(function(nextId) {
+            let group = leadingByNext[nextId];
+            group.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
+            let next = null;
+            for (let i = 0; i < ordered.length; i++) {
+                if (ordered[i].id === nextId) { next = ordered[i]; break; }
+            }
+            if (!next) return;
+            group.forEach(function(c, i) {
+                c.x = Math.round(next.x || 0);
+                c.y = Math.round((next.y || 0) - (group.length - i) * spacingY);
+            });
+        });
+        Object.keys(trailingByPrev).forEach(function(prevId) {
+            let group = trailingByPrev[prevId];
+            group.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
+            let prev = null;
+            for (let i = 0; i < ordered.length; i++) {
+                if (ordered[i].id === prevId) { prev = ordered[i]; break; }
+            }
+            if (!prev) return;
+            group.forEach(function(c, i) {
+                c.x = Math.round(prev.x || 0);
+                c.y = Math.round((prev.y || 0) - (i + 1) * spacingY);
+            });
         });
     }
 
