@@ -34,12 +34,20 @@
     'use strict';
 
     // Default spacing constants. Override per-call via `options`.
+    //
+    // The layout is width-aware: the centre-to-centre distance between two
+    // horizontally adjacent nodes is `(widthA + widthB)/2 + edgeGap`, so
+    // wide-named nodes get pushed apart automatically while narrow ones
+    // pack tighter. `edgeGap` is the visible pixel gap between their edges.
     let LAYOUT_DEFAULTS = {
-        startX:       60,
-        startY:       60,
-        spacingX:     180,   // 3 grid squares (60 px) between node edges
-        spacingY:      80,   // row height
-        componentGap:  80,   // pixels between disconnected components (centre-to-centre)
+        startX:        60,
+        startY:        60,
+        spacingY:      80,    // row height (centre-to-centre, fixed)
+        componentGap:  80,    // pixels between disconnected components
+        edgeGap:       40,    // pixels between right edge of A and left edge of B
+                              // (== 2 Node-RED grid squares of 20 px each)
+        minNodeWidth: 100,    // Node-RED's MIN_NODE_WIDTH; fallback for empty labels
+        gridSize:      20,    // Node-RED canvas grid; widths snap to multiples of this
         maxColumns:     5
     };
 
@@ -288,6 +296,48 @@
         return (opts && typeof opts[key] === 'number') ? opts[key] : fallback;
     }
 
+    /**
+     * Estimate the rendered pixel width of a Node-RED node based on its
+     * label length. The Node-RED editor itself measures labels via a hidden
+     * SVG <text> element, which is unavailable to a standalone module, so
+     * this is a character-count approximation that matches the editor's
+     * `Math.max(MIN_NODE_WIDTH, labelWidth + chrome)` rule, snapped to the
+     * grid. Pass `options.getNodeWidth(node)` if you can supply an
+     * accurate measurement (e.g. via DOM).
+     */
+    function estimateNodeWidth(node, opts) {
+        let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
+        let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
+        if (!node || typeof node !== 'object') return minW;
+        let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
+        // 6.5 px / char is a fair approximation for the editor's default font.
+        // 38 px chrome covers the type icon strip on the left plus inner padding.
+        let estimated = label.length * 6.5 + 38;
+        let w = Math.max(minW, estimated);
+        return Math.ceil(w / grid) * grid;
+    }
+
+    /** Resolve a node's width, preferring the caller's `getNodeWidth` hook. */
+    function getNodeWidth(node, opts) {
+        if (opts && typeof opts.getNodeWidth === 'function') {
+            let w = opts.getNodeWidth(node);
+            if (typeof w === 'number' && w > 0) return w;
+        }
+        return estimateNodeWidth(node, opts);
+    }
+
+    function nodeRightEdge(node, opts) { return (node.x || 0) + getNodeWidth(node, opts) / 2; }
+    function nodeLeftEdge (node, opts) { return (node.x || 0) - getNodeWidth(node, opts) / 2; }
+
+    /**
+     * Centre-to-centre distance ensuring `edgeGap` pixels between the right
+     * edge of `a` and the left edge of `b`. Width-aware.
+     */
+    function pairSpacing(a, b, opts) {
+        let gap = pickOption(opts, 'edgeGap', LAYOUT_DEFAULTS.edgeGap);
+        return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
+    }
+
     // ------------------------------------------------------------------ //
     //  Canvas-level layout                                                //
     // ------------------------------------------------------------------ //
@@ -302,9 +352,9 @@
         let isCanvas    = resolveCanvasFilter(opts);
         let startX       = pickOption(opts, 'startX',       LAYOUT_DEFAULTS.startX);
         let startY       = pickOption(opts, 'startY',       LAYOUT_DEFAULTS.startY);
-        let spacingX     = pickOption(opts, 'spacingX',     LAYOUT_DEFAULTS.spacingX);
         let spacingY     = pickOption(opts, 'spacingY',     LAYOUT_DEFAULTS.spacingY);
         let componentGap = pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
+        let edgeGap      = pickOption(opts, 'edgeGap',      LAYOUT_DEFAULTS.edgeGap);
         let rawMaxCols   = pickOption(opts, 'maxColumns',   LAYOUT_DEFAULTS.maxColumns);
         let maxColumns   = (rawMaxCols >= 2) ? Math.floor(rawMaxCols) : LAYOUT_DEFAULTS.maxColumns;
 
@@ -319,13 +369,34 @@
 
         let adj = buildWireAdjacency(canvasNodes, byId);
         let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
+
+        // Width-aware column placement: each column's centre is offset by
+        // half of its max width plus the previous column's half plus edgeGap.
+        let colMaxWidth = {};
+        ids.forEach(function(id) {
+            let col = (positions[id] || {}).col || 0;
+            let w = getNodeWidth(byId[id], opts);
+            if (!colMaxWidth[col] || colMaxWidth[col] < w) colMaxWidth[col] = w;
+        });
+        let colKeys = Object.keys(colMaxWidth).map(Number).sort(function(a, b) { return a - b; });
+        let colX = {};
+        let cursorRight = startX;     // x of the right edge of the most recent column
+        colKeys.forEach(function(col, idx) {
+            let w = colMaxWidth[col];
+            let centre = (idx === 0)
+                ? (cursorRight + w / 2)
+                : (cursorRight + edgeGap + w / 2);
+            colX[col] = centre;
+            cursorRight = centre + w / 2;
+        });
+
         let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap);
 
         ids.forEach(function(id) {
             let node = byId[id];
             let pos = positions[id] || { col: 0, row: 0 };
             let ci = pos.comp || 0;
-            node.x = Math.round(startX + pos.col * spacingX);
+            node.x = Math.round(colX[pos.col] !== undefined ? colX[pos.col] : startX);
             node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
         });
         return nodes;
@@ -346,8 +417,8 @@
     function placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options) {
         let opts = options || {};
         let isCanvas = resolveCanvasFilter(opts);
-        let spacingX = pickOption(opts, 'spacingX', LAYOUT_DEFAULTS.spacingX);
         let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
+        let edgeGap  = pickOption(opts, 'edgeGap',  LAYOUT_DEFAULTS.edgeGap);
         let bandGap = (typeof opts.bandGap === 'number')
             ? opts.bandGap
             : pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
@@ -376,7 +447,7 @@
         let outgoing = adj.outgoing;
         let incoming = adj.incoming;
 
-        // Step 3: Iteratively place new nodes
+        // Step 3: Iteratively place new nodes (width-aware spacing)
         let positioned = {};
         canvasNodes.forEach(function(n) {
             if (existingIdMap[n.id]) positioned[n.id] = true;
@@ -387,21 +458,22 @@
             let succs = outgoing[n.id].filter(function(id) { return positioned[id]; });
             if (preds.length === 0 && succs.length === 0) return false;
 
+            let nHalf = getNodeWidth(n, opts) / 2;
             if (preds.length > 0 && succs.length > 0) {
-                let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
+                let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
-                n.x = Math.round(maxPredX + spacingX);
+                n.x = Math.round(maxPredRight + edgeGap + nHalf);
                 n.y = Math.round((avgPredY + avgSuccY) / 2);
             } else if (preds.length > 0) {
-                let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
+                let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
-                n.x = Math.round(maxPredX + spacingX);
+                n.x = Math.round(maxPredRight + edgeGap + nHalf);
                 n.y = Math.round(avgPredY);
             } else {
-                let minSuccX = Math.min.apply(null, succs.map(function(id) { return byId[id].x || 0; }));
+                let minSuccLeft = Math.min.apply(null, succs.map(function(id) { return nodeLeftEdge(byId[id], opts); }));
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
-                n.x = Math.round(minSuccX - spacingX);
+                n.x = Math.round(minSuccLeft - edgeGap - nHalf);
                 n.y = Math.round(avgSuccY);
             }
             positioned[n.id] = true;
@@ -420,13 +492,15 @@
         }
 
         // Step 3.4: Shift downstream chains so inserted nodes don't overlap
+        // (width-aware: required gap = edgeGap between right(N) and left(S))
         let seedDeltas = {};
         canvasNodes.forEach(function(n) {
             if (!positioned[n.id] || existingIdMap[n.id]) return;
+            let nRight = nodeRightEdge(n, opts);
             (outgoing[n.id] || []).forEach(function(succId) {
                 let s = byId[succId];
                 if (!s || typeof s.x !== 'number') return;
-                let needed = ((n.x || 0) + spacingX) - s.x;
+                let needed = (nRight + edgeGap) - nodeLeftEdge(s, opts);
                 if (needed > 0) {
                     seedDeltas[succId] = Math.max(seedDeltas[succId] || 0, needed);
                 }
@@ -455,7 +529,7 @@
             });
         }
 
-        // Step 3.5: Resolve remaining overlaps among new nodes
+        // Step 3.5: Resolve remaining overlaps among new nodes (width-aware)
         let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
         let newlyPlaced = canvasNodes.filter(function(n) {
             return !existingIdMap[n.id] && positioned[n.id];
@@ -471,10 +545,16 @@
                 changed = false;
                 for (let ni = 0; ni < newlyPlaced.length; ni++) {
                     let cur = newlyPlaced[ni];
+                    let curHalf = getNodeWidth(cur, opts) / 2;
                     for (let oi = 0; oi < allPositioned.length; oi++) {
                         let other = allPositioned[oi];
                         if (other.id === cur.id) continue;
-                        if (Math.abs((cur.x || 0) - (other.x || 0)) < spacingX * 0.5 &&
+                        // Treat as overlap when their horizontal centres are
+                        // within half a node's worth of clearance AND their
+                        // rows are within 0.8 * spacingY.
+                        let otherHalf = getNodeWidth(other, opts) / 2;
+                        let xThreshold = curHalf + otherHalf + edgeGap * 0.5;
+                        if (Math.abs((cur.x || 0) - (other.x || 0)) < xThreshold &&
                             Math.abs((cur.y || 0) - (other.y || 0)) < spacingY * 0.8) {
                             cur.y = (other.y || 0) + spacingY;
                             changed = true;
@@ -513,10 +593,31 @@
             });
             let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
             let orphanOffsets = computeComponentYOffsets(orphanIds, orphanPositions, orphanStartY, spacingY, bandGap);
+
+            // Width-aware column placement for the orphan band, mirroring
+            // reflowCanvasNodes: each column's x-centre is offset by half
+            // its max width plus edgeGap from the previous column's right
+            // edge. Band starts at `minX` (left edge of leftmost column).
+            let orphanColMaxWidth = {};
+            orphanIds.forEach(function(id) {
+                let col = (orphanPositions[id] || {}).col || 0;
+                let w = getNodeWidth(byId[id], opts);
+                if (!orphanColMaxWidth[col] || orphanColMaxWidth[col] < w) orphanColMaxWidth[col] = w;
+            });
+            let orphanColKeys = Object.keys(orphanColMaxWidth).map(Number).sort(function(a, b) { return a - b; });
+            let orphanColX = {};
+            let orphanCursorRight = minX;
+            orphanColKeys.forEach(function(col, idx) {
+                let w = orphanColMaxWidth[col];
+                let centre = (idx === 0) ? (orphanCursorRight + w / 2) : (orphanCursorRight + edgeGap + w / 2);
+                orphanColX[col] = centre;
+                orphanCursorRight = centre + w / 2;
+            });
+
             remaining.forEach(function(n) {
                 let pos = orphanPositions[n.id] || { col: 0, row: 0 };
                 let ci = pos.comp || 0;
-                n.x = Math.round(minX + pos.col * spacingX);
+                n.x = Math.round(orphanColX[pos.col] !== undefined ? orphanColX[pos.col] : minX);
                 n.y = Math.round(pos.row * spacingY + (orphanOffsets[ci] || 0));
             });
         }
@@ -526,6 +627,9 @@
 
     return {
         LAYOUT_DEFAULTS:              LAYOUT_DEFAULTS,
+        estimateNodeWidth:            estimateNodeWidth,
+        getNodeWidth:                 getNodeWidth,
+        pairSpacing:                  pairSpacing,
         layoutNodes:                  layoutNodes,
         buildWireAdjacency:           buildWireAdjacency,
         computeComponentYOffsets:     computeComponentYOffsets,

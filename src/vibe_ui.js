@@ -1,4 +1,4 @@
-﻿// Main sidebar UI module — vanilla JS (no jQuery).
+// Main sidebar UI module — vanilla JS (no jQuery).
 // Builds the plugin sidebar, settings dialog, and generation workflow.
 (function(){
 

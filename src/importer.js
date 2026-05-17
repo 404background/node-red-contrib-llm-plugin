@@ -9,16 +9,16 @@
     // ================================================================== //
     //  Layout Constants                                                   //
     // ================================================================== //
-    // Single source of truth for all spacing / gap values used by the
-    // layout functions below.  Changing a value here updates every path
-    // (overwrite, merge, and orphan placement) at once.
+    // Plugin-specific overrides passed to CanvasLayout. The horizontal
+    // spacing is now width-aware (see core/LAYOUT.md): adjacent nodes are
+    // placed with `edgeGap` pixels of clearance regardless of label
+    // length, so we no longer specify a fixed centre-to-centre distance.
     let LAYOUT = {
-        startX:       200,   // canvas origin X (px)
+        startX:       200,   // canvas origin X (px) - left margin for first column
         startY:       200,   // canvas origin Y (px)
-        spacingX:     180,   // horizontal gap between node centres (3 grid squares between edges)
-        spacingY:      80,   // vertical gap between node centres within a component
-        componentGap:  80,   // gap between disconnected flow components (center-to-center)
-                             // 80 px = 40 px visible gap + ~40 px node height  - 2 grid squares
+        spacingY:      80,   // row height (centre-to-centre)
+        componentGap:  80,   // gap between disconnected components
+        edgeGap:       40,   // 2 grid squares between adjacent node edges
         maxColumns:     5    // wrap long chains after this many columns
     };
 
@@ -547,7 +547,8 @@
         if (layout) {
             let layoutOpts = {
                 startX: LAYOUT.startX, startY: LAYOUT.startY,
-                spacingX: LAYOUT.spacingX, spacingY: LAYOUT.spacingY,
+                spacingY: LAYOUT.spacingY,
+                edgeGap: LAYOUT.edgeGap,
                 componentGap: LAYOUT.componentGap,
                 bandGap: LAYOUT.componentGap,
                 maxColumns: LAYOUT.maxColumns,

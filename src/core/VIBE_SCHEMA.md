@@ -26,6 +26,89 @@ Vibe Schema replaces all three with:
    [LAYOUT.md](./LAYOUT.md)) when the schema is converted back.
 3. **Flat connection list** — `connections: [{ from, to, fromPort? }, …]`.
 
+## Original Node-RED JSON (for reference)
+
+This is what Node-RED exports when you copy a flow or call
+`RED.nodes.createExportableNodeSet`. Every canvas node carries an
+absolute pixel `x` / `y`, a workspace reference `z`, and a nested
+`wires` array. Config nodes (`mqtt-broker` here) live outside the
+canvas — no `x` / `y` / `wires`, just configuration properties.
+
+```json
+[
+  {
+    "id": "abc123",
+    "type": "tab",
+    "label": "Sensors",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "n1",
+    "type": "inject",
+    "z": "abc123",
+    "name": "Tick",
+    "props": [{ "p": "payload" }],
+    "repeat": "5",
+    "crontab": "",
+    "once": false,
+    "payload": "",
+    "payloadType": "date",
+    "x": 100,
+    "y": 80,
+    "wires": [["n2"]]
+  },
+  {
+    "id": "n2",
+    "type": "function",
+    "z": "abc123",
+    "name": "Format",
+    "func": "msg.payload = { ts: msg.payload };\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 280,
+    "y": 80,
+    "wires": [["n3"]]
+  },
+  {
+    "id": "n3",
+    "type": "mqtt out",
+    "z": "abc123",
+    "name": "Publish",
+    "topic": "sensors/ticks",
+    "qos": "0",
+    "retain": "false",
+    "broker": "broker_cfg",
+    "x": 460,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "broker_cfg",
+    "type": "mqtt-broker",
+    "name": "Local broker",
+    "broker": "localhost",
+    "port": "1883",
+    "clientid": "",
+    "usetls": false,
+    "keepalive": "60"
+  }
+]
+```
+
+What the LLM has to invent here, every time:
+
+- `id` for every node — 6-to-16-character random strings, all unique.
+- `x` / `y` for every canvas node — pixel coordinates that don't
+  overlap and visually flow left-to-right.
+- The `wires: [[targetId]]` array of arrays per output port, with
+  exactly the right `targetId` referencing another generated `id`.
+- The `broker: "broker_cfg"` reference in `mqtt out` — must exactly
+  match the `id` of an actually-present `mqtt-broker` config node.
+
+Getting any of these subtly wrong produces a flow that won't import,
+or imports broken. Vibe Schema removes all four problems below.
+
 ## Schema shape
 
 ```json
@@ -158,10 +241,12 @@ Pipeline:
    skipping edges whose target is a `NO_INPUT_TYPES` member (the wire
    would render but never carry messages) or whose source is a
    `NO_OUTPUT_TYPES` member (e.g. `comment`).
-5. **Layout** — delegate to `CanvasLayout.layoutNodes` for `{col, row, comp}`,
-   then `CanvasLayout.computeComponentYOffsets` for the per-component y
-   offset. Pixel translation: `x = startX + col*spacingX`,
-   `y = row*spacingY + componentYOffset`.
+5. **Layout** — delegate to `CanvasLayout.layoutNodes` for the logical
+   `{col, row, comp}` positions, then `CanvasLayout.computeComponentYOffsets`
+   for the per-component y offset. Horizontal placement is width-aware
+   (see [LAYOUT.md](./LAYOUT.md)): each column's x-centre is derived from
+   the previous column's right edge plus `edgeGap`, so wide-named nodes
+   automatically push their column over without overlapping the next one.
 6. **Build wires** — convert `connections` to per-port arrays
    `wires[fromPort].push(toId)`, dropping invalid endpoints as in step 4.
 7. **Assemble nodes** — for each alias:

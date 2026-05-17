@@ -1,4 +1,4 @@
-// Settings UI manager  Evanilla JS (no jQuery).
+// Settings UI manager — vanilla JS (no jQuery).
 // Accepts a raw DOM element as root (the settings dialog container).
 (function() {
     let DEFAULT_SYSTEM_PROMPT = 'Take priority in using core nodes';

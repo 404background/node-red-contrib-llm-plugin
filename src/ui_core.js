@@ -1,4 +1,4 @@
-// UI core module  Evanilla JS (no jQuery).
+// UI core module — vanilla JS (no jQuery).
 // Handles message rendering, flow context export, and retry logic.
 (function(){
     let UI = {};
@@ -118,7 +118,7 @@
                     details.appendChild(summary);
                     details.appendChild(pre);
                 }
-            } catch (e) { /* not JSON  Eleave as-is */ }
+            } catch (e) { /* not JSON — leave as-is */ }
         }
 
         message.appendChild(messageContent);
