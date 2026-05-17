@@ -370,6 +370,8 @@
         return targetIds.length > 0 ? UI.getFlowsByIds(targetIds) : null;
     };
 
+    UI.createRestoreCheckpointButton = createRestoreCheckpointButton;
+
     window.LLMPlugin = window.LLMPlugin || {};
     window.LLMPlugin.UI = UI;
 })();

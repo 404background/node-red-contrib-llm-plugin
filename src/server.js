@@ -352,16 +352,11 @@ function createLLMPluginServer(RED) {
         if (userSystemPrompt) {
             system += userSystemPrompt + '\n\n';
         }
-        system += SYSTEM_PROMPT_TEMPLATE + "\n";
-
-        system += 'APPLY MODE: auto\n';
-        system += '- Strategy: choose one of edit-only / merge / overwrite / delete-only yourself based on user intent.\n';
-        system += '- Include your choice as top-level JSON field: "applyMode".\n\n';
+        system += SYSTEM_PROMPT_TEMPLATE;
 
         if (flowContext) {
             const ctx = buildFlowContextDescription(flowContext, activeWorkspaceId);
-            system += ctx.header + "\n";
-            system += ctx.body + "\n\n";
+            system += '\n' + ctx.header + '\n' + ctx.body + '\n';
         }
 
         return [

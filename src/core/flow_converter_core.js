@@ -50,7 +50,18 @@
         'mqtt in': true,
         'websocket in': true,
         'tcp in': true,
-        'udp in': true
+        'udp in': true,
+        // The comment node has no I/O - it's a canvas-only annotation node.
+        // Listing it here ensures the static fallback still drops wires
+        // targeting comments when the runtime type registry is unavailable.
+        'comment': true
+    };
+
+    // Well-known node types that have 0 output ports. Wires originating from
+    // these types are visually drawn but never carry messages; the LLM
+    // should never produce them. Currently only the comment annotation node.
+    let NO_OUTPUT_TYPES = {
+        'comment': true
     };
 
     /**
@@ -116,6 +127,18 @@
         }
         // Static fallback
         return NO_INPUT_TYPES[type] === true;
+    }
+
+    /** Check whether a node type has zero output ports. */
+    function isNoOutputType(type) {
+        if (typeof type !== 'string') return false;
+        if (_runtimeGetType) {
+            let def = _runtimeGetType(type);
+            if (def && typeof def.outputs === 'number') {
+                return def.outputs === 0;
+            }
+        }
+        return NO_OUTPUT_TYPES[type] === true;
     }
 
     // Keys that belong to the Node-RED runtime/editor and should NOT be treated
@@ -534,6 +557,10 @@
                 // Skip connections targeting nodes that cannot accept input
                 let targetSpec = nodeSpecs[conn.to];
                 if (targetSpec && isNoInputType(targetSpec.type)) return;
+                // Skip connections originating from nodes with no outputs
+                // (e.g. the comment annotation node).
+                let sourceSpec = nodeSpecs[conn.from];
+                if (sourceSpec && isNoOutputType(sourceSpec.type)) return;
                 outgoing[conn.from].push(conn.to);
                 incoming[conn.to].push(conn.from);
             }
@@ -551,6 +578,9 @@
             // Skip connections targeting nodes that cannot accept input
             let targetSpec = nodeSpecs[conn.to];
             if (targetSpec && isNoInputType(targetSpec.type)) return;
+            // Skip connections originating from nodes with no outputs
+            let sourceSpec = nodeSpecs[conn.from];
+            if (sourceSpec && isNoOutputType(sourceSpec.type)) return;
             let port = Math.max(0, Math.min(conn.fromPort || 0, 32));
             while (wiresMap[conn.from].length <= port) {
                 wiresMap[conn.from].push([]);
@@ -968,6 +998,7 @@
         isConfigType:        isConfigType,
         isConfigNode:        isConfigNode,
         isNoInputType:       isNoInputType,
+        isNoOutputType:      isNoOutputType,
         setRuntimeGetType:   setRuntimeGetType,
         layoutNodes:         layoutNodes
     };

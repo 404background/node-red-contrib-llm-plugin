@@ -242,6 +242,9 @@
                 : null;
         }
 
+        // Default the selection to the active workspace once RED is ready.
+        // Only runs on first successful init: after that, the user's explicit
+        // selection (including a deliberately empty one) is preserved.
         function ensureDefaultSelection() {
             if (selectionInitialized) return;
             let active = getActiveWorkspaceId();
@@ -249,6 +252,27 @@
                 selectedFlowIds[active] = true;
                 selectionInitialized = true;
             }
+        }
+
+        // Drop selections that no longer correspond to an existing workspace.
+        function pruneSelectedFlows(workspaces) {
+            let ws = workspaces || listWorkspaces();
+            let valid = {};
+            ws.forEach(function(w) { valid[w.id] = true; });
+            Object.keys(selectedFlowIds).forEach(function(id) {
+                if (!valid[id]) delete selectedFlowIds[id];
+            });
+        }
+
+        // Re-sync the selector with current workspace state: prune deleted
+        // flows, then refresh the label and (if open) the panel. The user's
+        // explicit selection is preserved - we never re-add an active flow
+        // here, only remove flows that no longer exist.
+        function refreshFlowSelector() {
+            let workspaces = listWorkspaces();
+            pruneSelectedFlows(workspaces);
+            if (isPanelOpen()) renderFlowPanel();
+            updateFlowLabel(workspaces);
         }
 
         function updateFlowLabel(workspaces) {
@@ -343,7 +367,13 @@
         let repositionOnResize = function() { if (isPanelOpen()) positionPanel(); };
 
         function openFlowPanel() {
+            // Re-sync against current workspaces before rendering so stale
+            // selections (e.g. for a flow deleted while the panel was closed)
+            // never surface as raw IDs in the label or orphan checked rows.
+            let workspaces = listWorkspaces();
+            pruneSelectedFlows(workspaces);
             renderFlowPanel();
+            updateFlowLabel(workspaces);
             flowPanel.classList.add('is-open');
             positionPanel();
             flowToggleBtn.setAttribute('aria-expanded', 'true');
@@ -372,15 +402,16 @@
                 }
             });
             if (window.RED && RED.events && typeof RED.events.on === 'function') {
-                RED.events.on('workspace:change', function() {
-                    ensureDefaultSelection();
-                    updateFlowLabel();
-                });
-                RED.events.on('flows:change', function() {
-                    let workspaces = listWorkspaces();
-                    if (isPanelOpen()) renderFlowPanel();
-                    updateFlowLabel(workspaces);
-                });
+                // Documented Node-RED events:
+                //   flows:add / flows:change / flows:remove — flow tab CRUD
+                //   workspace:change                        — active tab switch
+                // flows:remove is the critical one: without it, deleted flow
+                // IDs would linger in selectedFlowIds and surface as raw IDs
+                // in the selector label.
+                RED.events.on('workspace:change', refreshFlowSelector);
+                RED.events.on('flows:add', refreshFlowSelector);
+                RED.events.on('flows:change', refreshFlowSelector);
+                RED.events.on('flows:remove', refreshFlowSelector);
             }
         }
 
@@ -390,6 +421,13 @@
 
         // --- Core generation flow ---
         function handleGenerate() {
+            // Guard against double-trigger: when generation is already in
+            // flight the Send button is showing as Stop. Pressing Ctrl+Enter
+            // (which routes here directly) would otherwise duplicate the
+            // user's message in chat history and start a second fetch while
+            // the first is still running.
+            if (generateBtn.classList.contains('stop-btn')) return;
+
             let model  = modelInput.value.trim();
             let prompt = promptInput.value.trim();
             
@@ -522,14 +560,19 @@
                     try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
                 });
             }
+            // Documented props (RED.sidebar.addTab): id, label, name,
+            // iconClass, content, toolbar, enableOnEdit, action.
+            // `closeable` is a de-facto-supported flag used by Node-RED's
+            // own debug/info tabs to render the close-X button; we rely on
+            // that behavior so users can dismiss the plugin tab and re-open
+            // it later from the sidebar overflow menu.
             RED.sidebar.addTab({
                 id: "llm-plugin-tab",
                 label: "LLM Plugin",
                 name: "LLM Plugin",
                 content: createLLMPluginUI(),
                 iconClass: "fa fa-comments",
-                closeable: true,
-                visible: true
+                closeable: true
             });
         } else {
             setTimeout(initializeWhenReady, 100);

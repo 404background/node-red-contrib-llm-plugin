@@ -101,13 +101,6 @@
         return out;
     }
 
-    function safeLog() {
-        try {
-            if (window && window.console && window.console.log)
-                window.console.log.apply(window.console, arguments);
-        } catch(e) {}
-    }
-
     function postTerminalLog(level, event, message, meta) {
         try {
             if (typeof fetch !== 'function') return;
@@ -137,6 +130,19 @@
         if (!type || typeof type !== 'string') return true;
         let cfg = getConfigurator();
         if (cfg && typeof cfg.isNoInputType === 'function') return !cfg.isNoInputType(type);
+        return true;
+    }
+
+    /**
+     * Check whether a node type can emit outgoing wires (has output ports).
+     * Comment nodes are the main case - they live on the canvas but have
+     * no outputs, so any wires attached would render visually without ever
+     * carrying messages.
+     */
+    function nodeCanEmitOutput(type) {
+        if (!type || typeof type !== 'string') return true;
+        let cfg = getConfigurator();
+        if (cfg && typeof cfg.isNoOutputType === 'function') return !cfg.isNoOutputType(type);
         return true;
     }
 
@@ -181,6 +187,25 @@
                 if (!Array.isArray(port)) return [];
                 return port.filter(function(tid) { return !noInputIds[tid]; });
             });
+        });
+    }
+
+    /**
+     * Force-empty the wires array on nodes that cannot emit output. Defends
+     * against an LLM emitting raw Node-RED JSON (bypassing Vibe Schema) with
+     * outgoing wires on, for example, a comment node.
+     */
+    function pruneInvalidOutputWires(flowNodes) {
+        if (!Array.isArray(flowNodes)) return;
+        flowNodes.forEach(function(n) {
+            if (!n || !n.type) return;
+            if (!nodeCanEmitOutput(n.type)) {
+                if (Array.isArray(n.wires) && n.wires.some(function(p) {
+                    return Array.isArray(p) && p.length > 0;
+                })) {
+                    n.wires = [];
+                }
+            }
         });
     }
 
@@ -322,28 +347,26 @@
         return LLMPlugin.UI ? LLMPlugin.UI.getActiveWorkspaceId() : null;
     }
 
-    function saveCheckpoint(chatId, label, flow, meta) {
-        if (!Array.isArray(flow)) flow = [];
-        return fetch('llm-plugin/checkpoint/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chatId: chatId || null,
-                label: label || 'checkpoint',
-                flow: flow,
-                meta: meta || {}
-            })
-        })
-        .then(function(res) { return res.ok ? res.json() : null; })
-        .then(function(data) { return data && data.checkpointId ? data.checkpointId : null; })
-        .catch(function() { return null; });
-    }
-
     function isCanvasNode(node) {
         if (!node || typeof node !== 'object') return false;
         if (typeof node.type !== 'string' || !node.type.trim()) return false;
         if (node.type === 'tab' || String(node.type).indexOf('subflow:') === 0) return false;
         return !isConfigNodeObj(node);
+    }
+
+    // Force Node-RED to fully re-render the canvas after a destructive
+    // workspace mutation. RED.view.redraw() can run before newly imported
+    // nodes have attached their SVG elements; without a deferred second
+    // redraw the wires render but the node bodies do not.
+    function stabilizeWorkspaceView() {
+        try { RED.actions.invoke('core:select-none'); } catch (e) { /* ignore */ }
+        try {
+            RED.nodes.dirty(true);
+            RED.view.redraw(true);
+            setTimeout(function() {
+                try { RED.view.redraw(true); } catch (e2) { /* ignore */ }
+            }, 0);
+        } catch (e) { /* ignore */ }
     }
 
     // ================================================================== //
@@ -504,8 +527,10 @@
             delete n._llmFlow;
         });
 
-        // Prune wires targeting nodes that cannot accept input
+        // Prune wires targeting nodes that cannot accept input, then strip
+        // wires from nodes that cannot emit output (e.g. comment nodes).
         pruneInvalidInputWires(rebuilt);
+        pruneInvalidOutputWires(rebuilt);
         // Fix config nodes that were incorrectly given canvas properties
         fixConfigNodeProperties(rebuilt);
 
@@ -666,9 +691,16 @@
             if (preds.length === 0 && succs.length === 0) return false;
 
             if (preds.length > 0 && succs.length > 0) {
-                let refs = preds.concat(succs);
-                n.x = Math.round(refs.reduce(function(s, id) { return s + (byId[id].x || 0); }, 0) / refs.length);
-                n.y = Math.round(refs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / refs.length);
+                // Place to the right of all positioned predecessors so the new
+                // node occupies its own column. Existing successors are shifted
+                // right in a later pass (Step 3.4) to keep the chain spaced
+                // cleanly. Vertically split the difference between pred and
+                // succ rows so the wires stay visually balanced.
+                let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
+                let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
+                let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
+                n.x = Math.round(maxPredX + spacingX);
+                n.y = Math.round((avgPredY + avgSuccY) / 2);
             } else if (preds.length > 0) {
                 let maxPredX = Math.max.apply(null, preds.map(function(id) { return byId[id].x || 0; }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
@@ -693,6 +725,48 @@
                 if (tryPlace(n)) { progress = true; } else { next.push(n); }
             });
             remaining = next;
+        }
+
+        // Step 3.4: Make horizontal room for inserted nodes by shifting the
+        // downstream chain to the right. When a new node is inserted between
+        // an existing pred and an existing succ, the succ (and everything
+        // downstream of it) must move right by one column; otherwise the new
+        // node visually overlaps the succ or the connecting wire.
+        // The shift propagates through both new and existing downstream nodes
+        // so chains following a shifted node stay aligned.
+        let seedDeltas = {};
+        canvasNodes.forEach(function(n) {
+            if (!positioned[n.id] || existingIdMap[n.id]) return;
+            (outgoing[n.id] || []).forEach(function(succId) {
+                let s = byId[succId];
+                if (!s || typeof s.x !== 'number') return;
+                let needed = ((n.x || 0) + spacingX) - s.x;
+                if (needed > 0) {
+                    seedDeltas[succId] = Math.max(seedDeltas[succId] || 0, needed);
+                }
+            });
+        });
+        let seedIds = Object.keys(seedDeltas);
+        if (seedIds.length > 0) {
+            let toShift = {};
+            let queue = [];
+            seedIds.forEach(function(id) { toShift[id] = seedDeltas[id]; queue.push(id); });
+            while (queue.length > 0) {
+                let id = queue.shift();
+                let dx = toShift[id];
+                (outgoing[id] || []).forEach(function(nextId) {
+                    if (toShift[nextId] === undefined || toShift[nextId] < dx) {
+                        toShift[nextId] = dx;
+                        queue.push(nextId);
+                    }
+                });
+            }
+            Object.keys(toShift).forEach(function(id) {
+                let node = byId[id];
+                if (node && typeof node.x === 'number') {
+                    node.x = Math.round(node.x + toShift[id]);
+                }
+            });
         }
 
         // Step 3.5: Resolve overlapping positions among all canvas nodes
@@ -817,19 +891,6 @@
             return list;
         }
 
-        function stabilizeView() {
-            try {
-                RED.actions.invoke('core:select-none');
-            } catch (e) { /* ignore */ }
-            try {
-                RED.nodes.dirty(true);
-                RED.view.redraw(true);
-                setTimeout(function() {
-                    try { RED.view.redraw(true); } catch (e2) { /* ignore */ }
-                }, 0);
-            } catch (e) { /* ignore */ }
-        }
-
         let backupEntitiesJSON = [];
         try {
             let allEntities = collectWorkspaceEntities().filter(isCanvasNode);
@@ -891,26 +952,22 @@
                     existing.changed = true;
                 }
             } catch (e) {
-                safeLog('[LLM Plugin] Failed to update config node:', nn.id, e);
+                console.warn('[LLM Plugin] Failed to update config node:', nn.id, e);
             }
         });
 
         try {
-            // Debug output hidden by default
-            // console.log('[LLM PLUG DEBUG]', importNodes);
-              postTerminalLog('info', 'import-nodes-before', 'ImportNodes array before RED.nodes.import', { importNodes: importNodes });
-              let importResult = RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
-              postTerminalLog('info', 'import-nodes-after', 'RED.nodes.import result OK', { count: (importResult||[]).length });
-            // Intentionally bypass RED.history.push to avoid the user doing Ctrl+Z 
-            // and wiping their entire flow. Use plugin checkpoints to revert.
-            stabilizeView();
+            // Intentionally bypass RED.history.push so users can't Ctrl+Z away
+            // the entire imported flow; rewind via the plugin's checkpoints.
+            RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
+            stabilizeWorkspaceView();
             return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
         } catch (e) {
-              postTerminalLog('error', 'import-nodes-error', 'RED.nodes.import threw an error', { error: e ? String(e && e.message ? e.message : e) : 'unknown' });
-              try {
-                  if (backupEntitiesJSON && backupEntitiesJSON.length > 0) {
+            postTerminalLog('error', 'import-nodes-error', 'RED.nodes.import threw an error', { error: e && e.message ? e.message : String(e) });
+            try {
+                if (backupEntitiesJSON && backupEntitiesJSON.length > 0) {
                     RED.nodes.import(backupEntitiesJSON, { generateIds: false, reimport: true, addFlow: false });
-                    stabilizeView();
+                    stabilizeWorkspaceView();
                 }
             } catch (e2) { /* ignore */ }
             return { ok: false, error: 'Failed to import restored flow: ' + (e.message || e) };
@@ -1513,7 +1570,7 @@
             let bad = newNodes.find(function(n) { return typeof n.type !== 'string' || n.type.length === 0; });
             if (bad) {
                 if (RED && RED.notify) RED.notify('Import aborted: invalid node shape', 'error');
-                safeLog('bad node', bad);
+                console.warn('[LLM Plugin] bad node', bad);
                 return { ok: false, error: 'Invalid node shape' };
             }
 
@@ -1606,6 +1663,9 @@
                         try { RED.nodes.remove(n.id); } catch(e) {}
                     });
                 });
+                // Flush removals from the canvas before re-importing so
+                // stale SVG elements don't collide with the new nodes.
+                try { RED.view.redraw(true); } catch(e) { /* ignore */ }
 
                 let configNodesToUpdate = [];
                 let importNodes = (nodes || []).filter(function(n) {
@@ -1646,10 +1706,12 @@
                 // Import the canvas nodes verbatim (do not alter `z` so nodes return to their original tabs)
                 RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
 
-                // Force UI synchronization
-                RED.nodes.dirty(true);
-                RED.view.redraw(true);
-                RED.workspaces.refresh();
+                // Force UI synchronization. stabilizeWorkspaceView() schedules
+                // a deferred second redraw which is required: without it the
+                // first redraw can run before newly imported nodes attach
+                // their SVG elements, leaving only the wires visible.
+                try { RED.workspaces.refresh(); } catch(e) { /* ignore */ }
+                stabilizeWorkspaceView();
 
                 resolve({ ok: true, msg: 'Checkpoint restored' });
             } catch(e) {
