@@ -472,6 +472,35 @@
         let byId = {};
         base.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
+        // Keys we never copy across when merging an LLM update into an
+        // existing node. These are either identity (id/type), runtime
+        // editor state, or handled separately by other passes (wires, z,
+        // x, y, group).
+        let MERGE_SKIP_KEYS = {
+            id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1, g: 1,
+            dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
+        };
+
+        /**
+         * Merge an LLM-proposed node `n` over an `existing` snapshot node.
+         * Every property the LLM did NOT explicitly mention (`_llmSpecKeys`)
+         * is restored from `existing`, so a partial edit like
+         *   { "type": "mqtt out", "name": "v2" }
+         * preserves the existing `topic`, `broker`, `qos`, `retain`,
+         * `outputs`, etc. Without this, those properties end up missing
+         * (LLM didn't include them) or reset to a normaliser default.
+         */
+        function preserveUnmentionedProperties(n, existing) {
+            if (!existing) return;
+            let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : [];
+            Object.keys(existing).forEach(function(key) {
+                if (MERGE_SKIP_KEYS[key]) return;
+                if (key.charAt(0) === '_') return;     // editor / plugin internals
+                if (llmKeys.indexOf(key) !== -1) return; // LLM explicitly set this
+                n[key] = deepClone(existing[key]);
+            });
+        }
+
         updates.forEach(function(n) {
             if (!n || !n.id) return;
             // Prevent LLM from creating brand new Configuration nodes.
@@ -482,8 +511,17 @@
             // Auto-created config stubs must not overwrite existing config nodes
             if (n._autoStub && byId[n.id]) return;
             let existing = byId[n.id];
-            if (existing && !isHintedSource(n) && !hasAnyOutgoing(n.wires) && hasAnyOutgoing(existing.wires)) {
-                n.wires = deepClone(existing.wires);
+            if (existing) {
+                // Wire preservation: LLM-supplied empty wires fall back to
+                // the existing routing so the chain isn't broken by an edit
+                // that didn't talk about connections at all.
+                if (!isHintedSource(n) && !hasAnyOutgoing(n.wires) && hasAnyOutgoing(existing.wires)) {
+                    n.wires = deepClone(existing.wires);
+                }
+                // Property preservation: keep every user-set field (mqtt
+                // topic, broker, qos, function outputs, ui-group settings,
+                // ...) unless the LLM explicitly proposed a new value.
+                preserveUnmentionedProperties(n, existing);
             }
             byId[n.id] = n;
         });
@@ -532,6 +570,7 @@
             delete n._llmAlias;
             delete n._autoStub;
             delete n._llmFlow;
+            delete n._llmSpecKeys;
         });
 
         // Prune wires targeting nodes that cannot accept input, then strip

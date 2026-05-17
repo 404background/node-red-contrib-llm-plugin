@@ -786,6 +786,17 @@
                 node[key] = mergedProps[key];
             });
 
+            // Record exactly which property keys the LLM explicitly proposed
+            // (i.e. came from the Vibe Schema spec, not from a type-specific
+            // normaliser default). The importer uses this list when merging
+            // into an existing node so that unmentioned properties - mqtt
+            // `topic`, `broker`, function `outputs`, etc. - are preserved
+            // from the user's current setup instead of being silently
+            // replaced by normaliser defaults.
+            let llmSpecKeys = Object.keys(mergedProps);
+            if (spec.name) llmSpecKeys.push('name');
+            node._llmSpecKeys = llmSpecKeys;
+
             // Resolve alias references in props → real IDs.
             // Only resolve type-specific properties (config-node references like
             // venvconfig: "my_venv" → "id_xxx"). Skip META_KEYS (id, type, name,
