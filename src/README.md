@@ -9,7 +9,7 @@ Plugin sidebar.
 Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/{generate,agent-generate}  ──►  Ollama / OpenAI
         ▲                                              │
         │                                              ▼
-   addMessageToUI                          response { applyMode, response }
+   addMessageToUI                          response { response, model, elapsed }
    importFlowFromMessage  ◄──────────────────────────────┘
         │
         ├── extractFlowNodes  (LLMJsonParser → Vibe Schema → FlowConverterCore.toNodeRed)
@@ -127,13 +127,12 @@ Chat session lifecycle.
 | API | Description |
 |-----|-------------|
 | `getCurrentChatId()` / `getChatHistory()` / `startNewChat()` | In-memory session control. |
-| `addMessage(content, isUser, meta?, targetFlowIds?)` | Append + persist; renders via `UI.addMessageToUI`. |
+| `addMessage(content, isUser, meta?)` | Append + persist; renders via `UI.addMessageToUI`. |
 | `saveChatToServer(chatId)` | `POST /save-chat`. |
 | `loadChatHistoriesFromServer()` | `GET /chat-histories`. Auto-loads the most recent if none open. |
 | `loadChat(chatId)` | Replay messages into the chat area. |
 | `showChatList()` / `deleteChat(chatId, cb)` | Chat-list modal. |
-| `ensureBaselineCheckpoint(chatId?, flowIds?)` | Save the pre-edit baseline at chat start (Agent mode). |
-| `savePreSendCheckpoint(chatId?, flowIds?)` | Snapshot the flow at send time; ID attached to the assistant message. |
+| `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. |
 | `updateMessageMeta(messageId, patch)` | Patch stored message metadata. |
 
 ### `importer.js`
@@ -151,8 +150,10 @@ inline JSON outside code fences. Comment stripping is string-safe so
 **`importFlowFromMessage(messageContent, options)`** —
 Full import workflow with these guarantees:
 
-1. Resolve `applyMode` from the JSON response; safe fallback to
-   `edit-only`.
+1. **Merge semantics** — every import adds/updates listed nodes,
+   deletes aliases mapped to `null`, and leaves everything not mentioned
+   alone. There is no `applyMode` field; one schema can freely combine
+   adds, updates, and deletions.
 2. **Additive wire merge** — when a proposed node matches an existing
    one, its `wires` are unioned with the existing wires (per port).
    Connections are only severed by explicit `remove` directives.
@@ -161,10 +162,12 @@ Full import workflow with these guarantees:
    `_llmSpecKeys` (Vibe Schema path) or `n[key] !== undefined`
    (raw-JSON path), so normaliser-default values don't override user
    settings.
-4. **Comment placement** — comments only survive if they appear
-   immediately before a canvas node in schema declaration order (a
-   leading summary header); other positions are dropped. See
-   [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
+4. **Comment placement** — every comment names its target canvas node
+   via `above: <alias>` and lands directly atop that node with zero grid
+   gap. New comments stack above any existing comment touching the same
+   target instead of overlapping. Legacy schemas without `above` fall
+   back to "next canvas node in declaration order"; trailing comments
+   are dropped. See [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
 5. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
 6. Replace the active workspace atomically; layout is delegated to
@@ -232,22 +235,19 @@ messages[0] = {
 messages[1] = { role: "user", content: <user prompt> }
 ```
 
-`prompt_system.txt` lists the four valid `applyMode` values; the LLM
-picks one and includes it in its JSON response.
-`detectApplyModeFromResponse` extracts it server-side as a fallback. No
-chat history is sent — each request is stateless to the LLM.
+No chat history is sent — each request is stateless to the LLM.
 
 #### Security measures
 
 - All endpoints sit on `RED.httpAdmin` (picks up `adminAuth` when
   configured).
-- API key is stored in Node-RED's encrypted credentials store
-  (`flows_cred.json`, AES-encrypted with `credentialSecret`) via
-  `RED.nodes.addCredentials` / `getCredentials` under a synthetic id
-  `llm-plugin-credentials`. Plaintext keys from older installs are
-  migrated automatically on first boot. A `flows:started` listener
-  re-adds the credential after Node-RED's `cleanCredentials` strips
-  unreferenced ids.
+- API key is stored encrypted in `<userDir>/llm-plugin/credentials.json`
+  using AES-256-CTR with Node-RED's `credentialSecret` (or auto-generated
+  `_credentialSecret`) — the same algorithm used for `flows_cred.json`,
+  but in a plugin-owned file so `cleanCredentials` can't strip it on
+  deploy. Plaintext keys from older installs (and any leftover from the
+  earlier synthetic-id `addCredentials` attempt) are migrated
+  automatically on first boot.
 - API key never returned to the client; masked via `maskApiKey()`. POST
   whitelist prevents field injection.
 - Server-side `maxPromptLength` cap (default 10 000 chars, range

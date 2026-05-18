@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const { exec } = require('child_process');
 const { OpenAI } = require('openai');
 const Configurator = require('./core/flow_converter_core');
@@ -13,7 +14,7 @@ const LLMJsonParser = require('./core/llm_json_parser');
 // Fall back to a minimal embedded prompt if the bundled file is
 // unreadable (sandboxed cloud environments occasionally restrict reads).
 const FALLBACK_PROMPT = 'You are a Node-RED expert. Be concise; reply in the user\'s language. ' +
-    'When modifying flows, output one ```json``` block in Vibe Schema with applyMode, nodes, connections; otherwise text only.\n';
+    'When modifying flows, output one ```json``` block in Vibe Schema with `nodes` and `connections` (merge semantics: list to add/update, map alias to null to delete). Otherwise plain text.\n';
 let SYSTEM_PROMPT_TEMPLATE;
 try {
     SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_system.txt'), 'utf8');
@@ -98,41 +99,95 @@ function createLLMPluginServer(RED) {
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
     //
-    // Secrets (currently just the OpenAI API key) live in Node-RED's
-    // `flows_cred.json` via `RED.nodes.addCredentials` / `getCredentials`
-    // — that file is encrypted at rest with the user's `credentialSecret`.
-    // Non-secret settings stay in `RED.settings` (plain JSON).
+    // Secrets (currently just the OpenAI API key) are encrypted at rest in
+    // `<baseDir>/credentials.json` using AES-256-CTR — the same algorithm
+    // Node-RED applies to `flows_cred.json`. We reuse Node-RED's
+    // `credentialSecret` (or auto-generated `_credentialSecret`) so the
+    // secret is tied to the existing user setup.
     //
-    // Caveat: `RED.nodes.cleanCredentials` strips any credential whose id
-    // isn't referenced by an actual flow node, which would erase our
-    // synthetic id on every deploy. We mirror to an in-memory cache and
-    // re-add after `flows:started` to survive the cleanup.
+    // We deliberately do NOT use `RED.nodes.addCredentials` with a
+    // synthetic id: Node-RED's `cleanCredentials` strips any credential
+    // whose id isn't referenced by a flow node, wiping our entry on every
+    // deploy. A plugin-owned file sidesteps that lifecycle entirely.
+    // Non-secret settings stay in `RED.settings` (plain JSON).
 
-    const CREDS_ID = 'llm-plugin-credentials';
+    const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
     let credsCache = null;
-    const credsApiAvailable = !!(RED.nodes && typeof RED.nodes.getCredentials === 'function'
-                                          && typeof RED.nodes.addCredentials === 'function');
+    let inMemoryCredentialSecret = null; // fallback when RED.settings can't persist one
 
-    function loadCredsFromRuntime() {
-        if (!credsApiAvailable) return {};
-        try { return RED.nodes.getCredentials(CREDS_ID) || {}; }
-        catch (e) { return {}; }
+    function resolveCredentialSecret() {
+        try {
+            let s = RED.settings.get('credentialSecret');
+            if (typeof s === 'string' && s.length > 0) return s;
+        } catch (e) { /* ignore */ }
+        try {
+            let s = RED.settings.get('_credentialSecret');
+            if (typeof s === 'string' && s.length > 0) return s;
+        } catch (e) { /* ignore */ }
+        // Try to auto-generate and persist, mirroring Node-RED's behavior
+        // when the user hasn't configured `credentialSecret` themselves.
+        try {
+            if (RED.settings && typeof RED.settings.set === 'function') {
+                let generated = crypto.randomBytes(32).toString('hex');
+                RED.settings.set('_credentialSecret', generated);
+                return generated;
+            }
+        } catch (e) { /* ignore */ }
+        // Last resort: per-process key. Credentials become unreadable on
+        // restart, but the plugin keeps working in the current session.
+        if (!inMemoryCredentialSecret) {
+            inMemoryCredentialSecret = crypto.randomBytes(32).toString('hex');
+            RED.log.warn('[LLM Plugin] Could not resolve credentialSecret; using an in-memory key. ' +
+                'Stored credentials will not survive restart. Set `credentialSecret` in settings.js to fix.');
+        }
+        return inMemoryCredentialSecret;
+    }
+
+    function deriveKey() {
+        return crypto.createHash('sha256').update(resolveCredentialSecret()).digest();
+    }
+
+    function encryptBlob(plain) {
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv('aes-256-ctr', deriveKey(), iv);
+        const encrypted = cipher.update(JSON.stringify(plain), 'utf8', 'base64') + cipher.final('base64');
+        return iv.toString('hex') + encrypted;
+    }
+
+    function decryptBlob(blob) {
+        const iv = Buffer.from(blob.substring(0, 32), 'hex');
+        const ciphertext = blob.substring(32);
+        const decipher = crypto.createDecipheriv('aes-256-ctr', deriveKey(), iv);
+        const decrypted = decipher.update(ciphertext, 'base64', 'utf8') + decipher.final('utf8');
+        return JSON.parse(decrypted);
+    }
+
+    function loadCredsFromFile() {
+        if (!credsFile) return {};
+        try {
+            if (!fs.existsSync(credsFile)) return {};
+            const raw = fs.readFileSync(credsFile, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.$ === 'string') return decryptBlob(parsed.$) || {};
+            return {};
+        } catch (e) {
+            RED.log.warn('[LLM Plugin] Failed to read credentials file: ' + (e && e.message ? e.message : e));
+            return {};
+        }
     }
 
     function loadCreds() {
-        if (credsCache === null) credsCache = loadCredsFromRuntime();
+        if (credsCache === null) credsCache = loadCredsFromFile();
         return credsCache;
     }
 
     function persistCreds() {
-        if (!credsApiAvailable) return;
+        if (!credsFile) return; // no writable storage; in-memory only
         try {
-            // addCredentials returns a Promise in modern Node-RED.
-            Promise.resolve(RED.nodes.addCredentials(CREDS_ID, credsCache || {})).catch(function(e) {
-                RED.log.warn('[LLM Plugin] Failed to persist credential: ' + (e && e.message ? e.message : e));
-            });
+            const body = JSON.stringify({ $: encryptBlob(credsCache || {}) });
+            fs.writeFileSync(credsFile, body, { encoding: 'utf8', mode: 0o600 });
         } catch (e) {
-            RED.log.warn('[LLM Plugin] Failed to persist credential: ' + (e && e.message ? e.message : e));
+            RED.log.warn('[LLM Plugin] Failed to persist credentials: ' + (e && e.message ? e.message : e));
         }
     }
 
@@ -163,32 +218,37 @@ function createLLMPluginServer(RED) {
         RED.settings.set('llmPluginSettings', plain);
     }
 
-    // One-time migration: pull a plaintext API key out of an older
-    // `llmPluginSettings` store into the encrypted credentials store.
+    // One-time migration: pull an API key out of either the old plaintext
+    // `llmPluginSettings` store OR the previous broken `addCredentials`
+    // attempt, and write it into the new encrypted file.
     (function migrateLegacyApiKey() {
         let raw = RED.settings.get('llmPluginSettings') || {};
-        if (!raw.openaiApiKey) return;
-        if (!credsApiAvailable) return;
         let creds = loadCreds();
-        if (creds.openaiApiKey) {
-            // Both present: prefer the encrypted copy and clear the plaintext.
+        let migrated = false;
+
+        if (raw.openaiApiKey && !creds.openaiApiKey) {
+            creds.openaiApiKey = raw.openaiApiKey;
+            migrated = true;
+            RED.log.info('[LLM Plugin] Migrated API key from plaintext settings to encrypted credentials file.');
+        }
+
+        if (!creds.openaiApiKey && RED.nodes && typeof RED.nodes.getCredentials === 'function') {
+            try {
+                let legacy = RED.nodes.getCredentials('llm-plugin-credentials');
+                if (legacy && legacy.openaiApiKey) {
+                    creds.openaiApiKey = legacy.openaiApiKey;
+                    migrated = true;
+                    RED.log.info('[LLM Plugin] Recovered API key from legacy synthetic-id credentials store.');
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        if (raw.openaiApiKey) {
             delete raw.openaiApiKey;
             RED.settings.set('llmPluginSettings', raw);
-            return;
         }
-        creds.openaiApiKey = raw.openaiApiKey;
-        persistCreds();
-        delete raw.openaiApiKey;
-        RED.settings.set('llmPluginSettings', raw);
-        RED.log.info('[LLM Plugin] Migrated API key from settings to encrypted credentials store.');
+        if (migrated) persistCreds();
     })();
-
-    // Node-RED clears unreferenced credentials on every deploy; re-add ours.
-    if (RED.events && typeof RED.events.on === 'function') {
-        RED.events.on('flows:started', function() {
-            if (credsCache && Object.keys(credsCache).length > 0) persistCreds();
-        });
-    }
 
     // Mask API key for safe client-side display (never expose full key)
     function maskApiKey(key) {
@@ -460,22 +520,6 @@ function createLLMPluginServer(RED) {
     // Build the system prompt.
     // Instructs the LLM to output Vibe Schema (intermediate JSON) instead of
     // raw Node-RED JSON, which avoids the need for random IDs and coordinates.
-    function normalizeApplyMode(v) {
-        const m = String(v || '').trim().toLowerCase();
-        if (m === 'edit-only' || m === 'merge' || m === 'overwrite' || m === 'delete-only' || m === 'auto') return m;
-        return null;
-    }
-
-    function detectApplyModeFromResponse(text) {
-        const payload = parseFlowPayloadFromText(text);
-        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-            const fromPayload = normalizeApplyMode(payload.applyMode || payload.mode || payload.strategy);
-            if (fromPayload) return fromPayload;
-        }
-        const marker = String(text || '').match(/APPLY[_\s-]*MODE\s*[:=]\s*(edit-only|merge|overwrite|delete-only|auto)/i);
-        return marker && marker[1] ? (normalizeApplyMode(marker[1]) || 'auto') : 'auto';
-    }
-
     function buildMessages(userPrompt, flowContext, activeWorkspaceId) {
         const settings = getPluginSettings();
         const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
@@ -686,7 +730,7 @@ function createLLMPluginServer(RED) {
 
         try {
             const response = await generateWithProvider(provider, settings, model, enhancedMessages);
-            res.json({ response: response, elapsed: Date.now() - genStart, model: model, applyMode: detectApplyModeFromResponse(response) });
+            res.json({ response: response, elapsed: Date.now() - genStart, model: model });
         } catch (error) {
             // Log only safe fields  -  never log the full error object which may contain sensitive headers
             const safeErrorText = redactSecrets(error && error.message ? error.message : error);
@@ -729,7 +773,6 @@ function createLLMPluginServer(RED) {
                     response,
                     elapsed: Date.now() - totalStart,
                     model: model,
-                    applyMode: detectApplyModeFromResponse(response),
                     agent: {
                         mode: 'agent',
                         performed: 1,
@@ -745,7 +788,6 @@ function createLLMPluginServer(RED) {
                 response,
                 elapsed: Date.now() - totalStart,
                 model: model,
-                applyMode: detectApplyModeFromResponse(response),
                 agent: {
                     mode: 'agent',
                     performed: 1,

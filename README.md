@@ -55,7 +55,7 @@ The model will then follow real node/property patterns from that sample instead 
 - Accepts mixed response text + JSON (with or without code fences).
 - Preserves robust parsing when function code contains comment tokens in JSON strings.
 - Agent mode seamlessly handles connection updates and LLM-driven deletions.
-- Apply strategy is model-driven via top-level `applyMode` (`edit-only`, `merge`, `overwrite`, `delete-only`, with a safe fallback to `edit-only`).
+- All schema applies use merge semantics: listed nodes are added or updated, aliases mapped to `null` are deleted, anything not mentioned is left alone.
 
 ## More Docs
 
@@ -64,9 +64,9 @@ The model will then follow real node/property patterns from that sample instead 
 
 ## Security Notice
 
-API keys (e.g. OpenAI) are stored in Node-RED's **encrypted credentials store** (`flows_cred.json`, AES-encrypted with your `credentialSecret`) via `RED.nodes.addCredentials`. Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs.
+API keys (e.g. OpenAI) are stored encrypted in `<userDir>/llm-plugin/credentials.json` using AES-256-CTR with your Node-RED `credentialSecret` (the same algorithm Node-RED uses for `flows_cred.json`). Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs.
 
-The encrypted file is only as safe as your `credentialSecret`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `flows_cred.json`, `.config.*.json`, and your `settings.js` out of the share — and never publish your `credentialSecret`. Older installs that stored the key in plaintext are migrated to the encrypted store automatically on first boot.
+The encrypted file is only as safe as your `credentialSecret`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `credentials.json`, `flows_cred.json`, `.config.*.json`, and your `settings.js` out of the share — and never publish your `credentialSecret`. Older installs that stored the key in plaintext are migrated to the encrypted file automatically on first boot.
 
 ## Notes
 

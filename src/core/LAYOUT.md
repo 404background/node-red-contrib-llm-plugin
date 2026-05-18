@@ -17,7 +17,8 @@ const flow = [
     { id: 'c', type: 'debug',    wires: [] }
 ];
 Layout.reflowCanvasNodes(flow, { startX: 100, startY: 100 });
-// a(150,100) → b(320,100) → c(490,100)  (160-px steps)
+// inject=120, function=140, debug=120 (grid-snapped from estimate)
+// a(160,100) → b(350,100) → c(540,100)
 ```
 
 ### 2. Inserting a node between two existing ones
@@ -25,15 +26,15 @@ Layout.reflowCanvasNodes(flow, { startX: 100, startY: 100 });
 ```js
 const merged = [
     { id: 'a', type: 'inject',   x: 100, y: 100, wires: [['n']] },
-    { id: 'n', type: 'function', wires: [['b']] },                  // new (120-px wide)
-    { id: 'b', type: 'debug',    x: 260, y: 100, wires: [] }
+    { id: 'n', type: 'function', wires: [['b']] },                  // new (140-px wide)
+    { id: 'b', type: 'debug',    x: 280, y: 100, wires: [] }
 ];
 Layout.placeAddedNodesNearNeighbors(
     merged,
     { a: true, b: true },
-    { a: { x: 100, y: 100 }, b: { x: 260, y: 100 } }
+    { a: { x: 100, y: 100 }, b: { x: 280, y: 100 } }
 );
-// a stays at 100, n placed at 270, b shifted to 440 (b moves over by the width-aware step).
+// a stays at 100, n placed at 290, b shifted to 480 (b moves over by the width-aware step).
 ```
 
 ### 3. Bare topological positions (no pixels)
@@ -59,7 +60,7 @@ const positions = Layout.layoutNodes(
                 ▼                                            ▼
    ┌─────────────────────────┐              ┌──────────────────────────────────┐
    │   reflowCanvasNodes     │              │ placeAddedNodesNearNeighbors     │
-   │   (overwrite: re-layout)│              │ (merge: keep existing, add new)  │
+   │ (full re-layout)        │              │ (incremental: keep existing)     │
    └────────────┬────────────┘              └─────────────────┬────────────────┘
                 │                                             │
                 └─────────────────────┬───────────────────────┘
@@ -77,8 +78,8 @@ const positions = Layout.layoutNodes(
 | Function | Purpose |
 |----------|---------|
 | `layoutNodes(aliases, outgoing, incoming, maxColumns?)` | Pure topological layout. Returns `{ alias: { col, row, comp } }`. |
-| `reflowCanvasNodes(nodes, options?)` | Full canvas re-layout (overwrite mode). |
-| `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Incremental layout (merge mode). |
+| `reflowCanvasNodes(nodes, options?)` | Full canvas re-layout (recomputes every position). |
+| `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Incremental layout (keeps existing nodes pinned, places only the new ones). |
 | `estimateNodeWidth(node, options?)` | Label-based width estimate, snapped to `gridSize`. |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
 | `pairSpacing(a, b, options?)` | Width-aware centre-to-centre distance. |
@@ -114,27 +115,39 @@ distance(a, b) = (width(a) + width(b)) / 2 + edgeGap
 ```
 
 Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
-`estimateNodeWidth`), which approximates the editor's
-`max(MIN_NODE_WIDTH, labelWidth + chrome)` rule. Default chrome is 50 px
-(30 icon + 14 label padding + 6 ports), so a default-named 100 px node
-plus a default-named 100 px node sits 160 px centre-to-centre, leaving
-`edgeGap = 60 px` (3 grid squares) of visible clearance.
+`estimateNodeWidth`). The hook lets callers feed in live measured widths
+(e.g. `RED.nodes.node(id).w` from the live editor); the fallback
+estimate approximates the editor's
+`max(MIN_NODE_WIDTH, labelWidth + chrome)` rule as `7.5 px/char + 64 px`
+(30 icon strip + 14 label padding + 14 port stubs on each side). With
+the importer's default `edgeGap = 40` two default-named ~120 px nodes
+sit ~160 px centre-to-centre, leaving ~2 grid squares of visible
+clearance between them.
 
 ## Comment placement
 
-Each comment is placed directly above the **next canvas node in
-declaration order** (read off `node._llmOrder` set by
-`FlowConverterCore.toNodeRed`). The comment lands at the same x, one
-`spacingY` higher. Multiple comments that share the same following
-canvas node stack upward (nearest-to-next at `y - spacingY`, the one
-above it at `y - 2*spacingY`, and so on).
+Each comment is placed directly above its target canvas node, touching
+that node's top edge with **zero grid gap** (centre-to-centre delta =
+`nodeHeight` = 30 px).
 
-A schema like `{c1, n1, c2, n2}` therefore renders as two separate
-heads: `c1` above `n1`, `c2` above `n2`.
+Target selection per comment:
+
+1. **Explicit** — schema sets `above: <alias>`. The importer resolves
+   the alias to a real node id and stores it on `node._llmAboveId`;
+   `repositionCommentsByLlmOrder` uses it directly. The target may be a
+   new node in this schema or an existing node on the live canvas.
+2. **Fallback (legacy)** — for comments without `above`, the layout
+   uses `node._llmOrder` (set by `FlowConverterCore.toNodeRed`) to find
+   the next canvas node in declaration order.
+
+Multiple comments sharing the same target stack upward (each touching
+the comment beneath it). The stack also accounts for any **existing**
+comment nodes already directly above the target on the canvas — new
+comments land above the existing stack rather than overlapping it.
 
 **Trailing comments are dropped.** `FlowConverterCore.toNodeRed` strips
-any comment with no canvas node after it, so by the time a comment
-reaches the layout engine it is guaranteed to have a forward neighbour.
+any comment with no `above` and no canvas node after it, so by the time
+a comment reaches the layout engine it is guaranteed to have a target.
 
 ## Pass details
 
@@ -178,19 +191,19 @@ reaches the layout engine it is guaranteed to have a forward neighbour.
 
 #### Worked examples
 
-Default 100-px nodes, `edgeGap = 60`:
+Default-named nodes (inject=120, function=140, debug=120), `edgeGap = 60`:
 
-| State | A | N | B |
+| State | A (inject, 120) | N (function, 140) | B (debug, 120) |
 |-------|---|---|---|
-| Before | (100, 100) | — | (260, 100) |
-| Step 3 | (100, 100) | (260, 100) | (260, 100) ← overlap |
-| Step 3.4 | (100, 100) | (260, 100) | (420, 100) ← +160 |
+| Before | (100, 100) | — | (280, 100) |
+| Step 3 | (100, 100) | (290, 100) | (280, 100) ← overlap |
+| Step 3.4 | (100, 100) | (290, 100) | (480, 100) ← +200 |
 
-Wide N (label "Compute aggregated rolling average" → 280 px):
+Wide N (label "Compute aggregated rolling average" → 340 px):
 
-| State | A (100) | N (280) | B (100) |
+| State | A (inject, 120) | N (340) | B (debug, 120) |
 |-------|---------|---------|---------|
-| Step 3 | (100, 100) | (350, 100) | (260, 100) |
-| Step 3.4 | (100, 100) | (350, 100) | (600, 100) ← +340 |
+| Step 3 | (100, 100) | (390, 100) | (280, 100) |
+| Step 3.4 | (100, 100) | (390, 100) | (650, 100) ← +370 |
 
-`A→N = (100+280)/2 + 60 = 250`, `N→B = (280+100)/2 + 60 = 250`.
+`A→N = (120+340)/2 + 60 = 290`, `N→B = (340+120)/2 + 60 = 290`.

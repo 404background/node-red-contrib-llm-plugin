@@ -451,12 +451,9 @@
             }
             promptInput.value = '';
 
-            // Agent mode: snapshot the pre-edit flow so the assistant
-            // message's Restore Checkpoint can rewind to this state.
-            let preSendCheckpointPromise = (mode === 'agent' && window.LLMPlugin && LLMPlugin.ChatManager && LLMPlugin.ChatManager.savePreSendCheckpoint)
-                ? LLMPlugin.ChatManager.savePreSendCheckpoint(null, flowIdsToSend)
-                : Promise.resolve(null);
-
+            // Checkpoints are captured at import time (right before a flow
+            // edit is applied), not here — chat sends that don't end up
+            // modifying the flow no longer consume a checkpoint slot.
             let loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
                 ? LLMPlugin.UI.addMessageToUI('Generating...', false, false)
                 : null;
@@ -506,32 +503,28 @@
                 return res.json();
             })
             .then(function(data) {
-                return preSendCheckpointPromise.then(function(preSendCheckpointId) {
-                    if (loadingMsg) loadingMsg.remove();
-                    let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
-                    let msgEl = null;
-                    let resolvedApplyMode = data && data.applyMode ? data.applyMode : 'auto';
-                    let usedModel = (data && data.model) ? data.model : model;
-                    let metaOpts = {
-                        mode: mode,
-                        applyMode: resolvedApplyMode,
-                        elapsedMs: totalElapsed,
-                        model: usedModel,
-                        preSendCheckpointId: preSendCheckpointId || null
-                    };
-                    if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                        msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
-                    } else if (window.LLMPlugin && LLMPlugin.UI) {
-                        msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
-                    }
+                if (loadingMsg) loadingMsg.remove();
+                let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
+                let msgEl = null;
+                let usedModel = (data && data.model) ? data.model : model;
+                let metaOpts = {
+                    mode: mode,
+                    elapsedMs: totalElapsed,
+                    model: usedModel,
+                    targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null
+                };
+                if (window.LLMPlugin && LLMPlugin.ChatManager) {
+                    msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
+                } else if (window.LLMPlugin && LLMPlugin.UI) {
+                    msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
+                }
 
-                    if (mode === 'agent' && msgEl) {
-                        let importBtn = msgEl.querySelector('.import-btn');
-                        if (importBtn) {
-                            importBtn.click();
-                        }
+                if (mode === 'agent' && msgEl) {
+                    let importBtn = msgEl.querySelector('.import-btn');
+                    if (importBtn) {
+                        importBtn.click();
                     }
-                });
+                }
             })
             .catch(function(err) {
                 if (loadingMsg) loadingMsg.remove();

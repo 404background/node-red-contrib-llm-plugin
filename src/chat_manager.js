@@ -25,8 +25,7 @@
             id: id,
             title: 'New Chat',
             messages: [],
-            created: new Date().toISOString(),
-            baselineCheckpointId: null
+            created: new Date().toISOString()
         };
     }
 
@@ -61,17 +60,6 @@
         .catch(function() { return null; });
     }
 
-    function renderBaselineCheckpointUI(checkpointId) {
-        let chatArea = document.getElementById('llm-plugin-chat');
-        if (!chatArea || !checkpointId) return;
-        let existing = chatArea.querySelector('.baseline-checkpoint-row');
-        if (existing) existing.remove();
-        if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.createRestoreCheckpointButton)) return;
-        let row = el('div', 'baseline-checkpoint-row flow-actions');
-        row.appendChild(LLMPlugin.UI.createRestoreCheckpointButton(checkpointId));
-        chatArea.insertBefore(row, chatArea.firstChild);
-    }
-
     ChatManager.getCurrentChatId = function() {
         if (!currentChatId) {
             currentChatId = generateChatId();
@@ -91,39 +79,17 @@
         if (window.RED && RED.notify) RED.notify('Started new chat', 'success');
     };
 
-    ChatManager.ensureBaselineCheckpoint = function(chatId, targetFlowIds) {
-        let id = chatId || ChatManager.getCurrentChatId();
-        let chat = chatHistory[id];
-        if (!chat || chat.baselineCheckpointId || chat._baselinePending) return;
-        let flow = snapshotCurrentFlow(targetFlowIds);
-        if (!flow) return;
-        chat._baselinePending = true;
-        postCheckpointSave(id, 'chat-start-pre-edit', flow, 'chat-start')
-            .then(function(checkpointId) {
-                if (!checkpointId) return;
-                chat.baselineCheckpointId = checkpointId;
-                ChatManager.saveChatToServer(id);
-                renderBaselineCheckpointUI(checkpointId);
-            })
-            .finally(function() { delete chat._baselinePending; });
-    };
-
-    ChatManager.getBaselineCheckpointId = function(chatId) {
-        let id = chatId || ChatManager.getCurrentChatId();
-        let chat = chatHistory[id];
-        return chat ? (chat.baselineCheckpointId || null) : null;
-    };
-
     /**
-     * Snapshot the current flow as a Restore Checkpoint at chat-send time.
-     * The ID is attached to the assistant message so the per-message Restore
-     * button can rewind to the pre-send state.
+     * Snapshot the current flow as a Restore Checkpoint immediately before
+     * a flow-modifying import. Returns the checkpoint ID on success, or
+     * null on failure. Callers wait on this before applying the import so
+     * the Restore button always points at the true pre-edit state.
      */
-    ChatManager.savePreSendCheckpoint = function(chatId, targetFlowIds) {
+    ChatManager.saveImportCheckpoint = function(chatId, targetFlowIds) {
         let id = chatId || ChatManager.getCurrentChatId();
         let flow = snapshotCurrentFlow(targetFlowIds);
         if (!flow) return Promise.resolve(null);
-        return postCheckpointSave(id, 'pre-send-' + new Date().toISOString(), flow, 'chat-send');
+        return postCheckpointSave(id, 'pre-import-' + new Date().toISOString(), flow, 'pre-import');
     };
 
     ChatManager.saveChatToServer = function(chatId) {
@@ -227,7 +193,6 @@
                 LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
             }
         });
-        if (chat.baselineCheckpointId) renderBaselineCheckpointUI(chat.baselineCheckpointId);
         if (window.RED && RED.notify) RED.notify('Loaded chat: ' + chat.title, 'success');
     };
 
@@ -262,13 +227,9 @@
         });
     };
 
-    ChatManager.addMessage = function(content, isUser, metaOverwrite, targetFlowIds) {
+    ChatManager.addMessage = function(content, isUser, metaOverwrite) {
         let chatId = ChatManager.getCurrentChatId();
         let chat = chatHistory[chatId];
-
-        if (isUser && metaOverwrite && metaOverwrite.mode === 'agent') {
-            ChatManager.ensureBaselineCheckpoint(chatId, targetFlowIds);
-        }
 
         let message = {
             id: generateMessageId(),

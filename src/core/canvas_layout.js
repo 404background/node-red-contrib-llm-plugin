@@ -20,6 +20,7 @@
         componentGap:  80,
         edgeGap:       60,    // 3 Node-RED grid squares between adjacent node edges
         minNodeWidth: 100,
+        nodeHeight:    30,    // Node-RED's standard rendered node height
         gridSize:      20,
         maxColumns:     5
     };
@@ -235,15 +236,19 @@
     }
 
     // Approximate Node-RED's label-based width when no DOM measurement is
-    // available. 6.5 px/char + 50 px chrome (30 px icon strip + 14 px label
-    // padding + 6 px port indicators) matches the editor's
-    // `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule.
+    // available. The editor renders nodes as
+    //   max(MIN_NODE_WIDTH, textWidth + iconStrip + labelPadding) + portStubs
+    // where the default 14 px sans-serif font averages ~7.5 px/char, the
+    // icon strip is 30 px, label padding is ~14 px, and the port stubs add
+    // ~7 px on each side (14 px total). 7.5*chars + 64 chrome puts the
+    // estimate close enough to the rendered width that an `edgeGap` of N
+    // grid squares actually shows ~N grid squares between rendered nodes.
     function estimateNodeWidth(node, opts) {
         let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
         let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
         if (!node || typeof node !== 'object') return minW;
         let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
-        let estimated = label.length * 6.5 + 50;
+        let estimated = label.length * 7.5 + 64;
         let w = Math.max(minW, estimated);
         return Math.ceil(w / grid) * grid;
     }
@@ -266,12 +271,28 @@
     }
 
     // Place leading-position comments directly above the canvas node they
-    // head, at the same x. Multiple leading comments stack vertically with
-    // the nearest-to-next sitting at `next.y - spacingY`.
-    // toNodeRed has already filtered out non-leading comments, so we only
-    // need to handle the (no-prev, has-next) case here.
+    // head, touching that node's top edge (zero-grid gap). Multiple
+    // comments targeting the same canvas node stack upward, each touching
+    // the comment beneath it.
+    //
+    // Target selection (per comment):
+    //   1. Explicit `_llmAbove(Id)` — the schema named a target node.
+    //   2. Fallback: the next canvas node in declaration order, via
+    //      `_llmOrder` (legacy behaviour for schemas that omit `above`).
+    //
+    // toNodeRed has already filtered out trailing comments without a
+    // forward neighbour, so the fallback path always has a valid target.
+    //
+    // Existing-comment stacking: if the target already has comments
+    // touching above it (e.g. user-authored or carried over from a
+    // previous run), the new group lands on TOP of that existing stack
+    // instead of colliding with it.
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
-        let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+
+        let byId = {};
+        canvasNodes.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
         let comments = [];
         let ordered = [];
@@ -280,31 +301,76 @@
             if (n.type === 'comment') comments.push(n);
             else ordered.push(n);
         });
-        if (comments.length === 0 || ordered.length === 0) return;
+        // Comments may also reposition relative to existing canvas nodes
+        // referenced via _llmAboveId, even when no ordered new node exists.
+        if (comments.length === 0) return;
         ordered.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
 
-        let leadingByNext = {};
+        function findFallbackTarget(c) {
+            for (let i = 0; i < ordered.length; i++) {
+                if (ordered[i]._llmOrder > c._llmOrder) return ordered[i];
+            }
+            return null;
+        }
+
+        let groupsByTargetId = {};
         comments.forEach(function(c) {
             if (typeof shouldReposition === 'function' && !shouldReposition(c)) return;
-            let next = null;
-            for (let i = 0; i < ordered.length; i++) {
-                if (ordered[i]._llmOrder > c._llmOrder) { next = ordered[i]; break; }
+            let target = null;
+            if (typeof c._llmAboveId === 'string' && byId[c._llmAboveId]) {
+                target = byId[c._llmAboveId];
+            } else {
+                target = findFallbackTarget(c);
             }
-            if (!next) return;
-            (leadingByNext[next.id] = leadingByNext[next.id] || []).push(c);
+            if (!target) return;
+            (groupsByTargetId[target.id] = groupsByTargetId[target.id] || []).push(c);
         });
 
-        Object.keys(leadingByNext).forEach(function(nextId) {
-            let group = leadingByNext[nextId];
-            group.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
-            let next = null;
-            for (let i = 0; i < ordered.length; i++) {
-                if (ordered[i].id === nextId) { next = ordered[i]; break; }
+        // Walk the existing contiguous comment stack above `target` and
+        // return the y where the bottommost NEW comment should land
+        // (i.e. just above the topmost existing comment, or directly
+        // touching the target if no existing stack is present).
+        function findStackBottomY(target, group) {
+            let targetX = target.x || 0;
+            let targetY = target.y || 0;
+            let groupIds = {};
+            group.forEach(function(c) { groupIds[c.id] = true; });
+
+            let candidates = [];
+            canvasNodes.forEach(function(n) {
+                if (!n || n.type !== 'comment') return;
+                if (groupIds[n.id]) return;
+                if (typeof n.x !== 'number' || typeof n.y !== 'number') return;
+                if (Math.abs(n.x - targetX) > gridSize) return;
+                if (n.y >= targetY) return;
+                candidates.push(n);
+            });
+            candidates.sort(function(a, b) { return b.y - a.y; }); // closest-to-target first
+
+            let yTol = nodeHeight / 2;
+            let nextSlotY = targetY - nodeHeight;
+            for (let i = 0; i < candidates.length; i++) {
+                if (Math.abs(candidates[i].y - nextSlotY) <= yTol) {
+                    nextSlotY = candidates[i].y - nodeHeight;
+                } else {
+                    break;
+                }
             }
-            if (!next) return;
+            return nextSlotY;
+        }
+
+        Object.keys(groupsByTargetId).forEach(function(targetId) {
+            let group = groupsByTargetId[targetId];
+            group.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
+            let target = byId[targetId];
+            if (!target) return;
+            // Bottommost-new-comment slot: above any existing contiguous
+            // stack, or touching the target's top edge if none. Earlier
+            // declaration order = higher in the stack (further from target).
+            let bottomY = findStackBottomY(target, group);
             group.forEach(function(c, i) {
-                c.x = Math.round(next.x || 0);
-                c.y = Math.round((next.y || 0) - (group.length - i) * spacingY);
+                c.x = Math.round(target.x || 0);
+                c.y = Math.round(bottomY - (group.length - 1 - i) * nodeHeight);
             });
         });
     }
@@ -582,6 +648,14 @@
                 n.y = Math.round(pos.row * spacingY + (orphanOffsets[ci] || 0));
             });
         }
+
+        // Final comment pass: step 3.6 ran before the orphan band placed
+        // any new canvas targets, so a comment whose target only got
+        // coordinates in step 4 still points at the old (zero/stale)
+        // position. Re-run now that every target is in its final spot.
+        repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
+            return !existingIdMap[c.id];
+        });
 
         return nodes;
     }

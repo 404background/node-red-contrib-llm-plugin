@@ -200,18 +200,6 @@
     //  Forwarders to LLMJsonParser (implementations in src/core)         //
     // ------------------------------------------------------------------ //
 
-    function normalizeToken(v) {
-        let p = getParser(); return p ? p.normalizeToken(v) : '';
-    }
-    function normalizeTokenLoose(v) {
-        let p = getParser(); return p ? p.normalizeTokenLoose(v) : '';
-    }
-    function putUniqueToken(mapObj, token, id) {
-        let p = getParser(); if (p) p.putUniqueToken(mapObj, token, id);
-    }
-    function resolveUniqueApprox(mapObj, token, minLen) {
-        let p = getParser(); return p ? p.resolveUniqueApprox(mapObj, token, minLen) : null;
-    }
     function buildFlowLookup(flowNodes, cfg) {
         let p = getParser();
         return p ? p.buildFlowLookup(flowNodes, cfg)
@@ -238,29 +226,10 @@
     //  Apply Mode                                                         //
     // ================================================================== //
 
-    function normalizeApplyMode(v) {
-        let m = String(v || '').trim().toLowerCase();
-        if (m === 'editonly') m = 'edit-only';
-        if (m === 'deleteonly') m = 'delete-only';
-        if (m === 'add-edit' || m === 'add_edit') m = 'merge';
-        if (m === 'replace' || m === 'full-replace' || m === 'full_replace') m = 'overwrite';
-        return (m === 'auto' || m === 'edit-only' || m === 'merge' || m === 'overwrite' || m === 'delete-only') ? m : null;
-    }
-
-    function extractApplyModeFromMessage(messageContent) {
-        let parsed = extractLastVibeSchema(messageContent);
-        if (parsed && typeof parsed === 'object') {
-            let fromSchema = normalizeApplyMode(parsed.applyMode || parsed.mode || parsed.strategy);
-            if (fromSchema) return fromSchema;
-        }
-        let text = String(messageContent || '');
-        let marker = text.match(/APPLY[_\s-]*MODE\s*[:=]\s*(edit-only|merge|overwrite|delete-only|auto)/i);
-        if (marker && marker[1]) {
-            let fromMarker = normalizeApplyMode(marker[1]);
-            if (fromMarker) return fromMarker;
-        }
-        return null;
-    }
+    // The legacy `applyMode` field is no longer honoured — every import is
+    // a merge: listed nodes are added or updated, aliases mapped to `null`
+    // are deleted, anything else stays. The field is silently ignored when
+    // older schemas or model outputs still carry it.
 
     // ================================================================== //
     //  Apply Connection Hints                                             //
@@ -342,7 +311,7 @@
     //  Rebuild Workspace Flow                                             //
     // ================================================================== //
 
-    function rebuildWorkspaceFromSnapshot(beforeFlow, updateNodes, workspaceId, connectionHints, flowDirectives, applyMode) {
+    function rebuildWorkspaceFromSnapshot(beforeFlow, updateNodes, workspaceId, connectionHints, flowDirectives) {
         let base = Array.isArray(beforeFlow)
             ? JSON.parse(JSON.stringify(beforeFlow))
             : [];
@@ -359,10 +328,6 @@
             }
         });
         let directives = flowDirectives || { removeTokens: [], removeConnections: [] };
-        let mode = normalizeApplyMode(applyMode) || 'edit-only';
-
-        if (mode === 'overwrite') base = [];
-        if (mode === 'delete-only') { updates = []; connectionHints = []; }
 
         function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
@@ -503,6 +468,30 @@
 
         applyConnectionHints(rebuilt, connectionHints || []);
 
+        // Resolve comment `above: <alias>` references to real node ids.
+        // The alias may name a NEW node from the same schema (look up its
+        // _llmAlias on rebuilt) or an EXISTING node from the live flow
+        // (look up via toIntermediate's aliasToId / nameToId).
+        (function resolveCommentAboveRefs() {
+            let cfg = getConfigurator();
+            let aboveCandidates = rebuilt.filter(function(n) {
+                return n && n.type === 'comment' && typeof n._llmAbove === 'string' && n._llmAbove.length > 0;
+            });
+            if (aboveCandidates.length === 0) return;
+            let newByAlias = {};
+            rebuilt.forEach(function(n) {
+                if (n && n.id && typeof n._llmAlias === 'string') newByAlias[n._llmAlias] = n.id;
+            });
+            let existingLookup = buildFlowLookup(rebuilt, cfg);
+            aboveCandidates.forEach(function(c) {
+                let want = c._llmAbove;
+                let id = newByAlias[want]
+                      || (existingLookup.aliasToId && existingLookup.aliasToId[want])
+                      || existingLookup.resolve(want);
+                if (id && id !== c.id) c._llmAboveId = id;
+            });
+        })();
+
         // _llmOrder is stripped after layout — the layout passes consume it.
         rebuilt.forEach(function(n) {
             if (!n) return;
@@ -510,6 +499,7 @@
             delete n._autoStub;
             delete n._llmFlow;
             delete n._llmSpecKeys;
+            delete n._llmAbove;
         });
 
         pruneInvalidInputWires(rebuilt);
@@ -518,6 +508,18 @@
 
         let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
         if (layout) {
+            // Prefer Node-RED's live `.w` (set by the editor view) for
+            // existing nodes — the static estimate is a fallback that
+            // doesn't see custom node defs or measured label widths.
+            function liveNodeWidth(n) {
+                if (!n || !n.id) return undefined;
+                if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.node !== 'function') return undefined;
+                try {
+                    let live = RED.nodes.node(n.id);
+                    if (live && typeof live.w === 'number' && live.w > 0) return live.w;
+                } catch (e) { /* ignore */ }
+                return undefined;
+            }
             let layoutOpts = {
                 startX: LAYOUT.startX, startY: LAYOUT.startY,
                 spacingY: LAYOUT.spacingY,
@@ -525,9 +527,10 @@
                 componentGap: LAYOUT.componentGap,
                 bandGap: LAYOUT.componentGap,
                 maxColumns: LAYOUT.maxColumns,
-                isCanvasNode: isCanvasNode
+                isCanvasNode: isCanvasNode,
+                getNodeWidth: liveNodeWidth
             };
-            if (mode === 'overwrite' || Object.keys(baseIds).length === 0) {
+            if (Object.keys(baseIds).length === 0) {
                 layout.reflowCanvasNodes(rebuilt, layoutOpts);
             } else {
                 layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, layoutOpts);
@@ -712,7 +715,6 @@
             connections: subConns
         };
         if (typeof schema.description === 'string') out.description = schema.description;
-        if (typeof schema.applyMode === 'string') out.applyMode = schema.applyMode;
         if (Array.isArray(schema.remove)) {
             out.remove = schema.remove.filter(function(t) { return aliasSet[t]; });
         }
@@ -720,7 +722,6 @@
     }
 
     async function dispatchMultiFlowImport(messageContent, schema, flowGroups, options) {
-        let applyMode = schema && typeof schema.applyMode === 'string' ? schema.applyMode : null;
         let results = [];
         let aggregatedAdded = 0;
         let aggregatedImported = 0;
@@ -759,8 +760,7 @@
             multiFlow: true,
             results: results,
             importedCount: aggregatedImported,
-            addedNodeCount: aggregatedAdded,
-            applyMode: applyMode || 'auto'
+            addedNodeCount: aggregatedAdded
         };
     }
 
@@ -798,62 +798,25 @@
                 : null;
             let beforeFlow = safeGetCurrentFlow(targetWs);
 
-            let requestedApplyMode = normalizeApplyMode(options.applyMode) || 'auto';
-            let llmApplyMode = extractApplyModeFromMessage(messageContent);
-            let applyMode = requestedApplyMode === 'auto'
-                ? (llmApplyMode || 'edit-only')
-                : requestedApplyMode;
             let hasExistingFlow = Array.isArray(beforeFlow) && beforeFlow.length > 0;
             let parsedSchema = extractLastVibeSchema(messageContent);
-            let rawConnectionHints = extractConnectionHints(messageContent);
-            let rawFlowDirectives = extractFlowDirectives(messageContent);
-
-            // Safety guard: auto + overwrite without explicit deletes  - prefer merge
-            if (requestedApplyMode === 'auto' && applyMode === 'overwrite' && hasExistingFlow) {
-                let hasDeleteDirectives = (rawFlowDirectives.removeTokens || []).length > 0 ||
-                    (rawFlowDirectives.removeConnections || []).length > 0;
-                if (!hasDeleteDirectives) {
-                    applyMode = 'merge';
-                    try {
-                        if (window.RED && RED.notify) {
-                            RED.notify('Auto mode: switched overwrite to merge to preserve existing flow', 'warning');
-                        }
-                    } catch (e) { /* ignore */ }
-                }
-            }
-
-            let canModifyExisting = applyMode !== 'overwrite';
-            let connectionHints = canModifyExisting ? rawConnectionHints : [];
-            let flowDirectives = canModifyExisting ? rawFlowDirectives : { removeTokens: [], removeConnections: [] };
-
-            let isPatchOnlyUpdate = (
-                (applyMode === 'merge' || applyMode === 'edit-only') &&
-                hasExistingFlow &&
-                parsedSchema &&
-                typeof parsedSchema === 'object' &&
-                Object.keys(parsedSchema.nodes || {}).length > 0 &&
-                Array.isArray(parsedSchema.connections) &&
-                parsedSchema.connections.length === 0 &&
-                (rawFlowDirectives.removeTokens || []).length === 0 &&
-                (rawFlowDirectives.removeConnections || []).length === 0
-            );
+            let connectionHints = extractConnectionHints(messageContent);
+            let flowDirectives = extractFlowDirectives(messageContent);
 
             let nodes = extractFlowNodes(messageContent, {
                 mode: options.mode,
                 currentFlow: beforeFlow
             });
 
-            // Strip tab nodes early so they don't trigger false-positive patch-only updates
+            // Strip tab nodes early — they're definitions, not canvas content.
             if (Array.isArray(nodes)) {
                 nodes = nodes.filter(function(n) { return n && n.type && String(n.type).toLowerCase() !== 'tab'; });
             }
 
             if (!nodes || nodes.length === 0) {
-                if (canModifyExisting && (
-                    connectionHints.length > 0 ||
+                if (connectionHints.length > 0 ||
                     (flowDirectives.removeTokens || []).length > 0 ||
-                    (flowDirectives.removeConnections || []).length > 0
-                )) {
+                    (flowDirectives.removeConnections || []).length > 0) {
                     nodes = [];
                 } else {
                     if (window.RED && RED.notify) RED.notify('No JSON flow found in message', 'warning');
@@ -861,18 +824,11 @@
                 }
             }
 
-            if (applyMode === 'delete-only' &&
-                (flowDirectives.removeTokens || []).length === 0 &&
-                (flowDirectives.removeConnections || []).length === 0) {
-                if (window.RED && RED.notify) RED.notify('Delete Only mode requires delete directives in JSON', 'warning');
-                return { ok: false, error: 'Delete Only mode requires delete directives', checkpointId: null };
-            }
-
             let currentWorkspace = targetWs || getActiveWorkspaceId();
 
             // Build unified lookup from current flow
             let cfg = getConfigurator();
-            let lookup = canModifyExisting && hasExistingFlow
+            let lookup = hasExistingFlow
                 ? buildFlowLookup(beforeFlow, cfg)
                 : buildFlowLookup([], null);
 
@@ -900,82 +856,49 @@
                 });
             }
 
-            // Checkpoints come from ChatManager.savePreSendCheckpoint at
-            // chat-send time; the import path doesn't produce its own.
+            // Checkpoints come from ChatManager.saveImportCheckpoint, taken
+            // by the UI immediately before this import runs.
             let beforeIdSet = new Set();
             (beforeFlow || []).forEach(function(n) {
                 if (n && n.id) beforeIdSet.add(n.id);
             });
 
-            // Build type+name lookup from live editor state
+            // Live-editor state used during the import: every known node id
+            // (so freshly generated ids never collide) and a per-type index of
+            // config nodes (for singleton config-node reuse).
             let existingIds = new Set();
-            let existingByTypeName = {};
-            let existingByTypeNameToken = {};
-            let existingByTypeNameTokenLoose = {};
             let existingConfigByType = {};
             let claimedExistingIds = {};
             let remappedIds = {};
-            let droppedPatchCandidates = 0;
 
             if (window.RED && RED.nodes) {
                 RED.nodes.eachNode(function(n) { existingIds.add(n.id); });
                 if (RED.nodes.eachConfig) {
-                    RED.nodes.eachConfig(function(n) { existingIds.add(n.id); });
-                }
-
-                // Helper to register a node in type+name lookup tables
-                function registerNodeInLookups(n) {
-                    if (!n || !n.name || !String(n.name).trim()) return;
-                    let typeKey = String(n.type || '').trim().toLowerCase();
-                    let k = typeKey + '::' + String(n.name || '').trim().toLowerCase();
-                    if (k === '::') return;
-                    if (!existingByTypeName[k]) existingByTypeName[k] = [];
-                    existingByTypeName[k].push(n);
-
-                    let nk = normalizeToken(n.name || '');
-                    let lk = normalizeTokenLoose(n.name || '');
-                    if (!existingByTypeNameToken[typeKey]) existingByTypeNameToken[typeKey] = {};
-                    if (!existingByTypeNameTokenLoose[typeKey]) existingByTypeNameTokenLoose[typeKey] = {};
-                    putUniqueToken(existingByTypeNameToken[typeKey], nk, n.id);
-                    putUniqueToken(existingByTypeNameTokenLoose[typeKey], lk, n.id);
-                }
-
-                if (canModifyExisting && currentWorkspace) {
-                    // Register workspace canvas nodes
-                    let wsNodes = RED.nodes.filterNodes({ z: currentWorkspace }) || [];
-                    wsNodes.forEach(registerNodeInLookups);
-
-                    // Register config nodes (they live outside workspaces)
-                    if (RED.nodes.eachConfig) {
-                        RED.nodes.eachConfig(function(n) {
-                            registerNodeInLookups(n);
-                            // Build type-only lookup for singleton config-node matching
-                            if (n && n.id && n.type) {
-                                let ct = String(n.type).trim().toLowerCase();
-                                if (!existingConfigByType[ct]) existingConfigByType[ct] = [];
-                                existingConfigByType[ct].push(n);
-                            }
-                        });
-                    }
+                    RED.nodes.eachConfig(function(n) {
+                        existingIds.add(n.id);
+                        if (n && n.id && n.type) {
+                            let ct = String(n.type).trim().toLowerCase();
+                            if (!existingConfigByType[ct]) existingConfigByType[ct] = [];
+                            existingConfigByType[ct].push(n);
+                        }
+                    });
                 }
             }
 
             // Pre-pass: every proposed node claims its exact-alias match
-            // first, so a later fuzzy match can't steal those IDs.
+            // first, so later passes can't steal those IDs.
             let preResolvedAlias = {};
-            if (canModifyExisting) {
-                nodes.forEach(function(n, idx) {
-                    if (!n || !n._llmAlias) return;
-                    let exactId = lookup.resolve(n._llmAlias, { exactOnly: true });
-                    if (!exactId || claimedExistingIds[exactId]) return;
-                    let existing = RED.nodes.node(exactId);
-                    if (!existing) return;
-                    if (!currentWorkspace || existing.z === currentWorkspace || !existing.z) {
-                        preResolvedAlias[idx] = exactId;
-                        claimedExistingIds[exactId] = true;
-                    }
-                });
-            }
+            nodes.forEach(function(n, idx) {
+                if (!n || !n._llmAlias) return;
+                let exactId = lookup.resolve(n._llmAlias, { exactOnly: true });
+                if (!exactId || claimedExistingIds[exactId]) return;
+                let existing = RED.nodes.node(exactId);
+                if (!existing) return;
+                if (!currentWorkspace || existing.z === currentWorkspace || !existing.z) {
+                    preResolvedAlias[idx] = exactId;
+                    claimedExistingIds[exactId] = true;
+                }
+            });
 
             // Map each proposed node to an existing match or mark it new.
             let newNodes = nodes.map(function(n, idx) {
@@ -984,76 +907,25 @@
 
                 let replacedExisting = null;
 
-                // 1. Alias-based matching (primary).
-                if (canModifyExisting && nn._llmAlias) {
+                // 1. Alias-based matching (primary): exact-alias only.
+                // The LLM gets every existing alias in its prompt context, so
+                // a non-matching alias means "add as new" — never fuzzy-match,
+                // which would silently overwrite an unrelated node.
+                if (nn._llmAlias) {
                     let aliasId = preResolvedAlias[idx] || null;
-                    if (!aliasId) {
-                        // Trailing-digit aliases like "inject_trigger_2" are
-                        // treated as new even if "inject_trigger" exists.
-                        let stripped = nn._llmAlias
-                            .replace(/_?\d+$/, '')
-                            .replace(/_+$/, '');
-                        let isNewNodeSignal = (stripped !== nn._llmAlias) &&
-                            lookup.aliasToId && !!lookup.aliasToId[stripped];
-                        // Fuzzy alias match is only allowed in edit-only mode
-                        // (the LLM may have typo'd an alias to modify); in
-                        // merge mode every existing alias is already in the
-                        // prompt context so fuzzy would just steal nodes.
-                        if (!isNewNodeSignal && applyMode === 'edit-only') {
-                            let fuzzyId = lookup.resolve(nn._llmAlias, { minLen: 4 });
-                            if (fuzzyId && !claimedExistingIds[fuzzyId]) aliasId = fuzzyId;
-                        }
-                    }
                     if (aliasId) {
                         let byAlias = RED.nodes.node(aliasId);
                         // Allow matching for: same workspace nodes, OR config nodes
-                        // (config nodes have no z / empty z  - they live outside workspaces)
+                        // (config nodes have no z / empty z — they live outside workspaces)
                         if (byAlias && (!currentWorkspace || byAlias.z === currentWorkspace || !byAlias.z)) {
                             replacedExisting = byAlias;
                         }
                     }
                 }
 
-                // 2. Type+name matching (fallback).
-                // Only applies in edit-only mode: in merge mode the LLM picks
-                // fresh aliases for new nodes and may legitimately reuse a
-                // display name (e.g. adding another "run 1" inject alongside
-                // an existing one). Matching on name would silently overwrite
-                // the existing node instead of creating a new sibling.
-                if (!replacedExisting && canModifyExisting && nn.name && nn.type && applyMode === 'edit-only') {
-                    let key = String(nn.type).trim().toLowerCase() + '::' + String(nn.name).trim().toLowerCase();
-                    let candidates = existingByTypeName[key] || [];
-                    if (candidates.length === 1 && !claimedExistingIds[candidates[0].id]) {
-                        replacedExisting = candidates[0];
-                    }
-                }
-
-                // 3. Patch-only: type + name token matching (last resort for property updates)
-                if (!replacedExisting && isPatchOnlyUpdate && canModifyExisting && nn._llmAlias && nn.type) {
-                    let tkey = String(nn.type || '').trim().toLowerCase();
-                    let tokenMap = existingByTypeNameToken[tkey] || {};
-                    let tokenMapLoose = existingByTypeNameTokenLoose[tkey] || {};
-                    let ank = normalizeToken(nn._llmAlias);
-                    if (ank) {
-                        let byTokenId = tokenMap[ank] || null;
-                        if (!byTokenId) byTokenId = resolveUniqueApprox(tokenMap, ank, 6);
-                        if (!byTokenId) {
-                            let alk = normalizeTokenLoose(nn._llmAlias);
-                            if (alk && tokenMapLoose[alk]) byTokenId = tokenMapLoose[alk];
-                            if (!byTokenId && alk) byTokenId = resolveUniqueApprox(tokenMapLoose, alk, 6);
-                        }
-                        if (byTokenId && !claimedExistingIds[byTokenId]) {
-                            let byToken = RED.nodes.node(byTokenId);
-                            if (byToken && (!currentWorkspace || byToken.z === currentWorkspace)) {
-                                replacedExisting = byToken;
-                            }
-                        }
-                    }
-                }
-
-                // 4. Singleton config node: reuse the lone existing match
+                // 2. Singleton config node: reuse the lone existing match
                 //    by type to avoid duplicating it.
-                if (!replacedExisting && canModifyExisting && isConfigNodeObj(nn)) {
+                if (!replacedExisting && isConfigNodeObj(nn)) {
                     let configTypeKey = String(nn.type).trim().toLowerCase();
                     let sameTypeCandidates = existingConfigByType[configTypeKey] || [];
                     let unclaimedCandidates = sameTypeCandidates.filter(function(c) {
@@ -1097,10 +969,6 @@
                         existingIds.add(nn.id);
                         return null;
                     }
-                    if (isPatchOnlyUpdate) {
-                        droppedPatchCandidates += 1;
-                        return null;
-                    }
                     if (!nn.id) nn.id = genId();
                     while (existingIds.has(nn.id)) {
                         nn.id = genId();
@@ -1136,42 +1004,6 @@
             // Remove tab nodes
             newNodes = newNodes.filter(function(n) { return n && n.type && n.type.toLowerCase() !== 'tab'; });
 
-            if (isPatchOnlyUpdate) {
-                if (droppedPatchCandidates > 0 && window.RED && RED.notify) {
-                    RED.notify('Patch update: skipped ' + droppedPatchCandidates + ' unmatched node proposal(s)', 'warning');
-                }
-                let matchedCount = newNodes.filter(function(n) {
-                    return !!(n && n.id) && beforeIdSet.has(n.id);
-                }).length;
-                if (matchedCount === 0) {
-                    postTerminalLog('error', 'patch-only-no-match', 'No reliable existing-node match for patch-only update', {
-                        applyMode: applyMode, droppedPatchCandidates: droppedPatchCandidates
-                    });
-                    if (window.RED && RED.notify) {
-                        RED.notify('Patch update applied safely: no reliable node match found, skipped adding new nodes', 'warning');
-                    }
-                    return { ok: false, error: 'No reliable existing-node match for patch-only update', applyMode: applyMode };
-                }
-            }
-
-            // edit-only: block new nodes but don't fail entirely
-            let blockedNewNodes = [];
-            if (applyMode === 'edit-only') {
-                blockedNewNodes = newNodes.filter(function(n) {
-                    return !!(n && n.id) && !beforeIdSet.has(n.id);
-                });
-                if (blockedNewNodes.length > 0) {
-                    newNodes = newNodes.filter(function(n) {
-                        return !!(n && n.id) && beforeIdSet.has(n.id);
-                    });
-                    try {
-                        if (window.RED && RED.notify) {
-                            RED.notify('Edit Only mode: blocked ' + blockedNewNodes.length + ' new node(s)', 'warning');
-                        }
-                    } catch (e) { /* ignore */ }
-                }
-            }
-
             // Assign workspace
             if (currentWorkspace && typeof currentWorkspace === 'string') {
                 newNodes.forEach(function(n) {
@@ -1202,7 +1034,7 @@
                 return { ok: false, error: 'Invalid node shape' };
             }
 
-            let rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives, applyMode);
+            let rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives);
             let rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
             if (!rebuiltResult || !rebuiltResult.ok) {
                 let errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
@@ -1221,7 +1053,7 @@
                 return { id: n.id, type: n.type || '', name: n.name || '' };
             });
 
-            if (applyMode !== 'overwrite' && addedNodes.length > 0) {
+            if (addedNodes.length > 0) {
                 try {
                     if (window.RED && RED.notify) {
                         RED.notify('Applied with ' + addedNodes.length + ' added node(s)', 'warning');
@@ -1232,10 +1064,8 @@
             return {
                 ok: true,
                 importedCount: rebuiltFlow.length,
-                applyMode: applyMode,
                 addedNodeCount: addedNodes.length,
-                addedNodes: addedNodes,
-                blockedNewNodeCount: blockedNewNodes.length
+                addedNodes: addedNodes
             };
 
         } catch(err) {
@@ -1258,7 +1088,7 @@
                 if (!window.RED || !RED.nodes || !RED.view) {
                     return reject(new Error("Node-RED API not available"));
                 }
-                
+
                 // Identify target workspaces from checkpoint
                 let ids = [];
                 if (LLMPlugin.UI) {
@@ -1282,12 +1112,24 @@
                     RED.actions.invoke('core:select-none');
                 } catch (e) { /* ignore */ }
 
-                // Clear ONLY the canvas nodes in the target workspaces
+                // Restore-specific cleanup filter: clear EVERY canvas-level
+                // entity in the target workspace, including subflow
+                // instances (`subflow:<id>`) which the regular isCanvasNode
+                // check excludes. Tabs and config nodes (no `z`) are
+                // protected — they're either workspace markers or live
+                // outside the canvas.
+                function isRestoreClearable(n) {
+                    if (!n || typeof n !== 'object') return false;
+                    if (typeof n.type !== 'string' || !n.type) return false;
+                    if (n.type === 'tab') return false;
+                    return true;
+                }
+
                 ids.forEach(function(wsId) {
                     let list = RED.nodes.filterNodes({ z: wsId }) || [];
                     if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: wsId }) || []);
                     if (RED.nodes.filterJunctions) list = list.concat(RED.nodes.filterJunctions({ z: wsId }) || []);
-                    list.filter(isCanvasNode).forEach(function(n) {
+                    list.filter(isRestoreClearable).forEach(function(n) {
                         try { RED.nodes.remove(n.id); } catch(e) {}
                     });
                 });

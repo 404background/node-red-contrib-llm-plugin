@@ -266,9 +266,13 @@
         let preserveAlias  = !!opts.preserveAlias;
 
         // --- Work on a shallow copy so we never mutate the caller's object ---
+        // Drop `null` entries early: they're deletion directives consumed by
+        // the importer's flow-directives path, not nodes to assemble.
         let nodeSpecs = {};
         Object.keys(intermediate.nodes).forEach(function(k) {
-            nodeSpecs[k] = intermediate.nodes[k];
+            let spec = intermediate.nodes[k];
+            if (spec === null) return;
+            nodeSpecs[k] = spec;
         });
 
         // --- Auto-create missing config nodes ---
@@ -315,6 +319,9 @@
         // declaration order to head — `{c1, n1, c2, n2}` keeps both
         // comments so each lands above its own sequence. Only trailing
         // comments (no canvas node after them) are dropped.
+        // Exception: if the schema contains no canvas nodes at all (e.g. a
+        // merge-mode patch that only adds standalone annotations), every
+        // comment is intentional — keep them all.
         (function dropTrailingComments() {
             function aliasIsCanvas(a) {
                 let s = nodeSpecs[a];
@@ -325,9 +332,15 @@
                 return !isConfigType(s.type);
             }
             let order = Object.keys(nodeSpecs);
+            let hasCanvas = order.some(aliasIsCanvas);
+            if (!hasCanvas) return;
             let kept = {};
             order.forEach(function(alias, idx) {
-                if (nodeSpecs[alias].type !== 'comment') { kept[alias] = true; return; }
+                let spec = nodeSpecs[alias];
+                // `null` entries are deletion directives — they don't have a
+                // `type` and aren't comments, so keep them so the importer
+                // sees the delete request.
+                if (!spec || spec.type !== 'comment') { kept[alias] = true; return; }
                 for (let j = idx + 1; j < order.length; j++) {
                     if (aliasIsCanvas(order[j])) { kept[alias] = true; return; }
                 }
@@ -713,6 +726,13 @@
             if (typeof spec.flow === 'string' && spec.flow.length > 0) {
                 node._llmFlow = spec.flow;
             }
+            // Preserve the Vibe Schema `above` field (comment-only) so the
+            // layout pass can place this comment directly above the named
+            // target canvas node. The importer resolves the alias to a
+            // real node id before layout; the field is stripped after.
+            if (spec.type === 'comment' && typeof spec.above === 'string' && spec.above.length > 0) {
+                node._llmAbove = spec.above;
+            }
             if (spec.name) node.name = spec.name;
             if (workspace && !isConfig) node.z = workspace;
 
@@ -736,8 +756,8 @@
             }
 
             // Flatten spec root keys into mergedProps, skipping META_KEYS
-            // and Vibe-Schema-only keys (props, _llmAlias, config, flow).
-            let SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config', 'flow']);
+            // and Vibe-Schema-only keys (props, _llmAlias, config, flow, above).
+            let SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config', 'flow', 'above']);
             Object.keys(spec).forEach(function(key) {
                 if (SPEC_SKIP_KEYS.indexOf(key) === -1) {
                     mergedProps[key] = spec[key];

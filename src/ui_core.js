@@ -180,24 +180,30 @@
                         if (!LLMPlugin.Importer) return;
                         importBtn.disabled = true;
                         let chatId = LLMPlugin.ChatManager ? LLMPlugin.ChatManager.getCurrentChatId() : null;
-                        let selectedApplyMode = 'auto';
-                        if (messageMeta && messageMeta.meta && messageMeta.meta.applyMode) {
-                            selectedApplyMode = messageMeta.meta.applyMode;
-                        }
+                        let targetFlowIds = (messageMeta && messageMeta.meta && Array.isArray(messageMeta.meta.targetFlowIds))
+                            ? messageMeta.meta.targetFlowIds
+                            : null;
 
-                        LLMPlugin.Importer.importFlowFromMessage(content, {
-                            chatId: chatId,
-                            mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
-                            applyMode: selectedApplyMode
+                        // Capture the checkpoint immediately before the
+                        // import so the Restore button always points at the
+                        // true pre-edit state. If the save fails we still
+                        // run the import (just with no Restore button).
+                        let checkpointPromise = (LLMPlugin.ChatManager && LLMPlugin.ChatManager.saveImportCheckpoint)
+                            ? LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
+                            : Promise.resolve(null);
+
+                        checkpointPromise.then(function(checkpointId) {
+                            return LLMPlugin.Importer.importFlowFromMessage(content, {
+                                chatId: chatId,
+                                mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask'
+                            }).then(function(result) {
+                                return { result: result, checkpointId: checkpointId };
+                            });
                         })
-                        .then(function(result) {
+                        .then(function(combined) {
+                            let result = combined.result;
+                            let checkpointId = combined.checkpointId;
                             if (!result || !result.ok) return;
-                            // Restore targets the pre-send snapshot saved by
-                            // ChatManager.savePreSendCheckpoint when this message
-                            // was dispatched; no post-apply checkpoint exists.
-                            let checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.preSendCheckpointId
-                                ? messageMeta.meta.preSendCheckpointId
-                                : null;
                             if (checkpointId) {
                                 let preChatActions = message.querySelector('.pre-chat-actions');
                                 if (!preChatActions) {
@@ -217,6 +223,7 @@
                                 }
                             }
                         })
+                        .catch(function() { /* import errors already surfaced */ })
                         .finally(function() {
                             importBtn.disabled = false;
                         });
