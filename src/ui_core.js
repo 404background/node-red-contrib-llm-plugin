@@ -39,10 +39,11 @@
         return escapeHtml(text);
     }
 
-    // Focus the canvas on a node: switch to its tab, flash-highlight
-    // it, and reveal/centre it. Mirrors the Debug sidebar's
-    // showMessageNode behaviour. Falls back gracefully on older
-    // Node-RED versions or if the node has been deleted.
+    // Focus on a node: canvas nodes get tab-switch + flash-highlight
+    // + centre-and-reveal (mirrors the Debug sidebar's showMessageNode);
+    // config nodes have no canvas position, so we open their edit
+    // dialog instead. Falls back gracefully on older Node-RED versions
+    // or if the node has been deleted.
     function focusCanvasNode(nodeId) {
         try {
             if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
@@ -51,6 +52,22 @@
                 if (RED.notify) RED.notify('Node no longer exists', 'warning');
                 return;
             }
+            let hasCanvasPos = typeof node.x === 'number' && typeof node.y === 'number';
+
+            if (!hasCanvasPos) {
+                // Config node — open its edit dialog. The third arg is the
+                // existing node id (so editConfig edits, not creates).
+                if (RED.editor && typeof RED.editor.editConfig === 'function') {
+                    try { RED.editor.editConfig('', node.type, node.id); return; }
+                    catch (e) { /* fall through */ }
+                }
+                if (RED.editor && typeof RED.editor.edit === 'function') {
+                    try { RED.editor.edit(node); return; } catch (e) { /* fall through */ }
+                }
+                if (RED.notify) RED.notify('Cannot focus config node "' + (node.name || node.id) + '"', 'warning');
+                return;
+            }
+
             if (node.z && RED.workspaces && typeof RED.workspaces.show === 'function') {
                 try { RED.workspaces.show(node.z); } catch (e) { /* ignore */ }
             }
@@ -130,7 +147,9 @@
         function isFocusable(id) {
             let n = lookup.byId[id];
             if (!n || n.type === 'tab') return false;
-            return typeof n.x === 'number' && typeof n.y === 'number';
+            // Canvas nodes have x/y; config nodes don't (we open their
+            // edit dialog instead). Both are focusable.
+            return true;
         }
 
         // --- Pass 1: inline <code> -----------------------------------
@@ -153,13 +172,15 @@
 
         // --- Pass 2: plain-text alias scan ---------------------------
         let aliasToId = lookup.aliasToId || {};
-        // Aliases must contain at least one underscore AND map to a
-        // focusable canvas node. Sort longest-first so multi-token
-        // aliases win over their prefixes when both would match.
+        // Any alias that maps to a focusable node is eligible. We sort
+        // longest-first so compound aliases (`change_temperature_series`)
+        // win over their bare-type prefix (`change`) when both would
+        // match the same span. Aliases shorter than 3 chars are skipped
+        // — they're nearly always noise. Single-word aliases like
+        // `inject` are kept because users frequently leave inject /
+        // debug / function nodes unnamed.
         let aliases = Object.keys(aliasToId).filter(function(a) {
-            return a.indexOf('_') !== -1 &&
-                   a.length >= 3 &&
-                   isFocusable(aliasToId[a]);
+            return a.length >= 3 && isFocusable(aliasToId[a]);
         });
         if (aliases.length === 0) return;
         aliases.sort(function(a, b) { return b.length - a.length; });
