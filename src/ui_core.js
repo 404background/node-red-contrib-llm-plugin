@@ -118,14 +118,21 @@
     // the LLM to backtick-quote node references; this scan is the
     // safety net for when it forgets.
     //
-    // Scoping: when `targetFlowIds` is provided, the alias map is
-    // built ONLY from canvas nodes on those tabs plus the config nodes
-    // they reference. This mirrors how the LLM saw the workspace at
-    // send time, so a bare alias like `inject` resolves to the inject
-    // on the tab the LLM was discussing instead of whichever inject
-    // RED.nodes.eachNode happens to iterate first. With no scoping
-    // (legacy messages without targetFlowIds), falls back to scanning
-    // every node — same behaviour as before.
+    // Alias → ID determinism:
+    //   FlowConverterCore.toIntermediate (which buildFlowLookup wraps)
+    //   numbers duplicate aliases by iteration order — the first
+    //   `change`-typed unnamed node gets `change`, the next gets
+    //   `change_2`, etc. So an alias like `change_2` only resolves to
+    //   the same node IFF the alias map is built from the same node
+    //   list in the same order the LLM saw. When `targetFlowIds` is
+    //   provided we therefore reuse UI.getFlowsByIds, which is the
+    //   exact function that produced the LLM's context — same nodes,
+    //   same per-tab grouping, same config-collection logic — making
+    //   the alias→ID map bit-for-bit identical to what was sent.
+    //   Unscoped (legacy) messages fall back to scanning every node.
+    //   Every subsequent operation (Pass 1 resolve, Pass 2 lookup,
+    //   click handler, focusCanvasNode) keys off the resolved ID, not
+    //   the alias.
     function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
         if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
@@ -133,38 +140,19 @@
             typeof LLMPlugin.LLMJsonParser.buildFlowLookup !== 'function') return;
 
         let scoped = Array.isArray(targetFlowIds) && targetFlowIds.length > 0;
-        let allNodes = [];
-        try {
-            if (scoped) {
-                let flowSet = {};
-                targetFlowIds.forEach(function(z) { flowSet[z] = true; });
-                let referencedConfigIds = {};
-                RED.nodes.eachNode(function(n) {
-                    if (!n || !flowSet[n.z]) return;
-                    allNodes.push(n);
-                    // Track config-node references the same way
-                    // collectReferencedConfigs (in UI.getFlowsByIds)
-                    // does, so the scoped alias map covers brokers,
-                    // ui-groups, etc.
-                    Object.keys(n).forEach(function(k) {
-                        if (k === 'id' || k === 'z' || k === 'type' ||
-                            k === 'wires' || k === 'x' || k === 'y') return;
-                        let v = n[k];
-                        if (typeof v === 'string' && v.length > 5) referencedConfigIds[v] = true;
-                    });
-                });
-                if (typeof RED.nodes.eachConfig === 'function') {
-                    RED.nodes.eachConfig(function(cn) {
-                        if (cn && referencedConfigIds[cn.id]) allNodes.push(cn);
-                    });
-                }
-            } else {
+        let allNodes = null;
+        if (scoped && typeof UI.getFlowsByIds === 'function') {
+            try { allNodes = UI.getFlowsByIds(targetFlowIds); } catch (e) { allNodes = null; }
+        }
+        if (!Array.isArray(allNodes) || allNodes.length === 0) {
+            allNodes = [];
+            try {
                 RED.nodes.eachNode(function(n) { if (n) allNodes.push(n); });
                 if (typeof RED.nodes.eachConfig === 'function') {
                     RED.nodes.eachConfig(function(n) { if (n) allNodes.push(n); });
                 }
-            }
-        } catch (e) { return; }
+            } catch (e) { return; }
+        }
         if (allNodes.length === 0) return;
 
         let cfg = LLMPlugin.FlowConverterCore || null;
