@@ -265,11 +265,11 @@
         return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
     }
 
-    // Position comments next to their Vibe Schema declaration-order
-    // neighbours (./LAYOUT.md §"Comment placement").
-    //   leading  (no prev, has next)  -> stacked above `next` at same x
-    //   trailing (has prev, no next)  -> stacked above `prev` at same x
-    //   between  (both, similar row)  -> midpoint x, one row above
+    // Place leading-position comments directly above the canvas node they
+    // head, at the same x. Multiple leading comments stack vertically with
+    // the nearest-to-next sitting at `next.y - spacingY`.
+    // toNodeRed has already filtered out non-leading comments, so we only
+    // need to handle the (no-prev, has-next) case here.
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
 
@@ -284,29 +284,16 @@
         ordered.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
 
         let leadingByNext = {};
-        let trailingByPrev = {};
-        let between = [];
         comments.forEach(function(c) {
             if (typeof shouldReposition === 'function' && !shouldReposition(c)) return;
-            let prev = null, next = null;
+            let next = null;
             for (let i = 0; i < ordered.length; i++) {
-                if (ordered[i]._llmOrder < c._llmOrder) prev = ordered[i];
-                else if (ordered[i]._llmOrder > c._llmOrder) { next = ordered[i]; break; }
+                if (ordered[i]._llmOrder > c._llmOrder) { next = ordered[i]; break; }
             }
-            if (prev && next && Math.abs((prev.y || 0) - (next.y || 0)) <= spacingY / 2) {
-                between.push({ c: c, prev: prev, next: next });
-            } else if (next) {
-                (leadingByNext[next.id] = leadingByNext[next.id] || []).push(c);
-            } else if (prev) {
-                (trailingByPrev[prev.id] = trailingByPrev[prev.id] || []).push(c);
-            }
+            if (!next) return;
+            (leadingByNext[next.id] = leadingByNext[next.id] || []).push(c);
         });
 
-        between.forEach(function(b) {
-            b.c.x = Math.round(((b.prev.x || 0) + (b.next.x || 0)) / 2);
-            b.c.y = Math.round((b.prev.y || 0) - spacingY);
-        });
-        // Leading: nearest-to-next sits at -1*spacingY, earlier ones stack upward.
         Object.keys(leadingByNext).forEach(function(nextId) {
             let group = leadingByNext[nextId];
             group.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
@@ -318,19 +305,6 @@
             group.forEach(function(c, i) {
                 c.x = Math.round(next.x || 0);
                 c.y = Math.round((next.y || 0) - (group.length - i) * spacingY);
-            });
-        });
-        Object.keys(trailingByPrev).forEach(function(prevId) {
-            let group = trailingByPrev[prevId];
-            group.sort(function(a, b) { return a._llmOrder - b._llmOrder; });
-            let prev = null;
-            for (let i = 0; i < ordered.length; i++) {
-                if (ordered[i].id === prevId) { prev = ordered[i]; break; }
-            }
-            if (!prev) return;
-            group.forEach(function(c, i) {
-                c.x = Math.round(prev.x || 0);
-                c.y = Math.round((prev.y || 0) - (i + 1) * spacingY);
             });
         });
     }

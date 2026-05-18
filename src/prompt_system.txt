@@ -9,7 +9,7 @@ NODES (`{ alias: { type, name?, flow?, config?, props?, ... } }`):
 - Every node has `type`. Canvas nodes set `flow` = exact tab name (default ACTIVE FLOW).
 - Config nodes (`config: true`): only reuse the ones provided; never invent.
 - Function: set `func` and `outputs` (no `require()`); prefer Change/Switch.
-- Comment: `type: "comment"`, `name` = header, `props.info` = Markdown body; no I/O. List a comment immediately before a related node sequence in `nodes` so it renders as a summary header above that sequence.
+- Comment: `type: "comment"`, `name` = header, `props.info` = Markdown body. Allowed ONLY as a summary header: list a comment immediately before the canvas node it heads in `nodes`. Comments placed mid-sequence or after the last canvas node are silently dropped.
 
 CONNECTIONS:
 - `{ "from": "a", "to": "b", "fromPort"?: n }`. Edge delete: `{ "remove": { "from", "to" } }`.

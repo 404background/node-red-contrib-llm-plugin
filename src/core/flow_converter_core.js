@@ -310,6 +310,41 @@
             });
         });
 
+        // --- Comment-node placement rule ---
+        // Comments are kept ONLY when they sit immediately before a canvas
+        // node in schema declaration order (no canvas node preceding them
+        // since the last comment-block boundary, at least one canvas node
+        // following). All other comment positions are dropped to avoid
+        // placing them in visually awkward mid-chain spots.
+        (function dropNonLeadingComments() {
+            function aliasIsCanvas(a) {
+                let s = nodeSpecs[a];
+                if (!s || typeof s.type !== 'string' || !s.type.trim()) return false;
+                if (s.type === 'comment' || s.type === 'tab') return false;
+                if (s.type.indexOf('subflow:') === 0) return false;
+                if (s.config === true) return false;
+                return !isConfigType(s.type);
+            }
+            let order = Object.keys(nodeSpecs);
+            let kept = {};
+            order.forEach(function(alias, idx) {
+                if (nodeSpecs[alias].type !== 'comment') { kept[alias] = true; return; }
+                // post-canvas? walk backwards skipping comments.
+                let postCanvas = false;
+                for (let j = idx - 1; j >= 0; j--) {
+                    if (nodeSpecs[order[j]].type === 'comment') continue;
+                    if (aliasIsCanvas(order[j])) postCanvas = true;
+                    break;
+                }
+                if (postCanvas) return;
+                // must have a canvas node ahead to head.
+                for (let j = idx + 1; j < order.length; j++) {
+                    if (aliasIsCanvas(order[j])) { kept[alias] = true; return; }
+                }
+            });
+            Object.keys(nodeSpecs).forEach(function(a) { if (!kept[a]) delete nodeSpecs[a]; });
+        })();
+
         let aliases = Object.keys(nodeSpecs);
         if (aliases.length === 0) return [];
 
