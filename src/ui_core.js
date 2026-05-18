@@ -163,8 +163,8 @@
     function annotateNodeReferences(rootEl) {
         if (!rootEl) return;
         if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
-        if (!window.LLMPlugin || !LLMPlugin.LlmJsonParser ||
-            typeof LLMPlugin.LlmJsonParser.buildFlowLookup !== 'function') return;
+        if (!window.LLMPlugin || !LLMPlugin.LLMJsonParser ||
+            typeof LLMPlugin.LLMJsonParser.buildFlowLookup !== 'function') return;
 
         let allNodes = [];
         try {
@@ -178,7 +178,7 @@
         let cfg = LLMPlugin.FlowConverterCore || null;
         let lookup;
         try {
-            lookup = LLMPlugin.LlmJsonParser.buildFlowLookup(allNodes, cfg);
+            lookup = LLMPlugin.LLMJsonParser.buildFlowLookup(allNodes, cfg);
         } catch (e) { return; }
 
         function isFocusable(id) {
