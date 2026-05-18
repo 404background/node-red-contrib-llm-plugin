@@ -1,9 +1,6 @@
 // UI core module — vanilla JS (no jQuery).
 // Handles message rendering, flow context export, and retry logic.
 (function(){
-    // Boot marker so the user can verify in devtools that the *latest*
-    // ui_core.js is actually loaded (the editor or a proxy may cache).
-    try { console.log('[LLM Plugin] ui_core.js loaded - clickable node refs enabled'); } catch (e) {}
     let UI = {};
 
     // Escape HTML special characters to prevent XSS
@@ -51,64 +48,39 @@
     //   ... clear highlighted after ~10 s
     //
     // Config nodes have no canvas position, so they open their edit
-    // dialog (RED.editor.editConfig) instead. Logs to the console so
-    // the user can diagnose unresponsive clicks from devtools.
+    // dialog (RED.editor.editConfig) instead.
     function focusCanvasNode(nodeId) {
         try {
-            if (!nodeId) { console.warn('[LLM Plugin] focusCanvasNode called with empty id'); return; }
-            if (typeof RED === 'undefined' || !RED.nodes) {
-                console.warn('[LLM Plugin] RED.nodes not available'); return;
-            }
+            if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
             let node = RED.nodes.node(nodeId);
             if (!node) {
-                console.warn('[LLM Plugin] node not found:', nodeId);
                 if (RED.notify) RED.notify('Node no longer exists', 'warning');
                 return;
             }
-            console.log('[LLM Plugin] focusCanvasNode →', { id: node.id, type: node.type, name: node.name, z: node.z });
 
             let hasCanvasPos = typeof node.x === 'number' && typeof node.y === 'number';
             if (!hasCanvasPos) {
-                // Config node — open its edit dialog.
                 if (RED.editor && typeof RED.editor.editConfig === 'function') {
-                    try { RED.editor.editConfig('', node.type, node.id); return; }
-                    catch (e) { console.warn('[LLM Plugin] editConfig failed:', e); }
+                    try { RED.editor.editConfig('', node.type, node.id); return; } catch (e) {}
                 }
                 if (RED.editor && typeof RED.editor.edit === 'function') {
-                    try { RED.editor.edit(node); return; }
-                    catch (e) { console.warn('[LLM Plugin] edit failed:', e); }
+                    try { RED.editor.edit(node); return; } catch (e) {}
                 }
                 if (RED.notify) RED.notify('Cannot focus config "' + (node.name || node.id) + '"', 'warning');
                 return;
             }
 
-            // Canvas node — exactly the Debug-sidebar sequence.
             if (node.z && RED.workspaces && typeof RED.workspaces.show === 'function') {
-                try { RED.workspaces.show(node.z); }
-                catch (e) { console.warn('[LLM Plugin] workspaces.show failed:', e); }
+                try { RED.workspaces.show(node.z); } catch (e) {}
             }
-            try { node.highlighted = true; node.dirty = true; } catch (e) { /* ignore */ }
+            try { node.highlighted = true; node.dirty = true; } catch (e) {}
 
-            if (!RED.view || typeof RED.view.reveal !== 'function') {
-                console.warn('[LLM Plugin] RED.view.reveal not available');
-                if (RED.notify) RED.notify('Cannot reveal node (RED.view.reveal missing)', 'error');
-                return;
+            if (RED.view && typeof RED.view.reveal === 'function') {
+                try { RED.view.reveal(node.id); } catch (e) {}
             }
-            try { RED.view.reveal(node.id); }
-            catch (e) { console.warn('[LLM Plugin] RED.view.reveal threw:', e); }
-
-            // Force a redraw so the highlight flash is visible.
             if (RED.view && typeof RED.view.redraw === 'function') {
-                try { RED.view.redraw(); } catch (e) { /* ignore */ }
+                try { RED.view.redraw(); } catch (e) {}
             }
-            // Brief toast confirms the click registered even if the
-            // viewport jump is subtle.
-            if (RED.notify) {
-                RED.notify('Focused: ' + (node.name || node.type) +
-                           ' (' + node.id + ')',
-                           { type: 'info', timeout: 1500 });
-            }
-            // Clear the flash after ~2.5s so repeated clicks re-trigger.
             setTimeout(function() {
                 try {
                     let live = RED.nodes.node(nodeId);
@@ -117,34 +89,22 @@
                         live.dirty = true;
                         if (RED.view && RED.view.redraw) RED.view.redraw();
                     }
-                } catch (e) { /* ignore */ }
+                } catch (e) {}
             }, 2500);
         } catch (e) {
-            console.error('[LLM Plugin] focusCanvasNode error:', e);
+            // Swallow silently — focus is a best-effort UX affordance.
         }
     }
 
     // Wire a code-like element so clicking it focuses the named node.
-    // Inline styles act as a defence against a stale CSS cache: the
-    // browser may have cached an older llm-plugin_styles.css without
-    // the .llm-node-ref rules, so we set the same look directly on the
-    // element to make sure it ALWAYS looks like a button.
     function attachNodeRefHandler(el, nodeId) {
         el.classList.add('llm-node-ref');
         el.setAttribute('data-node-id', nodeId);
-        el.title = 'Click to focus on this node (Ctrl+click to also reveal)';
-        el.style.cursor = 'pointer';
-        el.style.background = '#dceefb';
-        el.style.color = '#0a5cab';
-        el.style.border = '1px solid #b6d8f2';
-        el.style.borderRadius = '3px';
-        el.style.padding = '1px 6px';
-        el.style.userSelect = 'none';
+        el.title = 'Click to focus on this node';
         el.addEventListener('click', function(ev) {
             ev.preventDefault();
             ev.stopPropagation();
-            let id = this.getAttribute('data-node-id');
-            focusCanvasNode(id);
+            focusCanvasNode(this.getAttribute('data-node-id'));
         });
     }
 
@@ -154,23 +114,55 @@
     //
     // Pass 2: walk text nodes (skipping <code>, <pre>, <a>, <script>,
     // <style>) and replace any token that exactly matches a known node
-    // alias with a clickable inline code. The token set is restricted
-    // to aliases (`{type}_{name}`), which always contain at least one
-    // underscore, so false positives on regular English words are
-    // effectively zero. The system prompt also instructs the LLM to
-    // backtick-quote node references; this scan is a safety net for
-    // when it forgets.
-    function annotateNodeReferences(rootEl) {
+    // alias with a clickable inline code. The system prompt instructs
+    // the LLM to backtick-quote node references; this scan is the
+    // safety net for when it forgets.
+    //
+    // Scoping: when `targetFlowIds` is provided, the alias map is
+    // built ONLY from canvas nodes on those tabs plus the config nodes
+    // they reference. This mirrors how the LLM saw the workspace at
+    // send time, so a bare alias like `inject` resolves to the inject
+    // on the tab the LLM was discussing instead of whichever inject
+    // RED.nodes.eachNode happens to iterate first. With no scoping
+    // (legacy messages without targetFlowIds), falls back to scanning
+    // every node — same behaviour as before.
+    function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
         if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
         if (!window.LLMPlugin || !LLMPlugin.LLMJsonParser ||
             typeof LLMPlugin.LLMJsonParser.buildFlowLookup !== 'function') return;
 
+        let scoped = Array.isArray(targetFlowIds) && targetFlowIds.length > 0;
         let allNodes = [];
         try {
-            RED.nodes.eachNode(function(n) { if (n) allNodes.push(n); });
-            if (typeof RED.nodes.eachConfig === 'function') {
-                RED.nodes.eachConfig(function(n) { if (n) allNodes.push(n); });
+            if (scoped) {
+                let flowSet = {};
+                targetFlowIds.forEach(function(z) { flowSet[z] = true; });
+                let referencedConfigIds = {};
+                RED.nodes.eachNode(function(n) {
+                    if (!n || !flowSet[n.z]) return;
+                    allNodes.push(n);
+                    // Track config-node references the same way
+                    // collectReferencedConfigs (in UI.getFlowsByIds)
+                    // does, so the scoped alias map covers brokers,
+                    // ui-groups, etc.
+                    Object.keys(n).forEach(function(k) {
+                        if (k === 'id' || k === 'z' || k === 'type' ||
+                            k === 'wires' || k === 'x' || k === 'y') return;
+                        let v = n[k];
+                        if (typeof v === 'string' && v.length > 5) referencedConfigIds[v] = true;
+                    });
+                });
+                if (typeof RED.nodes.eachConfig === 'function') {
+                    RED.nodes.eachConfig(function(cn) {
+                        if (cn && referencedConfigIds[cn.id]) allNodes.push(cn);
+                    });
+                }
+            } else {
+                RED.nodes.eachNode(function(n) { if (n) allNodes.push(n); });
+                if (typeof RED.nodes.eachConfig === 'function') {
+                    RED.nodes.eachConfig(function(n) { if (n) allNodes.push(n); });
+                }
             }
         } catch (e) { return; }
         if (allNodes.length === 0) return;
@@ -253,7 +245,6 @@
         let tn;
         while ((tn = walker.nextNode())) textNodes.push(tn);
 
-        let hits = 0;
         textNodes.forEach(function(textNode) {
             let text = textNode.nodeValue;
             if (!text || text.length === 0) return;
@@ -277,7 +268,6 @@
                 attachNodeRefHandler(code, id);
                 frag.appendChild(code);
                 lastIdx = matchIdx + matchText.length;
-                hits++;
             }
             if (lastIdx === 0) return;
             if (lastIdx < text.length) {
@@ -285,10 +275,6 @@
             }
             textNode.parentNode.replaceChild(frag, textNode);
         });
-        if (hits > 0) {
-            console.log('[LLM Plugin] annotated', hits,
-                'plain-text aliases (of', aliases.length, 'known)');
-        }
     }
 
     // Re-annotate every assistant message in the chat panel. The chat
@@ -302,9 +288,15 @@
     function reannotateAllAssistantMessages() {
         let chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea) return;
-        let contents = chatArea.querySelectorAll('.assistant-message .message-content');
-        for (let i = 0; i < contents.length; i++) {
-            try { annotateNodeReferences(contents[i]); } catch (e) { /* per-msg ignore */ }
+        let messages = chatArea.querySelectorAll('.assistant-message');
+        for (let i = 0; i < messages.length; i++) {
+            let msgEl = messages[i];
+            let content = msgEl.querySelector('.message-content');
+            if (!content) continue;
+            let scope = null;
+            let raw = msgEl.dataset.targetFlowIds;
+            if (raw) { try { scope = JSON.parse(raw); } catch (e) { scope = null; } }
+            try { annotateNodeReferences(content, scope); } catch (e) {}
         }
     }
     function scheduleReannotate() {
@@ -371,6 +363,15 @@
         if (messageMeta && messageMeta.id) {
             message.dataset.messageId = messageMeta.id;
         }
+        // Persist the flow IDs that were sent as LLM context with this
+        // message, so reannotateAllAssistantMessages can rescope alias
+        // resolution after later events (flows:loaded, deploy, etc.).
+        let targetFlowIds = (messageMeta && messageMeta.meta &&
+                             Array.isArray(messageMeta.meta.targetFlowIds))
+            ? messageMeta.meta.targetFlowIds : null;
+        if (targetFlowIds && targetFlowIds.length > 0) {
+            try { message.dataset.targetFlowIds = JSON.stringify(targetFlowIds); } catch (e) {}
+        }
 
         let messageContent = document.createElement('div');
         messageContent.className = 'message-content';
@@ -422,8 +423,7 @@
         // the cold-start race where this runs before flows finish
         // loading.
         if (!isUser) {
-            try { annotateNodeReferences(messageContent); }
-            catch (e) { console.warn('[LLM Plugin] annotateNodeReferences failed:', e); }
+            try { annotateNodeReferences(messageContent, targetFlowIds); } catch (e) {}
         }
 
         message.appendChild(messageContent);
