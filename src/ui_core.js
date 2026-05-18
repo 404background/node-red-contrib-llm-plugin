@@ -1,6 +1,9 @@
 // UI core module — vanilla JS (no jQuery).
 // Handles message rendering, flow context export, and retry logic.
 (function(){
+    // Boot marker so the user can verify in devtools that the *latest*
+    // ui_core.js is actually loaded (the editor or a proxy may cache).
+    try { console.log('[LLM Plugin] ui_core.js loaded - clickable node refs enabled'); } catch (e) {}
     let UI = {};
 
     // Escape HTML special characters to prevent XSS
@@ -39,47 +42,71 @@
         return escapeHtml(text);
     }
 
-    // Focus on a node: canvas nodes get tab-switch + flash-highlight
-    // + centre-and-reveal (mirrors the Debug sidebar's showMessageNode);
-    // config nodes have no canvas position, so we open their edit
-    // dialog instead. Falls back gracefully on older Node-RED versions
-    // or if the node has been deleted.
+    // Focus on a node — mirrors Node-RED's Debug sidebar exactly
+    // (editor-client/src/js/ui/debug.js → showMessageNode):
+    //
+    //   if (n.z)           { RED.workspaces.show(n.z); }
+    //   n.highlighted = true; n.dirty = true;
+    //   RED.view.reveal(n.id);
+    //   ... clear highlighted after ~10 s
+    //
+    // Config nodes have no canvas position, so they open their edit
+    // dialog (RED.editor.editConfig) instead. Logs to the console so
+    // the user can diagnose unresponsive clicks from devtools.
     function focusCanvasNode(nodeId) {
         try {
-            if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
+            if (!nodeId) { console.warn('[LLM Plugin] focusCanvasNode called with empty id'); return; }
+            if (typeof RED === 'undefined' || !RED.nodes) {
+                console.warn('[LLM Plugin] RED.nodes not available'); return;
+            }
             let node = RED.nodes.node(nodeId);
             if (!node) {
+                console.warn('[LLM Plugin] node not found:', nodeId);
                 if (RED.notify) RED.notify('Node no longer exists', 'warning');
                 return;
             }
-            let hasCanvasPos = typeof node.x === 'number' && typeof node.y === 'number';
+            console.log('[LLM Plugin] focusCanvasNode →', { id: node.id, type: node.type, name: node.name, z: node.z });
 
+            let hasCanvasPos = typeof node.x === 'number' && typeof node.y === 'number';
             if (!hasCanvasPos) {
-                // Config node — open its edit dialog. The third arg is the
-                // existing node id (so editConfig edits, not creates).
+                // Config node — open its edit dialog.
                 if (RED.editor && typeof RED.editor.editConfig === 'function') {
                     try { RED.editor.editConfig('', node.type, node.id); return; }
-                    catch (e) { /* fall through */ }
+                    catch (e) { console.warn('[LLM Plugin] editConfig failed:', e); }
                 }
                 if (RED.editor && typeof RED.editor.edit === 'function') {
-                    try { RED.editor.edit(node); return; } catch (e) { /* fall through */ }
+                    try { RED.editor.edit(node); return; }
+                    catch (e) { console.warn('[LLM Plugin] edit failed:', e); }
                 }
-                if (RED.notify) RED.notify('Cannot focus config node "' + (node.name || node.id) + '"', 'warning');
+                if (RED.notify) RED.notify('Cannot focus config "' + (node.name || node.id) + '"', 'warning');
                 return;
             }
 
+            // Canvas node — exactly the Debug-sidebar sequence.
             if (node.z && RED.workspaces && typeof RED.workspaces.show === 'function') {
-                try { RED.workspaces.show(node.z); } catch (e) { /* ignore */ }
+                try { RED.workspaces.show(node.z); }
+                catch (e) { console.warn('[LLM Plugin] workspaces.show failed:', e); }
             }
-            // Flash highlight in the same way the Debug sidebar does.
             try { node.highlighted = true; node.dirty = true; } catch (e) { /* ignore */ }
-            if (RED.view && typeof RED.view.reveal === 'function') {
-                // Single-arg form mirrors the Debug sidebar exactly
-                // and works across Node-RED 1.x - 4.x.
-                try { RED.view.reveal(node.id); } catch (e) { /* ignore */ }
+
+            if (!RED.view || typeof RED.view.reveal !== 'function') {
+                console.warn('[LLM Plugin] RED.view.reveal not available');
+                if (RED.notify) RED.notify('Cannot reveal node (RED.view.reveal missing)', 'error');
+                return;
             }
+            try { RED.view.reveal(node.id); }
+            catch (e) { console.warn('[LLM Plugin] RED.view.reveal threw:', e); }
+
+            // Force a redraw so the highlight flash is visible.
             if (RED.view && typeof RED.view.redraw === 'function') {
                 try { RED.view.redraw(); } catch (e) { /* ignore */ }
+            }
+            // Brief toast confirms the click registered even if the
+            // viewport jump is subtle.
+            if (RED.notify) {
+                RED.notify('Focused: ' + (node.name || node.type) +
+                           ' (' + node.id + ')',
+                           { type: 'info', timeout: 1500 });
             }
             // Clear the flash after ~2.5s so repeated clicks re-trigger.
             setTimeout(function() {
@@ -93,19 +120,31 @@
                 } catch (e) { /* ignore */ }
             }, 2500);
         } catch (e) {
-            console.error('Error focusing node:', e);
+            console.error('[LLM Plugin] focusCanvasNode error:', e);
         }
     }
 
     // Wire a code-like element so clicking it focuses the named node.
+    // Inline styles act as a defence against a stale CSS cache: the
+    // browser may have cached an older llm-plugin_styles.css without
+    // the .llm-node-ref rules, so we set the same look directly on the
+    // element to make sure it ALWAYS looks like a button.
     function attachNodeRefHandler(el, nodeId) {
         el.classList.add('llm-node-ref');
-        el.dataset.nodeId = nodeId;
-        el.title = 'Click to focus on this node';
+        el.setAttribute('data-node-id', nodeId);
+        el.title = 'Click to focus on this node (Ctrl+click to also reveal)';
+        el.style.cursor = 'pointer';
+        el.style.background = '#dceefb';
+        el.style.color = '#0a5cab';
+        el.style.border = '1px solid #b6d8f2';
+        el.style.borderRadius = '3px';
+        el.style.padding = '1px 6px';
+        el.style.userSelect = 'none';
         el.addEventListener('click', function(ev) {
             ev.preventDefault();
             ev.stopPropagation();
-            focusCanvasNode(this.dataset.nodeId);
+            let id = this.getAttribute('data-node-id');
+            focusCanvasNode(id);
         });
     }
 
@@ -214,6 +253,7 @@
         let tn;
         while ((tn = walker.nextNode())) textNodes.push(tn);
 
+        let hits = 0;
         textNodes.forEach(function(textNode) {
             let text = textNode.nodeValue;
             if (!text || text.length === 0) return;
@@ -237,6 +277,7 @@
                 attachNodeRefHandler(code, id);
                 frag.appendChild(code);
                 lastIdx = matchIdx + matchText.length;
+                hits++;
             }
             if (lastIdx === 0) return;
             if (lastIdx < text.length) {
@@ -244,6 +285,10 @@
             }
             textNode.parentNode.replaceChild(frag, textNode);
         });
+        if (hits > 0) {
+            console.log('[LLM Plugin] annotated', hits,
+                'plain-text aliases (of', aliases.length, 'known)');
+        }
     }
 
     // Re-annotate every assistant message in the chat panel. The chat
