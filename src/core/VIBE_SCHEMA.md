@@ -167,11 +167,12 @@ for the full merge contract.
 
 ### Comment-node rule
 
-Comments are kept **only when listed immediately before the canvas node
-they head**. They render as a leading-summary header directly above that
-node. Comments listed mid-sequence or after the last canvas node are
-silently dropped by `toNodeRed`. See [LAYOUT.md](./LAYOUT.md#comment-placement)
-for the placement geometry.
+Each comment heads the **next canvas node in declaration order**.
+Schemas with multiple `{comment, node, comment, node, ...}` pairs are
+fine — every comment lands above its own sequence's first canvas node.
+Trailing comments (no canvas node after them) are dropped by
+`toNodeRed`. See [LAYOUT.md](./LAYOUT.md#comment-placement) for the
+placement geometry.
 
 ### Detection helpers
 
@@ -203,8 +204,9 @@ for the placement geometry.
    matching node entry get a stub `{ type: '<key>-config', config: true,
    _autoStub: true }` (or a mapping from `CONFIG_REF_KEYS` like
    `broker → mqtt-broker`).
-2. **Drop non-leading comments** — comments not immediately preceding a
-   canvas node in declaration order are silently removed.
+2. **Drop trailing comments** — comments with no canvas node later in
+   declaration order are silently removed. All other comments are kept
+   and each heads the next canvas node ahead of it.
 3. **Generate IDs** — fresh `'id_' + base36` per alias.
 4. **Separate canvas / config aliases** — config nodes skip layout.
 5. **Build adjacency from connections**, dropping edges where source is a

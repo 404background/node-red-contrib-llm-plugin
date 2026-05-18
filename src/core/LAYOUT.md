@@ -122,19 +122,19 @@ plus a default-named 100 px node sits 160 px centre-to-centre, leaving
 
 ## Comment placement
 
-Comments are repositioned **only when they appear as a leading summary**
-for the next canvas node in schema declaration order (read off
-`node._llmOrder` set by `FlowConverterCore.toNodeRed`). They are placed
-directly above that canvas node at the same x, one `spacingY` higher.
-Multiple consecutive leading comments stack upward (nearest-to-next at
-`y - spacingY`, the one above it at `y - 2*spacingY`, and so on).
+Each comment is placed directly above the **next canvas node in
+declaration order** (read off `node._llmOrder` set by
+`FlowConverterCore.toNodeRed`). The comment lands at the same x, one
+`spacingY` higher. Multiple comments that share the same following
+canvas node stack upward (nearest-to-next at `y - spacingY`, the one
+above it at `y - 2*spacingY`, and so on).
 
-**Non-leading comments are not supported.** `FlowConverterCore.toNodeRed`
-already drops Vibe Schema comments that appear mid-sequence or after the
-last canvas node, so by the time a comment reaches the layout engine it
-is guaranteed to have only a forward neighbour. Earlier versions handled
-between- and trailing-comment placement too; that logic was removed
-because those positions tended to land in awkward spots.
+A schema like `{c1, n1, c2, n2}` therefore renders as two separate
+heads: `c1` above `n1`, `c2` above `n2`.
+
+**Trailing comments are dropped.** `FlowConverterCore.toNodeRed` strips
+any comment with no canvas node after it, so by the time a comment
+reaches the layout engine it is guaranteed to have a forward neighbour.
 
 ## Pass details
 

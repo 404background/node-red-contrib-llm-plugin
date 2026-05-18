@@ -311,12 +311,11 @@
         });
 
         // --- Comment-node placement rule ---
-        // Comments are kept ONLY when they sit immediately before a canvas
-        // node in schema declaration order (no canvas node preceding them
-        // since the last comment-block boundary, at least one canvas node
-        // following). All other comment positions are dropped to avoid
-        // placing them in visually awkward mid-chain spots.
-        (function dropNonLeadingComments() {
+        // Comments are kept whenever there is a canvas node later in
+        // declaration order to head — `{c1, n1, c2, n2}` keeps both
+        // comments so each lands above its own sequence. Only trailing
+        // comments (no canvas node after them) are dropped.
+        (function dropTrailingComments() {
             function aliasIsCanvas(a) {
                 let s = nodeSpecs[a];
                 if (!s || typeof s.type !== 'string' || !s.type.trim()) return false;
@@ -329,15 +328,6 @@
             let kept = {};
             order.forEach(function(alias, idx) {
                 if (nodeSpecs[alias].type !== 'comment') { kept[alias] = true; return; }
-                // post-canvas? walk backwards skipping comments.
-                let postCanvas = false;
-                for (let j = idx - 1; j >= 0; j--) {
-                    if (nodeSpecs[order[j]].type === 'comment') continue;
-                    if (aliasIsCanvas(order[j])) postCanvas = true;
-                    break;
-                }
-                if (postCanvas) return;
-                // must have a canvas node ahead to head.
                 for (let j = idx + 1; j < order.length; j++) {
                     if (aliasIsCanvas(order[j])) { kept[alias] = true; return; }
                 }
