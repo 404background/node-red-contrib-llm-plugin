@@ -74,11 +74,9 @@
             // Flash highlight in the same way the Debug sidebar does.
             try { node.highlighted = true; node.dirty = true; } catch (e) { /* ignore */ }
             if (RED.view && typeof RED.view.reveal === 'function') {
-                // Second arg `true` triggers the centre animation in
-                // Node-RED 3+. Older versions ignore it.
-                try { RED.view.reveal(node.id, true); } catch (e) {
-                    try { RED.view.reveal(node.id); } catch (e2) { /* ignore */ }
-                }
+                // Single-arg form mirrors the Debug sidebar exactly
+                // and works across Node-RED 1.x - 4.x.
+                try { RED.view.reveal(node.id); } catch (e) { /* ignore */ }
             }
             if (RED.view && typeof RED.view.redraw === 'function') {
                 try { RED.view.redraw(); } catch (e) { /* ignore */ }
@@ -248,6 +246,48 @@
         });
     }
 
+    // Re-annotate every assistant message in the chat panel. The chat
+    // panel can render historical messages BEFORE Node-RED finishes
+    // populating RED.nodes (the side panel initializes early in the
+    // editor's bootstrap), in which case the initial
+    // annotateNodeReferences call finds an empty alias map and skips
+    // silently. Hooking RED.events lets us catch up once nodes arrive,
+    // and keeps existing badges in sync when the user edits / deploys.
+    let _reannotateDebounce = null;
+    function reannotateAllAssistantMessages() {
+        let chatArea = document.getElementById('llm-plugin-chat');
+        if (!chatArea) return;
+        let contents = chatArea.querySelectorAll('.assistant-message .message-content');
+        for (let i = 0; i < contents.length; i++) {
+            try { annotateNodeReferences(contents[i]); } catch (e) { /* per-msg ignore */ }
+        }
+    }
+    function scheduleReannotate() {
+        if (_reannotateDebounce) clearTimeout(_reannotateDebounce);
+        _reannotateDebounce = setTimeout(function() {
+            _reannotateDebounce = null;
+            reannotateAllAssistantMessages();
+        }, 200);
+    }
+    (function registerFlowsReadyHook() {
+        if (typeof RED === 'undefined' || !RED.events || typeof RED.events.on !== 'function') {
+            setTimeout(registerFlowsReadyHook, 200);
+            return;
+        }
+        // flows:loaded fires once after initial flow load. The node-level
+        // events keep annotations fresh as the user edits / deploys.
+        // workspace:change picks up tab switches that bring config nodes
+        // for newly-visited subflows into RED.nodes.
+        let events = ['flows:loaded', 'deploy', 'workspace:change',
+                      'nodes:add', 'nodes:remove', 'nodes:change'];
+        events.forEach(function(ev) {
+            try { RED.events.on(ev, scheduleReannotate); } catch (e) { /* ignore */ }
+        });
+        // Also run once immediately in case RED.nodes is already populated
+        // (e.g. plugin loaded after editor was already up).
+        scheduleReannotate();
+    })();
+
     function createRestoreCheckpointButton(checkpointId) {
         let btn = document.createElement('button');
         btn.className = 'restore-btn';
@@ -331,9 +371,14 @@
         }
 
         // Make inline code that names a current canvas node clickable -
-        // mirrors Node-RED's debug-node "jump to node" behaviour.
+        // mirrors Node-RED's debug-node "jump to node" behaviour. The
+        // immediate call wins when RED.nodes is already populated; the
+        // flows-loaded hook (registered once at module load) catches
+        // the cold-start race where this runs before flows finish
+        // loading.
         if (!isUser) {
-            try { annotateNodeReferences(messageContent); } catch (e) { /* ignore */ }
+            try { annotateNodeReferences(messageContent); }
+            catch (e) { console.warn('[LLM Plugin] annotateNodeReferences failed:', e); }
         }
 
         message.appendChild(messageContent);
@@ -469,6 +514,9 @@
       };
 
       UI.formatMessage = formatMessage;
+      UI.focusCanvasNode = focusCanvasNode;
+      UI.annotateNodeReferences = annotateNodeReferences;
+      UI.reannotateAllAssistantMessages = reannotateAllAssistantMessages;
 
     UI.retryLastUserMessage = function() {
         try {
