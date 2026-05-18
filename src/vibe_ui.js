@@ -217,6 +217,84 @@
             if (e.key === 'Enter' && e.ctrlKey) handleGenerate();
         });
 
+        // --- Shell-style chat history navigation (Up / Down arrows) ---
+        // Up walks backwards through this chat's user messages; Down
+        // walks forward and finally restores whatever the user had
+        // typed before they started navigating. Only triggers when
+        // the cursor sits on the first / last visual line of the
+        // textarea so plain multi-line editing still works.
+        let historyIndex = null;        // null when not navigating
+        let draftBeforeHistory = '';
+
+        function getUserMessageHistory() {
+            if (!window.LLMPlugin || !LLMPlugin.ChatManager) return [];
+            let id = LLMPlugin.ChatManager.getCurrentChatId();
+            let hist = LLMPlugin.ChatManager.getChatHistory && LLMPlugin.ChatManager.getChatHistory();
+            let chat = hist && id ? hist[id] : null;
+            if (!chat || !Array.isArray(chat.messages)) return [];
+            return chat.messages.filter(function(m) { return m && m.isUser; });
+        }
+        function cursorAtFirstLine(el) {
+            let s = el.selectionStart;
+            return s === el.selectionEnd && el.value.lastIndexOf('\n', s - 1) === -1;
+        }
+        function cursorAtLastLine(el) {
+            let s = el.selectionStart;
+            return s === el.selectionEnd && el.value.indexOf('\n', s) === -1;
+        }
+        function applyHistoryValue(value) {
+            promptInput.value = value;
+            let end = value.length;
+            try { promptInput.setSelectionRange(end, end); } catch (e) { /* ignore */ }
+        }
+        function resetHistoryNav() {
+            historyIndex = null;
+            draftBeforeHistory = '';
+        }
+        // Manual edits invalidate the current history walk. Programmatic
+        // .value assignments (our applyHistoryValue, clear-on-send) do
+        // NOT fire 'input', so this listener only catches real typing.
+        promptInput.addEventListener('input', resetHistoryNav);
+
+        promptInput.addEventListener('keydown', function(e) {
+            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+            if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+
+            if (e.key === 'ArrowUp') {
+                if (!cursorAtFirstLine(this)) return;
+                let msgs = getUserMessageHistory();
+                if (msgs.length === 0) return;
+                if (historyIndex === null) {
+                    draftBeforeHistory = this.value;
+                    historyIndex = msgs.length - 1;
+                } else if (historyIndex > 0) {
+                    historyIndex--;
+                } else {
+                    return; // already at oldest
+                }
+                if (historyIndex >= msgs.length) historyIndex = msgs.length - 1;
+                e.preventDefault();
+                applyHistoryValue(msgs[historyIndex].content || '');
+            } else { // ArrowDown
+                if (historyIndex === null) return;
+                if (!cursorAtLastLine(this)) return;
+                let msgs = getUserMessageHistory();
+                if (historyIndex < msgs.length - 1) {
+                    historyIndex++;
+                    e.preventDefault();
+                    applyHistoryValue(msgs[historyIndex].content || '');
+                } else {
+                    // Stepped past the newest entry -> restore draft.
+                    e.preventDefault();
+                    applyHistoryValue(draftBeforeHistory);
+                    resetHistoryNav();
+                }
+            }
+        });
+
+        // Expose so the send path can reset after clearing the input.
+        promptInput._llmPluginResetHistoryNav = resetHistoryNav;
+
         function resetGenerateBtn() {
             generateBtn.disabled = false;
             generateBtn.classList.remove('stop-btn');
@@ -450,6 +528,9 @@
                 LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode }, flowIdsToSend);
             }
             promptInput.value = '';
+            if (typeof promptInput._llmPluginResetHistoryNav === 'function') {
+                promptInput._llmPluginResetHistoryNav();
+            }
 
             // Checkpoints are captured at import time (right before a flow
             // edit is applied), not here — chat sends that don't end up
