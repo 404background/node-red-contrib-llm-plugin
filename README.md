@@ -73,6 +73,11 @@ Always ensure you ignore these credential files in your `.gitignore` and do not 
 
 - This plugin is under active development.
 - Model output quality varies by model and prompt.
+- **Cloud / sandboxed Node-RED hosts** (e.g. enebular): chat history
+  and flow checkpoints are persisted to `<userDir>/llm-plugin/` when
+  that location is writable, else to the OS temp directory, else
+  in-memory only. The plugin never writes to its own install dir, so
+  it loads cleanly on read-only plugin filesystems.
 
 ## Links
 

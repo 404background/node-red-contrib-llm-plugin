@@ -257,9 +257,16 @@ chat history is sent — each request is stateless to the LLM.
 - **Module communication**: `window.LLMPlugin` namespace
   (`CanvasLayout`, `FlowConverterCore` / `Configurator`,
   `LLMJsonParser`, `ChatManager`, `UI`, `Importer`).
-- **Chat storage**: `<plugin-root>/.logs/llm-plugin/chats/` with
-  `YYYY-MM-DD-<title>-<id>.json`. Checkpoints alongside in
-  `.logs/llm-plugin/checkpoints/`.
+- **Chat / checkpoint storage**: server-side, in the first writable
+  location of: `<RED.settings.userDir>/llm-plugin/`,
+  `<os.tmpdir()>/llm-plugin/`, or **memory-only** (logs a warning and
+  keeps everything in RAM until the server restarts). The plugin no
+  longer writes to its own install directory, so it installs cleanly on
+  sandboxed cloud Node-RED hosts (enebular, etc.) where the plugin
+  directory is read-only.
+- **`prompt_system.txt`** is loaded from the plugin install dir on
+  startup; if that read fails (extreme sandbox), a minimal embedded
+  prompt is used as fallback.
 - **Settings storage**: `RED.settings.get/set('llmPluginSettings')` —
   in Node-RED's internal config, not in exported flows.
 - **Adding a new endpoint**: add to `server.js`, restart Node-RED.

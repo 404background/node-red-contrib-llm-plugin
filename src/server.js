@@ -2,6 +2,7 @@
 // Registers all HTTP admin endpoints used by the client sidebar.
 const fs = require('fs-extra');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 const { exec } = require('child_process');
@@ -9,18 +10,56 @@ const { OpenAI } = require('openai');
 const Configurator = require('./core/flow_converter_core');
 const LLMJsonParser = require('./core/llm_json_parser');
 
-// Load system prompt template once at startup
-const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(
-    path.join(__dirname, 'prompt_system.txt'), 'utf8'
-);
+// Fall back to a minimal embedded prompt if the bundled file is
+// unreadable (sandboxed cloud environments occasionally restrict reads).
+const FALLBACK_PROMPT = 'You are a Node-RED expert. Be concise; reply in the user\'s language. ' +
+    'When modifying flows, output one ```json``` block in Vibe Schema with applyMode, nodes, connections; otherwise text only.\n';
+let SYSTEM_PROMPT_TEMPLATE;
+try {
+    SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_system.txt'), 'utf8');
+} catch (e) {
+    SYSTEM_PROMPT_TEMPLATE = FALLBACK_PROMPT;
+}
 
 function createLLMPluginServer(RED) {
-    // Create logs directory in plugin folder
-    const logsDir = path.join(__dirname, '..', '.logs', 'llm-plugin');
-    const checkpointsDir = path.join(logsDir, 'checkpoints');
-    const clientEventsLog = path.join(logsDir, 'client-events.log');
-    fs.ensureDirSync(logsDir);
-    fs.ensureDirSync(checkpointsDir);
+    // --- Storage location resolution ---
+    // Try, in order:
+    //   1) <userDir>/llm-plugin/   (Node-RED's standard writable user dir)
+    //   2) <os.tmpdir>/llm-plugin/  (ephemeral, but writable on sandboxed
+    //                                cloud Node-REDs like enebular)
+    //   3) in-memory only           (no persistence; chats / checkpoints
+    //                                live in RAM until the server restarts)
+    let baseDir = null;
+    let chatsDir = null;
+    let checkpointsDir = null;
+    let clientEventsLog = null;
+    let persistenceEnabled = false;
+    let storageMode = 'memory';
+    let memChats = {};
+    let memCheckpoints = {};
+
+    (function setupStorage() {
+        let candidates = [];
+        if (RED.settings && RED.settings.userDir) candidates.push({ root: RED.settings.userDir, label: 'userDir' });
+        try { candidates.push({ root: os.tmpdir(), label: 'tmpdir' }); } catch (e) {}
+        for (let i = 0; i < candidates.length; i++) {
+            let base = path.join(candidates[i].root, 'llm-plugin');
+            try {
+                fs.ensureDirSync(base);
+                fs.ensureDirSync(path.join(base, 'chats'));
+                fs.ensureDirSync(path.join(base, 'checkpoints'));
+                baseDir = base;
+                chatsDir = path.join(base, 'chats');
+                checkpointsDir = path.join(base, 'checkpoints');
+                clientEventsLog = path.join(base, 'client-events.log');
+                persistenceEnabled = true;
+                storageMode = candidates[i].label;
+                RED.log.info('[LLM Plugin] Storage: ' + base + ' (' + candidates[i].label + ')');
+                return;
+            } catch (e) { /* try next */ }
+        }
+        RED.log.warn('[LLM Plugin] No writable storage; chat history and checkpoints will be kept in memory only.');
+    })();
 
     function writeClientEvent(level, event, message, meta) {
         const lv = String(level || 'info').toLowerCase();
@@ -33,14 +72,10 @@ function createLLMPluginServer(RED) {
             meta: meta && typeof meta === 'object' ? meta : {}
         };
 
-        try {
-            fs.appendFile(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8', (err) => {
-                if (err) {
-                    // silently ignore log write errors
-                }
-            });
-        } catch (e) {
-            // ignore log file errors to avoid breaking user flow
+        if (persistenceEnabled && clientEventsLog) {
+            try {
+                fs.appendFile(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8', () => {});
+            } catch (e) { /* logs are best-effort */ }
         }
 
         const metaPreview = (() => {
@@ -157,12 +192,15 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
 
     function saveChatHistory(chatId, chatData) {
+        if (!persistenceEnabled) {
+            memChats[chatId] = chatData;
+            return;
+        }
         try {
             const date = new Date().toISOString().split('T')[0];
             const rawTitle = (chatData.title && typeof chatData.title === 'string') ? chatData.title : 'untitled';
             const sanitizedTitle = rawTitle.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
             const filename = `${date}-${sanitizedTitle}-${chatId}.json`;
-            const chatsDir = path.join(logsDir, 'chats');
             const filepath = path.join(chatsDir, filename);
             fs.ensureDirSync(chatsDir);
 
@@ -180,10 +218,14 @@ function createLLMPluginServer(RED) {
         }
     }
 
-    // Utility function to load all chat histories
     function loadAllChatHistories() {
+        if (!persistenceEnabled) {
+            // Return a shallow clone so callers can't mutate our memory store.
+            let copy = {};
+            Object.keys(memChats).forEach(function(k) { copy[k] = memChats[k]; });
+            return copy;
+        }
         try {
-            const chatsDir = path.join(logsDir, 'chats');
             if (!fs.existsSync(chatsDir)) {
                 return {};
             }
@@ -429,6 +471,10 @@ function createLLMPluginServer(RED) {
             meta: meta || {},
             flow: Array.isArray(flow) ? flow : []
         };
+        if (!persistenceEnabled) {
+            memCheckpoints[checkpointId] = record;
+            return record;
+        }
         try {
             writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
         } catch (e) {
@@ -714,7 +760,15 @@ function createLLMPluginServer(RED) {
     RED.httpAdmin.post('/llm-plugin/delete-chat', function(req, res) {
         try {
             const { chatId, filename } = req.body || {};
-            const chatsDir = path.join(logsDir, 'chats');
+
+            if (!persistenceEnabled) {
+                if (chatId) delete memChats[chatId];
+                Object.keys(memCheckpoints).forEach(function(k) {
+                    if (memCheckpoints[k] && memCheckpoints[k].chatId === chatId) delete memCheckpoints[k];
+                });
+                return res.json({ success: true });
+            }
+
             if (!fs.existsSync(chatsDir)) return res.json({ success: true });
 
             function cleanupCheckpointsByChatId(targetChatId) {
@@ -807,6 +861,11 @@ function createLLMPluginServer(RED) {
             const id = path.basename(String(req.params.id || ''));
             if (!id || !/^cp_\d+_[a-z0-9]+$/.test(id)) {
                 return res.status(400).json({ error: 'Invalid checkpoint id' });
+            }
+            if (!persistenceEnabled) {
+                const cp = memCheckpoints[id];
+                if (!cp) return res.status(404).json({ error: 'Checkpoint not found' });
+                return res.json({ checkpoint: cp });
             }
             const fp = path.resolve(checkpointsDir, id + '.json');
             if (!fp.startsWith(path.resolve(checkpointsDir) + path.sep)) {
