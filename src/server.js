@@ -274,22 +274,31 @@ function createLLMPluginServer(RED) {
     //  Chat history persistence                                           //
     // ------------------------------------------------------------------ //
 
+    function sanitizeChatId(id) {
+        const s = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 64);
+        return s || 'unknown';
+    }
+
     function saveChatHistory(chatId, chatData) {
+        const safeChatId = sanitizeChatId(chatId);
         if (!persistenceEnabled) {
-            memChats[chatId] = chatData;
+            memChats[safeChatId] = chatData;
             return;
         }
         try {
             const date = new Date().toISOString().split('T')[0];
             const rawTitle = (chatData.title && typeof chatData.title === 'string') ? chatData.title : 'untitled';
             const sanitizedTitle = rawTitle.replace(/[^a-zA-Z0-9_-]/g, '-').substring(0, 50);
-            const filename = `${date}-${sanitizedTitle}-${chatId}.json`;
-            const filepath = path.join(chatsDir, filename);
+            const filename = `${date}-${sanitizedTitle}-${safeChatId}.json`;
+            const filepath = path.resolve(chatsDir, filename);
+            if (!filepath.startsWith(path.resolve(chatsDir) + path.sep)) {
+                throw new Error('Refused to write outside chats dir');
+            }
             fs.ensureDirSync(chatsDir);
 
             // Clean up any older files for this chatId to prevent duplicates
             try {
-                const existingFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith(`-${chatId}.json`));
+                const existingFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith(`-${safeChatId}.json`));
                 existingFiles.forEach(file => {
                     if (file !== filename) fs.unlinkSync(path.join(chatsDir, file));
                 });
