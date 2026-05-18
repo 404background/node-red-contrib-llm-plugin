@@ -510,6 +510,7 @@
         }
 
         // Step 3.4 (./LAYOUT.md): shift downstream chains to clear inserted nodes.
+        let shiftedIds = {};
         let seedDeltas = {};
         canvasNodes.forEach(function(n) {
             if (!positioned[n.id] || existingIdMap[n.id]) return;
@@ -542,11 +543,42 @@
                 let node = byId[id];
                 if (node && typeof node.x === 'number') {
                     node.x = Math.round(node.x + toShift[id]);
+                    shiftedIds[id] = true;
                 }
             });
         }
 
-        // Step 3.5: push new nodes down on residual overlap.
+        // Compute connected components over the live wire adjacency.
+        // Used by Step 3.5a (within-component sibling nudge) and Step 3.5b
+        // (cross-component push-down).
+        let compOf = {};
+        (function discoverComponents() {
+            let visited = {};
+            let cid = 0;
+            canvasNodes.forEach(function(n) {
+                if (visited[n.id]) return;
+                let queue = [n.id];
+                visited[n.id] = true;
+                while (queue.length > 0) {
+                    let cur = queue.shift();
+                    compOf[cur] = cid;
+                    let neighbors = (outgoing[cur] || []).concat(incoming[cur] || []);
+                    for (let i = 0; i < neighbors.length; i++) {
+                        if (!visited[neighbors[i]]) {
+                            visited[neighbors[i]] = true;
+                            queue.push(neighbors[i]);
+                        }
+                    }
+                }
+                cid++;
+            });
+        })();
+
+        // Step 3.5a: within-component sibling nudge — when a newly-placed
+        // node ends up at the same row as a same-component node (e.g. two
+        // siblings of one predecessor), push it down by spacingY until
+        // clear. Cross-component collisions are handled by Step 3.5b so
+        // we deliberately skip them here.
         let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
         let newlyPlaced = canvasNodes.filter(function(n) {
             return !existingIdMap[n.id] && positioned[n.id];
@@ -563,12 +595,11 @@
                 for (let ni = 0; ni < newlyPlaced.length; ni++) {
                     let cur = newlyPlaced[ni];
                     let curHalf = getNodeWidth(cur, opts) / 2;
+                    let curComp = compOf[cur.id];
                     for (let oi = 0; oi < allPositioned.length; oi++) {
                         let other = allPositioned[oi];
                         if (other.id === cur.id) continue;
-                        // Treat as overlap when their horizontal centres are
-                        // within half a node's worth of clearance AND their
-                        // rows are within 0.8 * spacingY.
+                        if (compOf[other.id] !== curComp) continue;
                         let otherHalf = getNodeWidth(other, opts) / 2;
                         let xThreshold = curHalf + otherHalf + edgeGap * 0.5;
                         if (Math.abs((cur.x || 0) - (other.x || 0)) < xThreshold &&
@@ -580,6 +611,87 @@
                 }
             }
         }
+
+        // Step 3.5b: cross-component push — when an unrelated component
+        // sits where the modified component now extends, shift the WHOLE
+        // unrelated component down so the shape of the other flow is
+        // preserved. "Modified" = contains a new node or a Step 3.4
+        // horizontally-shifted node. Cascade: a pushed component itself
+        // becomes a propagator for the next pass.
+        // Components that started ABOVE a modified component are never
+        // pushed (we only ever move things down).
+        (function pushCollidingComponentsDown() {
+            let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+            let nodesByComp = {};
+            allPositioned.forEach(function(n) {
+                let c = compOf[n.id];
+                if (c === undefined) return;
+                (nodesByComp[c] = nodesByComp[c] || []).push(n);
+            });
+
+            function bbox(nodes) {
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                for (let i = 0; i < nodes.length; i++) {
+                    let n = nodes[i];
+                    let w = getNodeWidth(n, opts);
+                    let x = n.x || 0;
+                    let y = n.y || 0;
+                    if (x - w / 2 < minX) minX = x - w / 2;
+                    if (x + w / 2 > maxX) maxX = x + w / 2;
+                    if (y - nodeHeight / 2 < minY) minY = y - nodeHeight / 2;
+                    if (y + nodeHeight / 2 > maxY) maxY = y + nodeHeight / 2;
+                }
+                return { minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+            }
+
+            let modifiedComps = {};
+            newlyPlaced.forEach(function(n) {
+                let c = compOf[n.id];
+                if (c !== undefined) modifiedComps[c] = true;
+            });
+            Object.keys(shiftedIds).forEach(function(id) {
+                let c = compOf[id];
+                if (c !== undefined) modifiedComps[c] = true;
+            });
+            if (Object.keys(modifiedComps).length === 0) return;
+
+            let compBoxes = {};
+            Object.keys(nodesByComp).forEach(function(c) {
+                compBoxes[c] = bbox(nodesByComp[c]);
+            });
+
+            let safety = Object.keys(nodesByComp).length + 5;
+            let didShift = true;
+            while (didShift && safety-- > 0) {
+                didShift = false;
+                let modIds = Object.keys(modifiedComps);
+                for (let mi = 0; mi < modIds.length; mi++) {
+                    let mid = modIds[mi];
+                    let mBox = compBoxes[mid];
+                    let othIds = Object.keys(nodesByComp);
+                    for (let oi = 0; oi < othIds.length; oi++) {
+                        let oid = othIds[oi];
+                        if (oid === mid) continue;
+                        if (modifiedComps[oid]) continue;
+                        let oBox = compBoxes[oid];
+                        // Skip components that started above the modified one.
+                        if (oBox.minY < mBox.minY) continue;
+                        // Require horizontal AND vertical bbox overlap.
+                        if (oBox.maxX < mBox.minX || oBox.minX > mBox.maxX) continue;
+                        if (oBox.maxY < mBox.minY || oBox.minY > mBox.maxY) continue;
+                        let dy = (mBox.maxY + bandGap) - oBox.minY;
+                        if (dy <= 0) continue;
+                        let dyR = Math.round(dy);
+                        nodesByComp[oid].forEach(function(n) {
+                            if (typeof n.y === 'number') n.y = n.y + dyR;
+                        });
+                        compBoxes[oid] = bbox(nodesByComp[oid]);
+                        modifiedComps[oid] = true;
+                        didShift = true;
+                    }
+                }
+            }
+        })();
 
         // Step 3.6: position new comments by schema declaration order so
         // they don't fall into the orphan band below.

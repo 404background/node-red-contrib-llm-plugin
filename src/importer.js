@@ -531,9 +531,13 @@
                 getNodeWidth: liveNodeWidth
             };
             if (Object.keys(baseIds).length === 0) {
+                // Fresh flow: honour maxColumns so long chains fold neatly.
                 layout.reflowCanvasNodes(rebuilt, layoutOpts);
             } else {
-                layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, layoutOpts);
+                // Incremental edit: disable column folding so the existing
+                // flow shape is preserved and new nodes just extend right.
+                let incrementalOpts = Object.assign({}, layoutOpts, { maxColumns: Infinity });
+                layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
             }
         }
 

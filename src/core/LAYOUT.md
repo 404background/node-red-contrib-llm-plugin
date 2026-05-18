@@ -184,10 +184,23 @@ a comment reaches the layout engine it is guaranteed to have a target.
 | 1 | Restore `basePositions[id]` for every id in `existingIdMap`. |
 | 2 | `buildWireAdjacency` over the canvas-node set. |
 | 3 | Iteratively place each new node next to its positioned neighbours: both → `x = max(rightEdge(pred)) + edgeGap + width(N)/2`, `y = mid(avg(pred.y), avg(succ.y))`. Only preds → above, right of preds. Only succs → above, left of succs. |
-| 3.4 | For each `(new node N, existing succ S)` pair, if `rightEdge(N) + edgeGap > leftEdge(S)`, BFS forward through `outgoing` from S and shift every reachable node's x by `needed`. Max shift wins on converging paths. |
-| 3.5 | Push any newly placed node down by `spacingY` if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of another positioned node AND their rows are within `spacingY*0.8`. Re-runs until stable. |
+| 3.4 | For each `(new node N, existing succ S)` pair, if `rightEdge(N) + edgeGap > leftEdge(S)`, BFS forward through `outgoing` from S and shift every reachable node's x by `needed`. Max shift wins on converging paths. IDs touched here are recorded as "shifted" and feed into Step 3.5b. |
+| 3.5a | **Within-component nudge** — push any newly placed node down by `spacingY` if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of a **same-component** positioned node AND their rows are within `spacingY*0.8`. Re-runs until stable. Cross-component collisions are deliberately ignored here (handled by 3.5b). |
+| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For every (modified `M`, unmodified `O`) pair where `O.bbox.minY ≥ M.bbox.minY` and the bboxes overlap in both axes, shift `O` whole by `dy = (M.maxY + bandGap) − O.minY` so `O`'s top sits just below `M`'s bottom + `bandGap`. Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
 | 3.6 | `repositionCommentsByLlmOrder` for new leading comments. |
 | 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes at `maxY + bandGap`, left-aligned to `minX`. |
+
+#### `maxColumns` in incremental layout
+
+`placeAddedNodesNearNeighbors` accepts a `maxColumns` option, but in
+incremental mode the caller typically passes `Infinity` so the existing
+flow shape is preserved — newly inserted chains extend rightward
+without being folded into new rows. Only the orphan-band sub-layout in
+Step 4 honours `maxColumns`, because orphans form their own fresh
+graph. The LLM importer (`src/importer.js`) follows this convention:
+fresh flows go through `reflowCanvasNodes` with the default
+`maxColumns: 5`; edits go through `placeAddedNodesNearNeighbors` with
+`maxColumns: Infinity`.
 
 #### Worked examples
 
@@ -207,3 +220,17 @@ Wide N (label "Compute aggregated rolling average" → 340 px):
 | Step 3.4 | (100, 100) | (390, 100) | (650, 100) ← +370 |
 
 `A→N = (120+340)/2 + 60 = 290`, `N→B = (340+120)/2 + 60 = 290`.
+
+Cross-component push (Step 3.5b), `bandGap = 80`, `nodeHeight = 30`:
+
+Flow 1 (component M, edited): `A(100,100) → B(280,100) → C-new(460,100)`.
+Flow 2 (component O, untouched): `D(100,180) → E(280,180)`.
+
+- `M.bbox = {x:[40, 520], y:[85, 115]}`, `O.bbox = {x:[40, 340], y:[165, 195]}`.
+- Bboxes overlap horizontally; `O.minY (165) > M.minY (85)`; no vertical
+  overlap → no shift required. `D`/`E` stay at `y=180`.
+
+Now insert a tall stack so M grows downward to `y=200`:
+- `M.bbox.maxY = 215`, `O.minY = 165` → `dy = 215 + 80 − 165 = 130`.
+- `D`/`E` both shift by `+130` → `y=310`. O's shape (its internal
+  horizontal layout) is preserved exactly.
