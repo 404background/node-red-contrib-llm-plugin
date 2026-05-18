@@ -64,10 +64,9 @@ The model will then follow real node/property patterns from that sample instead 
 
 ## Security Notice
 
-When sharing your Node-RED project (e.g., via Git, exporting the user directory, or sharing the environment), please be aware that this plugin saves your API keys (like OpenAI) using the standard Node-RED settings API (`RED.settings`). 
-Depending on your Node-RED configuration, these settings may be stored in files such as `flows_cred.json` or `.config.json` within your Node-RED user directory. 
-**This is not unique to this plugin; any Node-RED node or plugin storing credentials works similarly.**
-Always ensure you ignore these credential files in your `.gitignore` and do not share them publicly to prevent accidental leakage of your private API keys. The plugin itself masks keys in the UI and redacts them from logs, but the underlying storage file on your disk remains sensitive.
+API keys (e.g. OpenAI) are stored in Node-RED's **encrypted credentials store** (`flows_cred.json`, AES-encrypted with your `credentialSecret`) via `RED.nodes.addCredentials`. Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs.
+
+The encrypted file is only as safe as your `credentialSecret`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `flows_cred.json`, `.config.*.json`, and your `settings.js` out of the share — and never publish your `credentialSecret`. Older installs that stored the key in plaintext are migrated to the encrypted store automatically on first boot.
 
 ## Notes
 

@@ -95,16 +95,99 @@ function createLLMPluginServer(RED) {
     }
 
     // ------------------------------------------------------------------ //
-    //  Settings persistence                                               //
+    //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
+    //
+    // Secrets (currently just the OpenAI API key) live in Node-RED's
+    // `flows_cred.json` via `RED.nodes.addCredentials` / `getCredentials`
+    // — that file is encrypted at rest with the user's `credentialSecret`.
+    // Non-secret settings stay in `RED.settings` (plain JSON).
+    //
+    // Caveat: `RED.nodes.cleanCredentials` strips any credential whose id
+    // isn't referenced by an actual flow node, which would erase our
+    // synthetic id on every deploy. We mirror to an in-memory cache and
+    // re-add after `flows:started` to survive the cleanup.
 
-    function getPluginSettings() {
-        return RED.settings.get('llmPluginSettings') || {};
+    const CREDS_ID = 'llm-plugin-credentials';
+    let credsCache = null;
+    const credsApiAvailable = !!(RED.nodes && typeof RED.nodes.getCredentials === 'function'
+                                          && typeof RED.nodes.addCredentials === 'function');
+
+    function loadCredsFromRuntime() {
+        if (!credsApiAvailable) return {};
+        try { return RED.nodes.getCredentials(CREDS_ID) || {}; }
+        catch (e) { return {}; }
     }
 
-    // Save settings to RED.settings
+    function loadCreds() {
+        if (credsCache === null) credsCache = loadCredsFromRuntime();
+        return credsCache;
+    }
+
+    function persistCreds() {
+        if (!credsApiAvailable) return;
+        try {
+            // addCredentials returns a Promise in modern Node-RED.
+            Promise.resolve(RED.nodes.addCredentials(CREDS_ID, credsCache || {})).catch(function(e) {
+                RED.log.warn('[LLM Plugin] Failed to persist credential: ' + (e && e.message ? e.message : e));
+            });
+        } catch (e) {
+            RED.log.warn('[LLM Plugin] Failed to persist credential: ' + (e && e.message ? e.message : e));
+        }
+    }
+
+    function setCredField(key, value) {
+        let creds = loadCreds();
+        if (value === '' || value === null || value === undefined) delete creds[key];
+        else creds[key] = value;
+        persistCreds();
+    }
+
+    // Merge secrets back in for runtime use; the client GET handler will
+    // mask the API key separately before responding.
+    function getPluginSettings() {
+        let s = Object.assign({}, RED.settings.get('llmPluginSettings') || {});
+        let creds = loadCreds();
+        if (creds.openaiApiKey) s.openaiApiKey = creds.openaiApiKey;
+        return s;
+    }
+
+    // Strips secret fields from `settings` (routed to encrypted creds
+    // instead) and persists the rest as plain settings.
     function savePluginSettings(settings) {
-        RED.settings.set('llmPluginSettings', settings);
+        let plain = Object.assign({}, settings);
+        if ('openaiApiKey' in plain) {
+            setCredField('openaiApiKey', plain.openaiApiKey);
+            delete plain.openaiApiKey;
+        }
+        RED.settings.set('llmPluginSettings', plain);
+    }
+
+    // One-time migration: pull a plaintext API key out of an older
+    // `llmPluginSettings` store into the encrypted credentials store.
+    (function migrateLegacyApiKey() {
+        let raw = RED.settings.get('llmPluginSettings') || {};
+        if (!raw.openaiApiKey) return;
+        if (!credsApiAvailable) return;
+        let creds = loadCreds();
+        if (creds.openaiApiKey) {
+            // Both present: prefer the encrypted copy and clear the plaintext.
+            delete raw.openaiApiKey;
+            RED.settings.set('llmPluginSettings', raw);
+            return;
+        }
+        creds.openaiApiKey = raw.openaiApiKey;
+        persistCreds();
+        delete raw.openaiApiKey;
+        RED.settings.set('llmPluginSettings', raw);
+        RED.log.info('[LLM Plugin] Migrated API key from settings to encrypted credentials store.');
+    })();
+
+    // Node-RED clears unreferenced credentials on every deploy; re-add ours.
+    if (RED.events && typeof RED.events.on === 'function') {
+        RED.events.on('flows:started', function() {
+            if (credsCache && Object.keys(credsCache).length > 0) persistCreds();
+        });
     }
 
     // Mask API key for safe client-side display (never expose full key)

@@ -213,7 +213,7 @@ Main sidebar entry. `createLLMPluginUI()` builds the DOM;
 
 | Section | Key functions |
 |---------|---------------|
-| Settings | `getPluginSettings`, `savePluginSettings`, `maskApiKey`, `redactSecrets` |
+| Settings + credentials | `getPluginSettings`, `savePluginSettings`, `loadCreds` / `persistCreds` / `setCredField`, `maskApiKey`, `redactSecrets` |
 | Ollama discovery | `listOllamaModels` (CLI + HTTP), `listOllamaModelsFromApi` |
 | Chat history | `saveChatHistory`, `loadAllChatHistories` (per-chat JSON files) |
 | Prompt construction | `buildFlowContextDescription`, `buildMessages` (loads `prompt_system.txt`, calls `Configurator.toIntermediate`) |
@@ -241,6 +241,13 @@ chat history is sent — each request is stateless to the LLM.
 
 - All endpoints sit on `RED.httpAdmin` (picks up `adminAuth` when
   configured).
+- API key is stored in Node-RED's encrypted credentials store
+  (`flows_cred.json`, AES-encrypted with `credentialSecret`) via
+  `RED.nodes.addCredentials` / `getCredentials` under a synthetic id
+  `llm-plugin-credentials`. Plaintext keys from older installs are
+  migrated automatically on first boot. A `flows:started` listener
+  re-adds the credential after Node-RED's `cleanCredentials` strips
+  unreferenced ids.
 - API key never returned to the client; masked via `maskApiKey()`. POST
   whitelist prevents field injection.
 - Server-side `maxPromptLength` cap (default 10 000 chars, range
@@ -267,8 +274,10 @@ chat history is sent — each request is stateless to the LLM.
 - **`prompt_system.txt`** is loaded from the plugin install dir on
   startup; if that read fails (extreme sandbox), a minimal embedded
   prompt is used as fallback.
-- **Settings storage**: `RED.settings.get/set('llmPluginSettings')` —
-  in Node-RED's internal config, not in exported flows.
+- **Settings storage**: non-secret fields live in
+  `RED.settings.get/set('llmPluginSettings')` (Node-RED's internal
+  config, not in exported flows). The OpenAI API key is split off into
+  the encrypted credentials store — see Security measures above.
 - **Adding a new endpoint**: add to `server.js`, restart Node-RED.
 - **Adding a new client module**: drop file under `src/`, add to the
   load list in `client.js`, expose on `window.LLMPlugin`.
