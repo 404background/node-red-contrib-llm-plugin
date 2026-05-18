@@ -224,6 +224,34 @@
     border-radius: 3px;
     font-family: 'Courier New', monospace;
 }
+.message-content code.llm-node-ref {
+    background: #dceefb;
+    color: #0a5cab;
+    cursor: pointer;
+    border: 1px solid #b6d8f2;
+    text-decoration: none;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    user-select: none;
+}
+.message-content code.llm-node-ref::before {
+    content: "\f0c1";
+    font-family: "Font Awesome 5 Free", "FontAwesome";
+    font-weight: 900;
+    font-size: 9px;
+    margin-right: 4px;
+    opacity: 0.6;
+}
+.message-content code.llm-node-ref:hover {
+    background: #0a5cab;
+    color: #ffffff;
+    border-color: #0a5cab;
+}
+.message-content code.llm-node-ref:hover::before {
+    opacity: 1;
+}
+.message-content code.llm-node-ref:active {
+    background: #084178;
+}
 .message-content pre,
 .json-block {
     background: #2d3748;

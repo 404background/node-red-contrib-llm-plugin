@@ -39,6 +39,194 @@
         return escapeHtml(text);
     }
 
+    // Focus the canvas on a node: switch to its tab, flash-highlight
+    // it, and reveal/centre it. Mirrors the Debug sidebar's
+    // showMessageNode behaviour. Falls back gracefully on older
+    // Node-RED versions or if the node has been deleted.
+    function focusCanvasNode(nodeId) {
+        try {
+            if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
+            let node = RED.nodes.node(nodeId);
+            if (!node) {
+                if (RED.notify) RED.notify('Node no longer exists', 'warning');
+                return;
+            }
+            if (node.z && RED.workspaces && typeof RED.workspaces.show === 'function') {
+                try { RED.workspaces.show(node.z); } catch (e) { /* ignore */ }
+            }
+            // Flash highlight in the same way the Debug sidebar does.
+            try { node.highlighted = true; node.dirty = true; } catch (e) { /* ignore */ }
+            if (RED.view && typeof RED.view.reveal === 'function') {
+                // Second arg `true` triggers the centre animation in
+                // Node-RED 3+. Older versions ignore it.
+                try { RED.view.reveal(node.id, true); } catch (e) {
+                    try { RED.view.reveal(node.id); } catch (e2) { /* ignore */ }
+                }
+            }
+            if (RED.view && typeof RED.view.redraw === 'function') {
+                try { RED.view.redraw(); } catch (e) { /* ignore */ }
+            }
+            // Clear the flash after ~2.5s so repeated clicks re-trigger.
+            setTimeout(function() {
+                try {
+                    let live = RED.nodes.node(nodeId);
+                    if (live) {
+                        live.highlighted = false;
+                        live.dirty = true;
+                        if (RED.view && RED.view.redraw) RED.view.redraw();
+                    }
+                } catch (e) { /* ignore */ }
+            }, 2500);
+        } catch (e) {
+            console.error('Error focusing node:', e);
+        }
+    }
+
+    // Wire a code-like element so clicking it focuses the named node.
+    function attachNodeRefHandler(el, nodeId) {
+        el.classList.add('llm-node-ref');
+        el.dataset.nodeId = nodeId;
+        el.title = 'Click to focus on this node';
+        el.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            focusCanvasNode(this.dataset.nodeId);
+        });
+    }
+
+    // Pass 1: walk inline <code> elements (skipping <pre>) and resolve
+    // each one against the live canvas via buildFlowLookup. Catches
+    // explicit references like `inject_sensor`.
+    //
+    // Pass 2: walk text nodes (skipping <code>, <pre>, <a>, <script>,
+    // <style>) and replace any token that exactly matches a known node
+    // alias with a clickable inline code. The token set is restricted
+    // to aliases (`{type}_{name}`), which always contain at least one
+    // underscore, so false positives on regular English words are
+    // effectively zero. The system prompt also instructs the LLM to
+    // backtick-quote node references; this scan is a safety net for
+    // when it forgets.
+    function annotateNodeReferences(rootEl) {
+        if (!rootEl) return;
+        if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
+        if (!window.LLMPlugin || !LLMPlugin.LlmJsonParser ||
+            typeof LLMPlugin.LlmJsonParser.buildFlowLookup !== 'function') return;
+
+        let allNodes = [];
+        try {
+            RED.nodes.eachNode(function(n) { if (n) allNodes.push(n); });
+            if (typeof RED.nodes.eachConfig === 'function') {
+                RED.nodes.eachConfig(function(n) { if (n) allNodes.push(n); });
+            }
+        } catch (e) { return; }
+        if (allNodes.length === 0) return;
+
+        let cfg = LLMPlugin.FlowConverterCore || null;
+        let lookup;
+        try {
+            lookup = LLMPlugin.LlmJsonParser.buildFlowLookup(allNodes, cfg);
+        } catch (e) { return; }
+
+        function isFocusable(id) {
+            let n = lookup.byId[id];
+            if (!n || n.type === 'tab') return false;
+            return typeof n.x === 'number' && typeof n.y === 'number';
+        }
+
+        // --- Pass 1: inline <code> -----------------------------------
+        let codes = rootEl.querySelectorAll('code');
+        for (let i = 0; i < codes.length; i++) {
+            let code = codes[i];
+            if (code.closest('pre')) continue;
+            if (code.classList.contains('llm-node-ref')) continue;
+
+            let text = (code.textContent || '').trim();
+            if (!text || text.length < 2 || text.length > 80) continue;
+            if (/\s/.test(text)) continue;
+
+            let id;
+            try { id = lookup.resolve(text, { fuzzy: false }); } catch (e) { continue; }
+            if (!id || !isFocusable(id)) continue;
+
+            attachNodeRefHandler(code, id);
+        }
+
+        // --- Pass 2: plain-text alias scan ---------------------------
+        let aliasToId = lookup.aliasToId || {};
+        // Aliases must contain at least one underscore AND map to a
+        // focusable canvas node. Sort longest-first so multi-token
+        // aliases win over their prefixes when both would match.
+        let aliases = Object.keys(aliasToId).filter(function(a) {
+            return a.indexOf('_') !== -1 &&
+                   a.length >= 3 &&
+                   isFocusable(aliasToId[a]);
+        });
+        if (aliases.length === 0) return;
+        aliases.sort(function(a, b) { return b.length - a.length; });
+        function escapeRe(s) { return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'); }
+        let pattern;
+        try {
+            pattern = new RegExp('\\b(' + aliases.map(escapeRe).join('|') + ')\\b', 'g');
+        } catch (e) { return; }
+
+        let TreeWalker = window.NodeFilter && document.createTreeWalker;
+        if (!TreeWalker) return;
+        let walker = document.createTreeWalker(
+            rootEl,
+            NodeFilter.SHOW_TEXT,
+            {
+                acceptNode: function(node) {
+                    let p = node.parentNode;
+                    while (p && p !== rootEl) {
+                        let tag = p.tagName;
+                        if (tag === 'CODE' || tag === 'PRE' || tag === 'A' ||
+                            tag === 'SCRIPT' || tag === 'STYLE') {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        p = p.parentNode;
+                    }
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+            }
+        );
+
+        // Collect first to avoid mutating the DOM during traversal.
+        let textNodes = [];
+        let tn;
+        while ((tn = walker.nextNode())) textNodes.push(tn);
+
+        textNodes.forEach(function(textNode) {
+            let text = textNode.nodeValue;
+            if (!text || text.length === 0) return;
+            pattern.lastIndex = 0;
+            if (!pattern.test(text)) return;
+            pattern.lastIndex = 0;
+
+            let frag = document.createDocumentFragment();
+            let lastIdx = 0;
+            let m;
+            while ((m = pattern.exec(text)) !== null) {
+                let matchText = m[1];
+                let matchIdx = m.index;
+                let id = aliasToId[matchText];
+                if (!id) continue;
+                if (matchIdx > lastIdx) {
+                    frag.appendChild(document.createTextNode(text.slice(lastIdx, matchIdx)));
+                }
+                let code = document.createElement('code');
+                code.textContent = matchText;
+                attachNodeRefHandler(code, id);
+                frag.appendChild(code);
+                lastIdx = matchIdx + matchText.length;
+            }
+            if (lastIdx === 0) return;
+            if (lastIdx < text.length) {
+                frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+            }
+            textNode.parentNode.replaceChild(frag, textNode);
+        });
+    }
+
     function createRestoreCheckpointButton(checkpointId) {
         let btn = document.createElement('button');
         btn.className = 'restore-btn';
@@ -119,6 +307,12 @@
                     details.appendChild(pre);
                 }
             } catch (e) { /* not JSON — leave as-is */ }
+        }
+
+        // Make inline code that names a current canvas node clickable -
+        // mirrors Node-RED's debug-node "jump to node" behaviour.
+        if (!isUser) {
+            try { annotateNodeReferences(messageContent); } catch (e) { /* ignore */ }
         }
 
         message.appendChild(messageContent);
