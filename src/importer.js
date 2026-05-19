@@ -294,16 +294,23 @@
     }
 
     // After a destructive workspace mutation, force Node-RED to re-render
-    // the canvas. A second deferred `redraw` is needed because the first
-    // can run before newly imported nodes have attached SVG elements.
+    // the canvas. Deferred redraws are needed because the first can run
+    // before newly imported nodes have attached SVG elements — especially
+    // when a workspace tab switch happens in the same tick (checkpoint
+    // restore), which can otherwise leave wires drawn but nodes invisible.
     function stabilizeWorkspaceView() {
         try { RED.actions.invoke('core:select-none'); } catch (e) { /* ignore */ }
+        function safeRedraw() {
+            try { RED.view.redraw(true); } catch (e) { /* ignore */ }
+        }
         try {
             RED.nodes.dirty(true);
-            RED.view.redraw(true);
-            setTimeout(function() {
-                try { RED.view.redraw(true); } catch (e2) { /* ignore */ }
-            }, 0);
+            safeRedraw();
+            let raf = (typeof window !== 'undefined' && window.requestAnimationFrame)
+                ? window.requestAnimationFrame.bind(window)
+                : function(cb) { return setTimeout(cb, 16); };
+            raf(function() { raf(safeRedraw); });
+            setTimeout(safeRedraw, 80);
         } catch (e) { /* ignore */ }
     }
 
@@ -1180,10 +1187,6 @@
                 // Import the canvas nodes verbatim (do not alter `z` so nodes return to their original tabs)
                 RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
 
-                // Force UI synchronization. stabilizeWorkspaceView() schedules
-                // a deferred second redraw which is required: without it the
-                // first redraw can run before newly imported nodes attach
-                // their SVG elements, leaving only the wires visible.
                 try { RED.workspaces.refresh(); } catch(e) { /* ignore */ }
                 stabilizeWorkspaceView();
 
