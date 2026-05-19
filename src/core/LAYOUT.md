@@ -97,10 +97,18 @@ LAYOUT_DEFAULTS = {
     componentGap:   80,    // gap between disconnected components
     edgeGap:        60,    // 3 grid squares between adjacent node edges
     minNodeWidth:  100,    // Node-RED MIN_NODE_WIDTH
+    nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid
     maxColumns:      5
 };
 ```
+
+Every final `node.x` / `node.y` is rounded to the nearest `gridSize`
+multiple via `snapToGrid` so origins land on the canvas grid (matches
+the manual-drag snap behaviour). Comment stacking uses a grid-aligned
+step of `ceil(nodeHeight / gridSize) * gridSize` (= 40 px with the
+defaults) instead of `nodeHeight` itself, so comments stay on grid even
+though the rendered node height (30 px) isn't a grid multiple.
 
 Every layout function accepts an `options` object overriding any of these.
 `placeAddedNodesNearNeighbors` also accepts `bandGap` (defaults to
@@ -120,8 +128,8 @@ Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
 estimate approximates the editor's
 `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule as `7.5 px/char + 64 px`
 (30 icon strip + 14 label padding + 14 port stubs on each side). With
-the importer's default `edgeGap = 40` two default-named ~120 px nodes
-sit ~160 px centre-to-centre, leaving ~2 grid squares of visible
+the importer's default `edgeGap = 80` two default-named ~120 px nodes
+sit ~200 px centre-to-centre, leaving ~4 grid squares of visible
 clearance between them.
 
 ## Comment placement
@@ -186,7 +194,7 @@ a comment reaches the layout engine it is guaranteed to have a target.
 | 3 | Iteratively place each new node next to its positioned neighbours: both → `x = max(rightEdge(pred)) + edgeGap + width(N)/2`, `y = mid(avg(pred.y), avg(succ.y))`. Only preds → above, right of preds. Only succs → above, left of succs. |
 | 3.4 | For each `(new node N, existing succ S)` pair, if `rightEdge(N) + edgeGap > leftEdge(S)`, BFS forward through `outgoing` from S and shift every reachable node's x by `needed`. Max shift wins on converging paths. IDs touched here are recorded as "shifted" and feed into Step 3.5b. |
 | 3.5a | **Within-component nudge** — push any newly placed node down by `spacingY` if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of a **same-component** positioned node AND their rows are within `spacingY*0.8`. Re-runs until stable. Cross-component collisions are deliberately ignored here (handled by 3.5b). |
-| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For every (modified `M`, unmodified `O`) pair where `O.bbox.minY ≥ M.bbox.minY` and the bboxes overlap in both axes, shift `O` whole by `dy = (M.maxY + bandGap) − O.minY` so `O`'s top sits just below `M`'s bottom + `bandGap`. Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
+| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)` and shift every collected `O` by that same `dy`. Sizing the shift to the topmost candidate preserves the original vertical gaps between the pushed components (so a comment sitting 40 px above its inject stays 40 px above it, instead of landing on top of it). Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
 | 3.6 | `repositionCommentsByLlmOrder` for new leading comments. |
 | 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes at `maxY + bandGap`, left-aligned to `minX`. |
 

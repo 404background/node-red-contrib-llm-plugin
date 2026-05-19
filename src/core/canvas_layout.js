@@ -235,6 +235,13 @@
         return (opts && typeof opts[key] === 'number') ? opts[key] : fallback;
     }
 
+    // Round a pixel coordinate to the nearest Node-RED grid line so node
+    // origins line up with the canvas grid (matches what manual drags do).
+    function snapToGrid(val, grid) {
+        if (!grid || grid <= 0) return Math.round(val);
+        return Math.round(val / grid) * grid;
+    }
+
     // Approximate Node-RED's label-based width when no DOM measurement is
     // available. The editor renders nodes as
     //   max(MIN_NODE_WIDTH, textWidth + iconStrip + labelPadding) + portStubs
@@ -290,6 +297,11 @@
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+        // Stack comments at grid-aligned intervals: snap nodeHeight UP to
+        // the next grid multiple so each comment's y stays on the grid.
+        let stackStep = (gridSize > 0)
+            ? Math.ceil(nodeHeight / gridSize) * gridSize
+            : nodeHeight;
 
         let byId = {};
         canvasNodes.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
@@ -347,11 +359,11 @@
             });
             candidates.sort(function(a, b) { return b.y - a.y; }); // closest-to-target first
 
-            let yTol = nodeHeight / 2;
-            let nextSlotY = targetY - nodeHeight;
+            let yTol = stackStep / 2;
+            let nextSlotY = targetY - stackStep;
             for (let i = 0; i < candidates.length; i++) {
                 if (Math.abs(candidates[i].y - nextSlotY) <= yTol) {
-                    nextSlotY = candidates[i].y - nodeHeight;
+                    nextSlotY = candidates[i].y - stackStep;
                 } else {
                     break;
                 }
@@ -369,8 +381,8 @@
             // declaration order = higher in the stack (further from target).
             let bottomY = findStackBottomY(target, group);
             group.forEach(function(c, i) {
-                c.x = Math.round(target.x || 0);
-                c.y = Math.round(bottomY - (group.length - 1 - i) * nodeHeight);
+                c.x = snapToGrid(target.x || 0, gridSize);
+                c.y = snapToGrid(bottomY - (group.length - 1 - i) * stackStep, gridSize);
             });
         });
     }
@@ -385,6 +397,7 @@
         let spacingY     = pickOption(opts, 'spacingY',     LAYOUT_DEFAULTS.spacingY);
         let componentGap = pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
         let edgeGap      = pickOption(opts, 'edgeGap',      LAYOUT_DEFAULTS.edgeGap);
+        let gridSize     = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
         let rawMaxCols   = pickOption(opts, 'maxColumns',   LAYOUT_DEFAULTS.maxColumns);
         let maxColumns   = (rawMaxCols >= 2) ? Math.floor(rawMaxCols) : LAYOUT_DEFAULTS.maxColumns;
 
@@ -424,8 +437,8 @@
             let node = byId[id];
             let pos = positions[id] || { col: 0, row: 0 };
             let ci = pos.comp || 0;
-            node.x = Math.round(colX[pos.col] !== undefined ? colX[pos.col] : startX);
-            node.y = Math.round(pos.row * spacingY + (compOffsets[ci] || 0));
+            node.x = snapToGrid(colX[pos.col] !== undefined ? colX[pos.col] : startX, gridSize);
+            node.y = snapToGrid(pos.row * spacingY + (compOffsets[ci] || 0), gridSize);
         });
 
         repositionCommentsByLlmOrder(canvasNodes, opts);
@@ -437,6 +450,7 @@
         let isCanvas = resolveCanvasFilter(opts);
         let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
         let edgeGap  = pickOption(opts, 'edgeGap',  LAYOUT_DEFAULTS.edgeGap);
+        let gridSize = pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize);
         let bandGap = (typeof opts.bandGap === 'number')
             ? opts.bandGap
             : pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
@@ -481,18 +495,18 @@
                 let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
-                n.x = Math.round(maxPredRight + edgeGap + nHalf);
-                n.y = Math.round((avgPredY + avgSuccY) / 2);
+                n.x = snapToGrid(maxPredRight + edgeGap + nHalf, gridSize);
+                n.y = snapToGrid((avgPredY + avgSuccY) / 2, gridSize);
             } else if (preds.length > 0) {
                 let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
-                n.x = Math.round(maxPredRight + edgeGap + nHalf);
-                n.y = Math.round(avgPredY);
+                n.x = snapToGrid(maxPredRight + edgeGap + nHalf, gridSize);
+                n.y = snapToGrid(avgPredY, gridSize);
             } else {
                 let minSuccLeft = Math.min.apply(null, succs.map(function(id) { return nodeLeftEdge(byId[id], opts); }));
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
-                n.x = Math.round(minSuccLeft - edgeGap - nHalf);
-                n.y = Math.round(avgSuccY);
+                n.x = snapToGrid(minSuccLeft - edgeGap - nHalf, gridSize);
+                n.y = snapToGrid(avgSuccY, gridSize);
             }
             positioned[n.id] = true;
             return true;
@@ -542,7 +556,7 @@
             Object.keys(toShift).forEach(function(id) {
                 let node = byId[id];
                 if (node && typeof node.x === 'number') {
-                    node.x = Math.round(node.x + toShift[id]);
+                    node.x = snapToGrid(node.x + toShift[id], gridSize);
                     shiftedIds[id] = true;
                 }
             });
@@ -604,7 +618,7 @@
                         let xThreshold = curHalf + otherHalf + edgeGap * 0.5;
                         if (Math.abs((cur.x || 0) - (other.x || 0)) < xThreshold &&
                             Math.abs((cur.y || 0) - (other.y || 0)) < spacingY * 0.8) {
-                            cur.y = (other.y || 0) + spacingY;
+                            cur.y = snapToGrid((other.y || 0) + spacingY, gridSize);
                             changed = true;
                         }
                     }
@@ -668,27 +682,41 @@
                 for (let mi = 0; mi < modIds.length; mi++) {
                     let mid = modIds[mi];
                     let mBox = compBoxes[mid];
+                    // Collect every other component that collides with this
+                    // modifier in one pass, then shift them all by the SAME
+                    // amount. Computing dy per-component (old behaviour) makes
+                    // a shorter component with a higher minY (e.g. a comment
+                    // sitting above its inject) jump further than the inject
+                    // beneath it, so the comment lands ON the inject. A
+                    // uniform shift sized for the topmost candidate keeps the
+                    // pre-existing vertical gaps intact.
+                    let candidates = [];
+                    let topMinY = Infinity;
                     let othIds = Object.keys(nodesByComp);
                     for (let oi = 0; oi < othIds.length; oi++) {
                         let oid = othIds[oi];
                         if (oid === mid) continue;
                         if (modifiedComps[oid]) continue;
                         let oBox = compBoxes[oid];
-                        // Skip components that started above the modified one.
                         if (oBox.minY < mBox.minY) continue;
-                        // Require horizontal AND vertical bbox overlap.
                         if (oBox.maxX < mBox.minX || oBox.minX > mBox.maxX) continue;
                         if (oBox.maxY < mBox.minY || oBox.minY > mBox.maxY) continue;
-                        let dy = (mBox.maxY + bandGap) - oBox.minY;
-                        if (dy <= 0) continue;
-                        let dyR = Math.round(dy);
+                        candidates.push(oid);
+                        if (oBox.minY < topMinY) topMinY = oBox.minY;
+                    }
+                    if (candidates.length === 0) continue;
+                    let dy = (mBox.maxY + bandGap) - topMinY;
+                    if (dy <= 0) continue;
+                    let dyR = snapToGrid(dy, gridSize);
+                    if (dyR <= 0) dyR = (gridSize > 0) ? gridSize : Math.round(dy);
+                    candidates.forEach(function(oid) {
                         nodesByComp[oid].forEach(function(n) {
                             if (typeof n.y === 'number') n.y = n.y + dyR;
                         });
                         compBoxes[oid] = bbox(nodesByComp[oid]);
                         modifiedComps[oid] = true;
-                        didShift = true;
-                    }
+                    });
+                    didShift = true;
                 }
             }
         })();
@@ -756,8 +784,8 @@
             remaining.forEach(function(n) {
                 let pos = orphanPositions[n.id] || { col: 0, row: 0 };
                 let ci = pos.comp || 0;
-                n.x = Math.round(orphanColX[pos.col] !== undefined ? orphanColX[pos.col] : minX);
-                n.y = Math.round(pos.row * spacingY + (orphanOffsets[ci] || 0));
+                n.x = snapToGrid(orphanColX[pos.col] !== undefined ? orphanColX[pos.col] : minX, gridSize);
+                n.y = snapToGrid(pos.row * spacingY + (orphanOffsets[ci] || 0), gridSize);
             });
         }
 
