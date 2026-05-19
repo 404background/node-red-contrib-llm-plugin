@@ -33,6 +33,7 @@ Restart Node-RED after install.
 2. Configure provider in Settings:
 - Ollama: set URL (default `http://localhost:11434`)
 - OpenAI: set API key
+- Custom (OpenAI-compatible): set Base URL (e.g. `http://localhost:8080/v1`) and, if required, an API key. Use for llama.cpp, LM Studio, vLLM, LocalAI, or any other server speaking the OpenAI chat-completions API.
 3. Pick which flow tabs to include via the **flow selector** (defaults to *Current Open Flow*; check additional tabs in the dropdown to send them too).
 4. Select **Agent** mode for auto-apply, or **Ask** mode for manual import.
 5. Enter model and prompt.
