@@ -6,7 +6,7 @@ Plugin sidebar.
 ## Big picture
 
 ```
-Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/{generate,agent-generate}  ──►  Ollama / OpenAI
+Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/{generate,agent-generate}  ──►  Ollama / OpenAI / Custom
         ▲                                              │
         │                                              ▼
    addMessageToUI                          response { response, model, elapsed }
@@ -241,7 +241,7 @@ Main sidebar entry. `createLLMPluginUI()` builds the DOM;
 | Ollama discovery | `listOllamaModels` (CLI + HTTP), `listOllamaModelsFromApi` |
 | Chat history | `saveChatHistory`, `loadAllChatHistories` (per-chat JSON files) |
 | Prompt construction | `buildFlowContextDescription`, `buildMessages` (loads `prompt_system.txt`, calls `Configurator.toIntermediate`) |
-| LLM adapters | `generateWithOllamaChat` (`/api/chat`), `generateWithOpenAI` (SDK) |
+| LLM adapters | `generateWithOllamaChat` (`/api/chat`), `generateWithOpenAI` (SDK), `generateWithCustomOpenAI` (SDK with `baseURL` for llama.cpp / LM Studio / vLLM / LocalAI) |
 | HTTP admin endpoints | All `RED.httpAdmin.*` routes |
 
 Prompt assembly:
@@ -297,8 +297,10 @@ No chat history is sent — each request is stateless to the LLM.
   prompt is used as fallback.
 - **Settings storage**: non-secret fields live in
   `RED.settings.get/set('llmPluginSettings')` (Node-RED's internal
-  config, not in exported flows). The OpenAI API key is split off into
-  the encrypted credentials store — see Security measures above.
+  config, not in exported flows). API keys (OpenAI and Custom-endpoint)
+  are split off into the encrypted credentials store — see Security
+  measures above. The Custom endpoint's API key may be left blank for
+  servers that don't require authentication.
 - **Adding a new endpoint**: add to `server.js`, restart Node-RED.
 - **Adding a new client module**: drop file under `src/`, add to the
   load list in `client.js`, expose on `window.LLMPlugin`.

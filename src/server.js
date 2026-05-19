@@ -204,6 +204,7 @@ function createLLMPluginServer(RED) {
         let s = Object.assign({}, RED.settings.get('llmPluginSettings') || {});
         let creds = loadCreds();
         if (creds.openaiApiKey) s.openaiApiKey = creds.openaiApiKey;
+        if (creds.customApiKey) s.customApiKey = creds.customApiKey;
         return s;
     }
 
@@ -214,6 +215,10 @@ function createLLMPluginServer(RED) {
         if ('openaiApiKey' in plain) {
             setCredField('openaiApiKey', plain.openaiApiKey);
             delete plain.openaiApiKey;
+        }
+        if ('customApiKey' in plain) {
+            setCredField('customApiKey', plain.customApiKey);
+            delete plain.customApiKey;
         }
         RED.settings.set('llmPluginSettings', plain);
     }
@@ -550,6 +555,13 @@ function createLLMPluginServer(RED) {
             }
             return generateWithOpenAI(settings.openaiApiKey, model, messages);
         }
+        if (provider === 'custom') {
+            let baseUrl = (settings.customBaseUrl && String(settings.customBaseUrl).trim()) || '';
+            if (!baseUrl) {
+                return Promise.reject(new Error('Custom endpoint Base URL is not configured. Please set it in LLM Plugin settings.'));
+            }
+            return generateWithCustomOpenAI(baseUrl, settings.customApiKey, model, messages);
+        }
         return generateWithOllamaChat(model, messages);
     }
 
@@ -707,6 +719,20 @@ function createLLMPluginServer(RED) {
         return completion.choices[0].message.content;
     }
 
+    // Custom OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM, LocalAI, …).
+    // The OpenAI SDK requires a non-empty `apiKey`, so we pass a placeholder
+    // when the user leaves it blank — endpoints that don't require auth
+    // ignore the Authorization header anyway.
+    async function generateWithCustomOpenAI(baseURL, apiKey, model, messages) {
+        const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
+        const openai = new OpenAI({ apiKey: effectiveKey, baseURL: baseURL });
+        const completion = await openai.chat.completions.create({
+            messages: Array.isArray(messages) ? messages : [],
+            model: model,
+        });
+        return completion.choices[0].message.content;
+    }
+
 
     // ------------------------------------------------------------------ //
     //  HTTP admin endpoints                                               //
@@ -736,10 +762,13 @@ function createLLMPluginServer(RED) {
             const safeErrorText = redactSecrets(error && error.message ? error.message : error);
             console.error("[LLM Plugin] Generation error:", safeErrorText);
             let errorMessage = 'Generation failed';
+            const providerLabel = provider === 'ollama'
+                ? 'Ollama'
+                : (provider === 'custom' ? 'the custom OpenAI-compatible endpoint' : 'the LLM provider');
             if (error.code === 'ECONNREFUSED') {
-                errorMessage = 'Could not connect to Ollama. Please ensure Ollama is running and accessible.';
+                errorMessage = 'Could not connect to ' + providerLabel + '. Please ensure it is running and accessible.';
             } else if (error.code === 'ECONNRESET') {
-                errorMessage = 'The connection to the LLM provider was unexpectedly closed. Please check if the Ollama server is running and stable.';
+                errorMessage = 'The connection to ' + providerLabel + ' was unexpectedly closed. Please check that the server is running and stable.';
             } else if (error.message && error.message.includes('timeout')) {
                 errorMessage = 'Request timed out. The model may be too slow or not responding.';
             } else {
@@ -808,8 +837,13 @@ function createLLMPluginServer(RED) {
         const hasKey = !!(settings.openaiApiKey && settings.openaiApiKey.length > 0);
         settings.openaiApiKeyMasked = hasKey ? maskApiKey(settings.openaiApiKey) : '';
         settings.ollamaUrlMasked = settings.ollamaUrl ? 'configured (hidden)' : '';
+        const hasCustomKey = !!(settings.customApiKey && settings.customApiKey.length > 0);
+        settings.customApiKeyMasked = hasCustomKey ? maskApiKey(settings.customApiKey) : '';
+        settings.customBaseUrlMasked = settings.customBaseUrl ? 'configured (hidden)' : '';
         delete settings.openaiApiKey;
         delete settings.ollamaUrl;
+        delete settings.customApiKey;
+        delete settings.customBaseUrl;
         // systemPrompt is safe to send to client (user-authored content)
         res.json(settings);
     });
@@ -835,6 +869,22 @@ function createLLMPluginServer(RED) {
                 newSettings.openaiApiKey = body.openaiApiKey.trim();
             } else {
                 newSettings.openaiApiKey = '';
+            }
+            // Custom Base URL: same blank-preserves-existing rule as Ollama URL.
+            if (body.customBaseUrl && typeof body.customBaseUrl === 'string' && body.customBaseUrl.trim() !== '') {
+                newSettings.customBaseUrl = body.customBaseUrl.trim();
+            } else {
+                newSettings.customBaseUrl = existing.customBaseUrl || '';
+            }
+            // Custom API key: same placeholder convention as openaiApiKey, but
+            // an empty value is a valid configuration (some endpoints don't
+            // require auth) so we never reject blank submissions.
+            if (body.customApiKey === '__EXISTING_KEY__') {
+                newSettings.customApiKey = existing.customApiKey || '';
+            } else if (body.customApiKey && typeof body.customApiKey === 'string' && body.customApiKey.trim() !== '') {
+                newSettings.customApiKey = body.customApiKey.trim();
+            } else {
+                newSettings.customApiKey = '';
             }
             // System prompt (user-authored, always save as-is)
             if (body.systemPrompt !== undefined && body.systemPrompt !== null) {
