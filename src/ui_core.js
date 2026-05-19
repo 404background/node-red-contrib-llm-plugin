@@ -448,7 +448,7 @@
             retryIcon.style.color = '#222';
             retryBtn.appendChild(retryIcon);
             retryBtn.title = 'Retry message';
-            retryBtn.addEventListener('click', function() { UI.retryLastUserMessage(); });
+            retryBtn.addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
             messageActions.appendChild(retryBtn);
             message.appendChild(messageActions);
         }
@@ -551,24 +551,39 @@
       UI.annotateNodeReferences = annotateNodeReferences;
       UI.reannotateAllAssistantMessages = reannotateAllAssistantMessages;
 
-    UI.retryLastUserMessage = function() {
+    UI.retryLastUserMessage = function(messageMeta) {
         try {
-            if (LLMPlugin.ChatManager) {
-                let chatId = LLMPlugin.ChatManager.getCurrentChatId();
-                let history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
-                let chat = history[chatId];
-                if (chat && chat.messages) {
-                    let userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
-                    if (userMessages.length > 0) {
-                        let lastUserMsg = userMessages[userMessages.length - 1];
-                        let promptInput = document.getElementById('llm-plugin-prompt');
-                        let generateBtn = document.getElementById('llm-plugin-generate');
-                        if (promptInput && generateBtn) {
-                            promptInput.value = lastUserMsg.content;
-                            generateBtn.click();
-                        }
-                    }
-                }
+            if (!LLMPlugin.ChatManager) return;
+            let chatId = LLMPlugin.ChatManager.getCurrentChatId();
+            let history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
+            let chat = history[chatId];
+            if (!chat || !chat.messages) return;
+            let userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
+            if (userMessages.length === 0) return;
+            let lastUserMsg = userMessages[userMessages.length - 1];
+            let promptInput = document.getElementById('llm-plugin-prompt');
+            let generateBtn = document.getElementById('llm-plugin-generate');
+            if (!promptInput || !generateBtn) return;
+
+            // Restore the checkpoint attached to the retried assistant
+            // message so the next request sees the pre-edit flow. Without
+            // this the LLM would resend against the already-edited state.
+            let checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.checkpointId;
+
+            function doSend() {
+                promptInput.value = lastUserMsg.content;
+                generateBtn.click();
+            }
+
+            if (checkpointId && LLMPlugin.Importer && typeof LLMPlugin.Importer.restoreCheckpoint === 'function') {
+                LLMPlugin.Importer.restoreCheckpoint(checkpointId)
+                    .then(doSend)
+                    .catch(function(err) {
+                        console.warn('[LLM Plugin] Retry restore failed; sending with current flow:', err);
+                        doSend();
+                    });
+            } else {
+                doSend();
             }
         } catch (e) {
             console.error('Error retrying message:', e);

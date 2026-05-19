@@ -189,7 +189,7 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button used by chat-baseline rows and per-message restore rows. |
 | `getFlowsByIds(flowIds)` / `getCurrentFlow(flowIds?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
-| `retryLastUserMessage()` | Re-send the most recent user prompt. |
+| `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
 ### `settings.js`
 
