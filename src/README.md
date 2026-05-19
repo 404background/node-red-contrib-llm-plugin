@@ -262,15 +262,15 @@ No chat history is sent — each request is stateless to the LLM.
 
 - All endpoints sit on `RED.httpAdmin` (picks up `adminAuth` when
   configured).
-- API key is stored encrypted in `<userDir>/llm-plugin/credentials.json`
-  using AES-256-CTR with Node-RED's `credentialSecret` (or auto-generated
-  `_credentialSecret`) — the same algorithm used for `flows_cred.json`,
-  but in a plugin-owned file so `cleanCredentials` can't strip it on
-  deploy. Plaintext keys from older installs (and any leftover from the
-  earlier synthetic-id `addCredentials` attempt) are migrated
-  automatically on first boot.
-- API key never returned to the client; masked via `maskApiKey()`. POST
-  whitelist prevents field injection.
+- API keys (OpenAI and Custom-endpoint) are stored encrypted in
+  `<userDir>/llm-plugin/credentials.json` using AES-256-CTR with
+  Node-RED's `credentialSecret` (or auto-generated `_credentialSecret`)
+  — the same algorithm used for `flows_cred.json`, but in a plugin-owned
+  file so `cleanCredentials` can't strip them on deploy. Plaintext keys
+  from older installs (and any leftover from the earlier synthetic-id
+  `addCredentials` attempt) are migrated automatically on first boot.
+- API keys are never returned to the client; masked via `maskApiKey()`.
+  POST whitelist prevents field injection.
 - Server-side `maxPromptLength` cap (default 10 000 chars, range
   100–100 000).
 - Path traversal blocked by `path.basename` + `startsWith` containment

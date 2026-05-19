@@ -65,7 +65,7 @@ The model will then follow real node/property patterns from that sample instead 
 
 ## Security Notice
 
-API keys (e.g. OpenAI) are stored encrypted in `<userDir>/llm-plugin/credentials.json` using AES-256-CTR with your Node-RED `credentialSecret` (the same algorithm Node-RED uses for `flows_cred.json`). Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs.
+API keys (OpenAI and Custom-endpoint) are stored encrypted in `<userDir>/llm-plugin/credentials.json` using AES-256-CTR with your Node-RED `credentialSecret` (the same algorithm Node-RED uses for `flows_cred.json`). Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs.
 
 The encrypted file is only as safe as your `credentialSecret`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `credentials.json`, `flows_cred.json`, `.config.*.json`, and your `settings.js` out of the share — and never publish your `credentialSecret`. Older installs that stored the key in plaintext are migrated to the encrypted file automatically on first boot.
 

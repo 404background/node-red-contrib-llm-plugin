@@ -1,7 +1,7 @@
 {
   "name": "@background404/node-red-contrib-llm-plugin",
   "version": "0.4.1",
-  "description": "Node-RED sidebar plugin for chatting with LLMs (Ollama / OpenAI), generating flows, and importing results",
+  "description": "Node-RED sidebar plugin for chatting with LLMs (Ollama / OpenAI / Custom OpenAI-compatible endpoints), generating flows, and importing results",
   "main": "llm_plugin.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

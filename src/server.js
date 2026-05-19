@@ -99,11 +99,11 @@ function createLLMPluginServer(RED) {
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
     //
-    // Secrets (currently just the OpenAI API key) are encrypted at rest in
-    // `<baseDir>/credentials.json` using AES-256-CTR — the same algorithm
-    // Node-RED applies to `flows_cred.json`. We reuse Node-RED's
-    // `credentialSecret` (or auto-generated `_credentialSecret`) so the
-    // secret is tied to the existing user setup.
+    // Secrets (the OpenAI API key and the Custom-endpoint API key) are
+    // encrypted at rest in `<baseDir>/credentials.json` using AES-256-CTR
+    // — the same algorithm Node-RED applies to `flows_cred.json`. We
+    // reuse Node-RED's `credentialSecret` (or auto-generated
+    // `_credentialSecret`) so the secret is tied to the existing user setup.
     //
     // We deliberately do NOT use `RED.nodes.addCredentials` with a
     // synthetic id: Node-RED's `cleanCredentials` strips any credential
@@ -265,7 +265,7 @@ function createLLMPluginServer(RED) {
         let text = String(input || '');
         text = text.replace(/sk-[A-Za-z0-9_-]{10,}/g, 'sk-***REDACTED***');
         text = text.replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1***REDACTED***');
-        text = text.replace(/("openaiApiKey"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3');
+        text = text.replace(/("(?:openai|custom)ApiKey"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3');
         text = text.replace(/https?:\/\/[^\s'"`]+/gi, '***URL_REDACTED***');
         text = text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '***IP_REDACTED***');
         return text;
