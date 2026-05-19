@@ -140,12 +140,16 @@ Chat session lifecycle.
 Extracts Node-RED flow JSON from LLM responses and imports it into the
 editor.
 
-**`extractFlowNodes(messageContent)`** —
+**`extractFlowNodes(messageContent, options?)`** —
 Scan fenced ```` ```json ```` / ```` ```javascript ```` blocks (picking
 the *last* valid block), parse with `LLMJsonParser`, prefer Vibe Schema
 via `Configurator.toNodeRed()`, fall back to raw Node-RED arrays or
 inline JSON outside code fences. Comment stripping is string-safe so
-`//` inside `function` code is preserved.
+`//` inside `function` code is preserved. `options` accepts
+`{ mode, currentFlow }` — when `mode === 'agent'`, the parser merges
+the LLM's partial schema against the current flow (via
+`mergeAgentPartialSchemaWithCurrentFlow`) so connection-resolution can
+reach unmentioned nodes.
 
 **`importFlowFromMessage(messageContent, options)`** —
 Full import workflow with these guarantees:
@@ -188,10 +192,10 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 |-----|---------|
 | `addMessageToUI(content, isUser, showActions, messageMeta?)` | Render message + retry / import buttons; assistant messages show a `mode / model / 1.5s` badge. Also runs `annotateNodeReferences` on assistant messages so inline backtick'd node names become clickable. |
 | `formatMessage(text)` | `marked.parse` with XSS-safe pre-escape of `<` / `>`. |
-| `annotateNodeReferences(rootEl)` | Two-pass scan that makes node mentions clickable. **Pass 1**: every inline `<code>` (skipping `<pre>`-nested ones) is resolved via `LlmJsonParser.buildFlowLookup(...).resolve` against the live `RED.nodes` set; matches become `code.llm-node-ref` with a focus handler. **Pass 2**: walks the remaining text nodes (skipping `<code>/<pre>/<a>/<script>/<style>`) and replaces any token that exactly matches a known alias (length ≥ 3) — this catches plain-prose mentions when the LLM forgets to backtick. Both singleton aliases (`inject`, `debug`) and compound ones (`change_create_sensor_json`) are matched; sort-longest-first plus `\b` boundaries make sure `change_temperature_series` beats `change` on overlapping spans. Tabs are skipped; config nodes ARE included (they open the edit dialog on click). The system prompt also instructs the LLM to backtick node aliases, so Pass 1 is the primary path. |
+| `annotateNodeReferences(rootEl, targetFlowIds?)` | Two-pass scan that makes node mentions clickable. **Pass 1**: every inline `<code>` (skipping `<pre>`-nested ones) is resolved via `LlmJsonParser.buildFlowLookup(...).resolve`; matches become `code.llm-node-ref` with a focus handler. **Pass 2**: walks the remaining text nodes (skipping `<code>/<pre>/<a>/<script>/<style>`) and replaces any token that exactly matches a known alias (length ≥ 3) — this catches plain-prose mentions when the LLM forgets to backtick. Both singleton aliases (`inject`, `debug`) and compound ones (`change_create_sensor_json`) are matched; sort-longest-first plus `\b` boundaries make sure `change_temperature_series` beats `change` on overlapping spans. Tabs are skipped; config nodes ARE included (they open the edit dialog on click). When `targetFlowIds` is provided, the alias map is rebuilt from `UI.getFlowsByIds(targetFlowIds)` — the exact same export the LLM saw — so numbered duplicate aliases (`change_2`, …) resolve back to the same node IDs. Without it, every node on the canvas is scanned. The system prompt also instructs the LLM to backtick node aliases, so Pass 1 is the primary path. |
 | `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)` (with `RED.editor.edit(node)` as fallback). Notifies if the node has since been deleted. Exposed as `LLMPlugin.UI.focusCanvasNode`. |
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
-| `createRestoreCheckpointButton(checkpointId)` | Shared Restore button used by chat-baseline rows and per-message restore rows. |
+| `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
 | `getFlowsByIds(flowIds)` / `getCurrentFlow(flowIds?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
@@ -216,6 +220,15 @@ Main sidebar entry. `createLLMPluginUI()` builds the DOM;
 - **Flow selector**: subscribes to `flows:add` / `flows:change` /
   `flows:remove` and `workspace:change`, prunes stale ids, displays
   *Current Open Flow* when only the active tab is selected.
+- **Session preferences** (browser `localStorage`): model input
+  (`llm-plugin-last-model`), mode dropdown (`llm-plugin-last-mode`),
+  and flow selection (`llm-plugin-selected-flows`) are restored on
+  sidebar init and saved on user change. Stale flow IDs are pruned
+  lazily on workspace events. Each load is wrapped in try/catch so
+  disabled storage falls back silently to the defaults.
+- **Chat history navigation**: Up/Down arrows on the prompt textarea
+  walk through this chat's previous user messages (shell-style); any
+  manual edit aborts the walk.
 - Settings dialog: focus management, Escape key, backdrop click.
 
 `initializeWhenReady()` polls `RED.sidebar` and registers the tab.

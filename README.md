@@ -46,7 +46,7 @@ The model will then follow real node/property patterns from that sample instead 
 ## Features
 
 - **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.
-- **Checkpoint / Restore**: flow snapshots are saved before and after each import, allowing rollback to any previous state.
+- **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
 
 ## Flow Import
@@ -82,4 +82,7 @@ The encrypted file is only as safe as your `credentialSecret`. When sharing your
 
 Please report issues at: [GitHub Issues](https://github.com/404background/node-red-contrib-llm-plugin/issues)
 
+Node-RED [API Reference](https://nodered.org/docs/api/)
+
 My article: [『Node-REDのプラグインを開発してみる　その2（LLM Plugin v0.4.0）』](https://404background.com/program/node-red-plugin-2/)
+

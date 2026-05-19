@@ -14,7 +14,7 @@ const LLMJsonParser = require('./core/llm_json_parser');
 // Fall back to a minimal embedded prompt if the bundled file is
 // unreadable (sandboxed cloud environments occasionally restrict reads).
 const FALLBACK_PROMPT = 'You are a Node-RED expert. Be concise; reply in the user\'s language. ' +
-    'When modifying flows, output one ```json``` block in Vibe Schema with `nodes` and `connections` (merge semantics: list to add/update, map alias to null to delete). Otherwise plain text.\n';
+    'When modifying flows, output one ```json``` block in Vibe Schema with `nodes` and/or `connections` (either may be omitted; merge semantics: list to add/update, map alias to null to delete). Otherwise plain text.\n';
 let SYSTEM_PROMPT_TEMPLATE;
 try {
     SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_system.txt'), 'utf8');
