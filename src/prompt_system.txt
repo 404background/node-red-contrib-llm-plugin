@@ -17,3 +17,6 @@ NODES (`{ alias: { type, name?, flow?, config?, props?, ... } }`):
 CONNECTIONS:
 - `{ "from": "a", "to": "b", "fromPort"?: n }`. Edge delete: `{ "remove": { "from", "to" } }`.
 - Both endpoints must exist; stay within one flow; never wire into source-only nodes.
+
+LAYOUT FIX
+- If you need to reposition a node, you MUST delete it and then add it again. Don't ask about coordinates.
