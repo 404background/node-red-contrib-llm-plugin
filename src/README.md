@@ -170,7 +170,12 @@ Full import workflow with these guarantees:
    are dropped. See [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
 5. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
-6. Replace the active workspace atomically; layout is delegated to
+6. **Reposition without ID churn** — a top-level `reposition: [alias…]`
+   directive (see [core/VIBE_SCHEMA.md](./core/VIBE_SCHEMA.md#reposition-directive))
+   reflows just the named canvas-node subset while keeping IDs, props,
+   and wires. The subset is anchored to its previous top-left so the
+   rest of the canvas doesn't visibly shift.
+7. Replace the active workspace atomically; layout is delegated to
    `CanvasLayout`.
 
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and

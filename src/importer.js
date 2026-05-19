@@ -215,7 +215,7 @@
     }
     function extractFlowDirectives(messageContent) {
         let p = getParser(); let cfg = getConfigurator();
-        return (p && cfg) ? p.extractFlowDirectives(messageContent, cfg) : { removeTokens: [], removeConnections: [] };
+        return (p && cfg) ? p.extractFlowDirectives(messageContent, cfg) : { removeTokens: [], removeConnections: [], repositionTokens: [] };
     }
     function extractFlowNodes(messageContent, options) {
         let p = getParser(); let cfg = getConfigurator();
@@ -334,7 +334,7 @@
                 basePositions[n.id] = { x: n.x, y: n.y };
             }
         });
-        let directives = flowDirectives || { removeTokens: [], removeConnections: [] };
+        let directives = flowDirectives || { removeTokens: [], removeConnections: [], repositionTokens: [] };
 
         function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
@@ -546,11 +546,94 @@
                 let incrementalOpts = Object.assign({}, layoutOpts, { maxColumns: Infinity });
                 layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
             }
+
+            // Selective reposition: relayout the named subset in place,
+            // keeping their IDs and properties. Runs AFTER the general
+            // layout pass so coordinates of unaffected nodes are stable.
+            if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
+                repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts);
+            }
         }
 
         rebuilt.forEach(function(n) { if (n) delete n._llmOrder; });
 
         return rebuilt;
+    }
+
+    // Selective layout: reflow only the nodes named by `aliases` (and any
+    // already-existing wires between them), keeping their IDs intact. The
+    // subset is translated back to its previous top-left corner so the
+    // rest of the canvas is undisturbed.
+    function repositionSubsetByAliases(allNodes, aliases, layoutOpts) {
+        if (!Array.isArray(aliases) || aliases.length === 0) return;
+        let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
+        if (!layout || typeof layout.reflowCanvasNodes !== 'function') return;
+
+        let cfg = getConfigurator();
+        let lookup = buildFlowLookup(allNodes, cfg);
+
+        let subsetIdSet = {};
+        aliases.forEach(function(a) {
+            let id = lookup.resolve(a, { exactOnly: true }) || lookup.resolve(a);
+            if (!id) return;
+            let n = lookup.byId[id];
+            if (n && isCanvasNode(n)) subsetIdSet[id] = true;
+        });
+
+        let subsetNodes = allNodes.filter(function(n) {
+            return n && n.id && subsetIdSet[n.id];
+        });
+        if (subsetNodes.length < 1) return;
+
+        // Anchor the subset to its current top-left so unrelated nodes
+        // around it don't visually shift.
+        let origMinX = Infinity, origMinY = Infinity;
+        subsetNodes.forEach(function(n) {
+            if (typeof n.x === 'number' && n.x < origMinX) origMinX = n.x;
+            if (typeof n.y === 'number' && n.y < origMinY) origMinY = n.y;
+        });
+        if (!isFinite(origMinX)) origMinX = LAYOUT.startX;
+        if (!isFinite(origMinY)) origMinY = LAYOUT.startY;
+
+        // Clone with wires restricted to the subset so reflowCanvasNodes
+        // only sees the internal adjacency.
+        let clones = subsetNodes.map(function(n) {
+            let c = JSON.parse(JSON.stringify(n));
+            if (Array.isArray(c.wires)) {
+                c.wires = c.wires.map(function(port) {
+                    if (!Array.isArray(port)) return [];
+                    return port.filter(function(tid) { return subsetIdSet[tid]; });
+                });
+            }
+            return c;
+        });
+
+        let opts = Object.assign({}, layoutOpts || {}, {
+            startX: LAYOUT.startX,
+            startY: LAYOUT.startY,
+            maxColumns: Infinity,
+            isCanvasNode: isCanvasNode
+        });
+        layout.reflowCanvasNodes(clones, opts);
+
+        let newMinX = Infinity, newMinY = Infinity;
+        clones.forEach(function(c) {
+            if (typeof c.x === 'number' && c.x < newMinX) newMinX = c.x;
+            if (typeof c.y === 'number' && c.y < newMinY) newMinY = c.y;
+        });
+        if (!isFinite(newMinX) || !isFinite(newMinY)) return;
+
+        let dx = origMinX - newMinX;
+        let dy = origMinY - newMinY;
+
+        let cloneById = {};
+        clones.forEach(function(c) { cloneById[c.id] = c; });
+        subsetNodes.forEach(function(n) {
+            let c = cloneById[n.id];
+            if (!c) return;
+            if (typeof c.x === 'number') n.x = c.x + dx;
+            if (typeof c.y === 'number') n.y = c.y + dy;
+        });
     }
 
     // ================================================================== //
@@ -827,7 +910,8 @@
             if (!nodes || nodes.length === 0) {
                 if (connectionHints.length > 0 ||
                     (flowDirectives.removeTokens || []).length > 0 ||
-                    (flowDirectives.removeConnections || []).length > 0) {
+                    (flowDirectives.removeConnections || []).length > 0 ||
+                    (flowDirectives.repositionTokens || []).length > 0) {
                     nodes = [];
                 } else {
                     if (window.RED && RED.notify) RED.notify('No JSON flow found in message', 'warning');
@@ -866,6 +950,9 @@
                     };
                 });
             }
+            // Reposition tokens stay as aliases; they're resolved later
+            // against the rebuilt flow so newly added nodes from the same
+            // schema can also be included by alias.
 
             // Checkpoints come from ChatManager.saveImportCheckpoint, taken
             // by the UI immediately before this import runs.
@@ -1029,6 +1116,7 @@
 
             let hasDirectives = (flowDirectives.removeTokens || []).length > 0 ||
                                 (flowDirectives.removeConnections || []).length > 0 ||
+                                (flowDirectives.repositionTokens || []).length > 0 ||
                                 (connectionHints || []).length > 0;
             if (!newNodes.length && !hasDirectives) {
                 try {
@@ -1231,6 +1319,7 @@
         let hints = extractConnectionHints(messageContent);
         return (directives.removeTokens || []).length > 0 ||
                (directives.removeConnections || []).length > 0 ||
+               (directives.repositionTokens || []).length > 0 ||
                hints.length > 0;
     };
 })();

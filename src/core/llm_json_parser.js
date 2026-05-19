@@ -306,14 +306,15 @@
     }
 
     /**
-     * Extract flow directives (node deletions, connection deletions) from the message.
+     * Extract flow directives (node deletions, connection deletions,
+     * reposition requests) from the message.
      *
      * @param {string} messageContent
      * @param {Object} cfg   Configurator with `isVibeSchema` method.
-     * @returns {{ removeTokens: string[], removeConnections: Array }}
+     * @returns {{ removeTokens: string[], removeConnections: Array, repositionTokens: string[] }}
      */
     function extractFlowDirectives(messageContent, cfg) {
-        let directives = { removeTokens: [], removeConnections: [] };
+        let directives = { removeTokens: [], removeConnections: [], repositionTokens: [] };
         let parsed = extractVibeSchema(messageContent, cfg);
         if (!parsed) return directives;
 
@@ -337,6 +338,25 @@
         Object.keys(parsed.nodes || {}).forEach(function(alias) {
             if (parsed.nodes[alias] === null) directives.removeTokens.push(alias);
         });
+        // `reposition` accepts either a flat alias array
+        //   "reposition": ["a", "b"]
+        // or grouped sequences (e.g. when the LLM wants to make the
+        // grouping explicit) — they are flattened: aliases are simply
+        // collected so the importer can relayout that subset together.
+        let repo = parsed.reposition || parsed.relayout || parsed.reflow;
+        if (Array.isArray(repo)) {
+            repo.forEach(function(entry) {
+                if (typeof entry === 'string' && entry.trim()) {
+                    directives.repositionTokens.push(entry.trim());
+                } else if (Array.isArray(entry)) {
+                    entry.forEach(function(inner) {
+                        if (typeof inner === 'string' && inner.trim()) {
+                            directives.repositionTokens.push(inner.trim());
+                        }
+                    });
+                }
+            });
+        }
         return directives;
     }
 
@@ -497,6 +517,11 @@
                 nodes: {},
                 connections: Array.isArray(schema.connections) ? schema.connections.slice() : []
             };
+            // Preserve directive fields the merger doesn't otherwise touch
+            // so a reposition-only agent message survives the merge.
+            ['reposition', 'relayout', 'reflow', 'remove', 'delete', 'removeNodes', 'deleted'].forEach(function(k) {
+                if (schema[k] !== undefined) merged[k] = schema[k];
+            });
 
             let schemaNodes = (schema.nodes && typeof schema.nodes === 'object') ? schema.nodes : {};
             Object.keys(schemaNodes).forEach(function(alias) {

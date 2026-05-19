@@ -816,16 +816,22 @@
 
     /**
      * Check whether the given parsed JSON object looks like Vibe Schema.
+     * Accepts the canonical add/edit shape (object `nodes` + array
+     * `connections`) and also directive-only shapes that carry just a
+     * `reposition` array (or its `relayout` / `reflow` aliases) so a
+     * pure reposition message is still detected.
      * @param  {*} obj  Parsed JSON value.
      * @return {boolean}
      */
     function isVibeSchema(obj) {
-        return obj !== null &&
-               typeof obj === 'object' &&
-               !Array.isArray(obj) &&
-               typeof obj.nodes === 'object' &&
-               !Array.isArray(obj.nodes) &&
-               Array.isArray(obj.connections);
+        if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
+        let hasNodesAndConns =
+            typeof obj.nodes === 'object' &&
+            !Array.isArray(obj.nodes) &&
+            Array.isArray(obj.connections);
+        if (hasNodesAndConns) return true;
+        let repo = obj.reposition || obj.relayout || obj.reflow;
+        return Array.isArray(repo);
     }
 
     // ------------------------------------------------------------------ //

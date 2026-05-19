@@ -163,6 +163,25 @@ and deletions in any order.
 Connections are otherwise additive — see `src/README.md` "importer.js"
 for the full merge contract.
 
+### Reposition directive
+
+```json
+{ "reposition": ["inject_tick", "function_format", "mqtt_out_publish"] }
+```
+
+Top-level `reposition` lists the canvas-node aliases the importer should
+relayout in place. Existing IDs, properties, and wires are preserved;
+only `x`/`y` change. The subset is anchored to its previous top-left
+corner so unrelated nodes don't visibly shift. Use this rather than
+delete-and-recreate when you want to fix the arrangement of existing
+nodes — the old approach would invalidate IDs that earlier conversation
+turns referred to.
+
+`reposition` may also be a list of lists (`[[a, b], [c, d]]`) when the
+LLM wants to make grouping explicit; the importer flattens it. Aliases
+that don't resolve to a canvas node (config nodes, unknown aliases) are
+ignored.
+
 ### Comment-node rule
 
 Every comment **must** name the canvas node it sits above:
