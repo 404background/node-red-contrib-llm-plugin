@@ -816,20 +816,26 @@
 
     /**
      * Check whether the given parsed JSON object looks like Vibe Schema.
-     * Accepts the canonical add/edit shape (object `nodes` + array
-     * `connections`) and also directive-only shapes that carry just a
-     * `reposition` array (or its `relayout` / `reflow` aliases) so a
-     * pure reposition message is still detected.
+     * Accepts:
+     *   - the canonical add/edit shape — an object `nodes` map and/or an
+     *     array `connections`; either alone is valid (a pure node-prop
+     *     update has no connection changes; a pure wiring tweak has no
+     *     node changes). The prompt explicitly tells the LLM either may
+     *     be omitted, so the validator has to mirror that.
+     *   - directive-only shapes that carry just a `reposition` array
+     *     (or its `relayout` / `reflow` aliases) so a pure reposition
+     *     message is still detected.
      * @param  {*} obj  Parsed JSON value.
      * @return {boolean}
      */
     function isVibeSchema(obj) {
         if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
-        let hasNodesAndConns =
+        let hasNodesObj =
             typeof obj.nodes === 'object' &&
-            !Array.isArray(obj.nodes) &&
-            Array.isArray(obj.connections);
-        if (hasNodesAndConns) return true;
+            obj.nodes !== null &&
+            !Array.isArray(obj.nodes);
+        let hasConnectionsArr = Array.isArray(obj.connections);
+        if (hasNodesObj || hasConnectionsArr) return true;
         let repo = obj.reposition || obj.relayout || obj.reflow;
         return Array.isArray(repo);
     }

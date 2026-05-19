@@ -106,7 +106,7 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 |----------|---------|
 | `toIntermediate(nodeRedJson, options?)` | Node-RED → Vibe Schema. `options.includeIdMap = true` attaches `_meta.idToAlias`. |
 | `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED. Options: `workspace`, `startX`, `startY`, `spacingY`, `edgeGap`, `maxColumns`, `preserveAlias`. |
-| `isVibeSchema(obj)` | `true` iff `obj.nodes` is an object and `obj.connections` is an array. |
+| `isVibeSchema(obj)` | `true` iff `obj.nodes` is a plain object OR `obj.connections` is an array (either alone is valid — a node-prop-only edit omits connections; a wiring tweak omits nodes). Directive-only shapes with a top-level `reposition` / `relayout` / `reflow` array also count. |
 | `isConfigType(type)` / `isConfigNode(node)` | Config-node detection (runtime + structural). |
 | `isCanvasNode(node)` | `!tab && !subflow: && !isConfigNode`. |
 | `isNoInputType(type)` | True for source-only nodes (`inject`, `catch`, `comment`, …). |

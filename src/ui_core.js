@@ -378,7 +378,12 @@
                     details.className = 'json-collapsible';
                     let summary = document.createElement('summary');
 
-                    let isVibeSchema = parsed.nodes && parsed.connections;
+                    // Mirror FlowConverterCore.isVibeSchema: `nodes` OR
+                    // `connections` alone is valid (e.g. a node-prop-only
+                    // edit omits connections, a wiring tweak omits nodes).
+                    let hasNodesObj = parsed.nodes && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes);
+                    let hasConnectionsArr = Array.isArray(parsed.connections);
+                    let isVibeSchema = hasNodesObj || hasConnectionsArr;
                     if (isVibeSchema) {
                         summary.textContent = 'Vibe Schema JSON';
                         // If the LLM included a description inside the JSON,
