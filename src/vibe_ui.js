@@ -100,6 +100,20 @@
         let flowPanel         = document.getElementById('llm-plugin-flow-panel');
         let flowLabel         = document.getElementById('llm-plugin-flow-label');
         let modeSelect        = document.getElementById('llm-plugin-mode');
+        // Restore last used mode from localStorage (only if it matches one of the
+        // current <option> values, so stale entries can't put the dropdown into
+        // an invalid state).
+        try {
+            let lastMode = localStorage.getItem('llm-plugin-last-mode');
+            if (lastMode && modeSelect) {
+                for (let i = 0; i < modeSelect.options.length; i++) {
+                    if (modeSelect.options[i].value === lastMode) {
+                        modeSelect.value = lastMode;
+                        break;
+                    }
+                }
+            }
+        } catch (e) { /* ignore localStorage errors */ }
         let settingsOverlay   = document.getElementById('llm-plugin-settings-overlay');
         let settingsDialog    = document.getElementById('llm-plugin-settings-dialog');
         let openSettingsBtn   = document.getElementById('llm-plugin-settings-button');
@@ -305,6 +319,8 @@
         // Toast on mode change so the user sees the dropdown took effect.
         if (modeSelect) {
             modeSelect.addEventListener('change', function() {
+                try { localStorage.setItem('llm-plugin-last-mode', modeSelect.value); }
+                catch (e) { /* ignore localStorage errors */ }
                 if (window.RED && RED.notify) {
                     RED.notify('LLM Plugin: Mode = ' + modeSelect.value, { type: 'info', timeout: 1500 });
                 }
@@ -330,11 +346,44 @@
                 : null;
         }
 
-        // Default the selection to the active workspace once RED is ready.
+        // Persist the user's flow selection across browser sessions, mirroring
+        // the model/mode behaviour. We store the IDs as a JSON array; invalid
+        // (e.g., deleted) IDs are filtered out lazily by pruneSelectedFlows.
+        function saveSelectedFlows() {
+            try {
+                let ids = Object.keys(selectedFlowIds);
+                localStorage.setItem('llm-plugin-selected-flows', JSON.stringify(ids));
+            } catch (e) { /* ignore localStorage errors */ }
+        }
+        function loadSelectedFlows() {
+            try {
+                let raw = localStorage.getItem('llm-plugin-selected-flows');
+                if (!raw) return false;
+                let ids = JSON.parse(raw);
+                if (!Array.isArray(ids) || ids.length === 0) return false;
+                let any = false;
+                ids.forEach(function(id) {
+                    if (typeof id === 'string' && id) {
+                        selectedFlowIds[id] = true;
+                        any = true;
+                    }
+                });
+                return any;
+            } catch (e) { return false; }
+        }
+
+        // Default the selection once RED is ready. Priority:
+        //   1. Previously saved selection from localStorage (subject to later
+        //      pruning if any of those flows no longer exist)
+        //   2. The currently active workspace
         // Only runs on first successful init: after that, the user's explicit
         // selection (including a deliberately empty one) is preserved.
         function ensureDefaultSelection() {
             if (selectionInitialized) return;
+            if (loadSelectedFlows()) {
+                selectionInitialized = true;
+                return;
+            }
             let active = getActiveWorkspaceId();
             if (active) {
                 selectedFlowIds[active] = true;
@@ -343,13 +392,22 @@
         }
 
         // Drop selections that no longer correspond to an existing workspace.
+        // Guarded against the transient "RED not ready yet → 0 workspaces"
+        // state so we don't wipe a freshly-restored selection from
+        // localStorage before the workspaces have actually loaded.
         function pruneSelectedFlows(workspaces) {
             let ws = workspaces || listWorkspaces();
+            if (ws.length === 0) return;
             let valid = {};
             ws.forEach(function(w) { valid[w.id] = true; });
+            let changed = false;
             Object.keys(selectedFlowIds).forEach(function(id) {
-                if (!valid[id]) delete selectedFlowIds[id];
+                if (!valid[id]) {
+                    delete selectedFlowIds[id];
+                    changed = true;
+                }
             });
+            if (changed) saveSelectedFlows();
         }
 
         // Re-sync the selector with current workspace state: prune deleted
@@ -406,6 +464,7 @@
                     onToggle: function(checked) {
                         if (checked) selectedFlowIds[ws.id] = true;
                         else delete selectedFlowIds[ws.id];
+                        saveSelectedFlows();
                         updateFlowLabel(workspaces);
                     }
                 });
