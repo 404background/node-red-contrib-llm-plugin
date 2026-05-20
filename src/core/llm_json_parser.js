@@ -729,6 +729,54 @@
         return null;
     }
 
+    /**
+     * Diagnose why `extractFlowNodes` returned null. Re-parses each fenced
+     * code block (preferring the last one, same priority extractFlowNodes
+     * uses) and returns the parse error of the first block that fails
+     * both `JSON.parse` and `repairJsonQuotes`. Used by the importer to
+     * surface a useful "JSON parse failed at line X, col Y" notification
+     * instead of the generic "No JSON flow found" — the common cause is
+     * an LLM forgetting to escape inner quotes in a JSONata expression
+     * (e.g. `"to": "foo" & bar`).
+     *
+     * @param {string} messageContent
+     * @returns {{error: string, line?: number, column?: number, snippet?: string} | null}
+     *          null when no fenced code block exists (truly "no JSON found"),
+     *          or every fenced block parses fine (the failure happened elsewhere).
+     */
+    function diagnoseJsonExtractionFailure(messageContent) {
+        let codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
+        let candidates = [];
+        let m;
+        while ((m = codeBlockRegex.exec(messageContent)) !== null) {
+            candidates.push(m[1].trim());
+        }
+        if (candidates.length === 0) return null;
+
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            let text = stripJsonComments(candidates[i]).trim();
+            if (!text) continue;
+            try { JSON.parse(text); continue; } catch (e) {}
+            try { JSON.parse(repairJsonQuotes(text)); continue; } catch (e2) {
+                let info = { error: (e2 && e2.message) ? e2.message : String(e2) };
+                let posMatch = /position\s+(\d+)/.exec(info.error);
+                if (posMatch) {
+                    let pos = parseInt(posMatch[1], 10);
+                    if (!isNaN(pos) && pos >= 0 && pos <= text.length) {
+                        let before = text.substring(0, pos);
+                        info.line = (before.match(/\n/g) || []).length + 1;
+                        info.column = pos - (before.lastIndexOf('\n') + 1) + 1;
+                        info.snippet = text
+                            .substring(Math.max(0, pos - 30), Math.min(text.length, pos + 30))
+                            .replace(/\n/g, '↵');
+                    }
+                }
+                return info;
+            }
+        }
+        return null;
+    }
+
     // ================================================================== //
     //  Public API                                                         //
     // ================================================================== //
@@ -760,6 +808,7 @@
         // Flow node extraction (requires cfg with isVibeSchema, toNodeRed, toIntermediate)
         normalizeSchemaForConversion: normalizeSchemaForConversion,
         tryParseFlowNodes: tryParseFlowNodes,
-        extractFlowNodes: extractFlowNodes
+        extractFlowNodes: extractFlowNodes,
+        diagnoseJsonExtractionFailure: diagnoseJsonExtractionFailure
     };
 });

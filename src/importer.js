@@ -914,6 +914,28 @@
                     (flowDirectives.repositionTokens || []).length > 0) {
                     nodes = [];
                 } else {
+                    // Try to surface a real parse error so users can act on
+                    // a malformed JSON block (e.g. an unescaped JSONata
+                    // quote) instead of the generic "no JSON" message.
+                    let parser = getParser();
+                    let diag = (parser && typeof parser.diagnoseJsonExtractionFailure === 'function')
+                        ? parser.diagnoseJsonExtractionFailure(messageContent)
+                        : null;
+                    if (diag) {
+                        let where = (diag.line && diag.column)
+                            ? ' (line ' + diag.line + ', col ' + diag.column + ')'
+                            : '';
+                        let near = diag.snippet ? ' Near: …' + diag.snippet + '…' : '';
+                        let detail = 'JSON parse failed' + where + ': ' + diag.error + '.' + near;
+                        if (window.RED && RED.notify) {
+                            RED.notify(detail, { type: 'warning', timeout: 12000 });
+                        }
+                        try { console.warn('[LLM Plugin] JSON parse failed:', diag); } catch (e) {}
+                        postTerminalLog('warn', 'json-parse-failed',
+                            'LLM response contained a fenced code block that failed to parse',
+                            { line: diag.line, column: diag.column, error: diag.error });
+                        return { ok: false, error: detail };
+                    }
                     if (window.RED && RED.notify) RED.notify('No JSON flow found in message', 'warning');
                     return { ok: false, error: 'No JSON flow found in message' };
                 }

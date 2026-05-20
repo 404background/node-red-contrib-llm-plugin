@@ -118,6 +118,7 @@ Schema extraction from prose-mixed responses.
 | Schema extraction | `extractVibeSchema`, `extractConnectionHints`, `extractFlowDirectives` |
 | Flow lookup | `buildFlowLookup` (alias / name / ID → node ID, fuzzy fallback) |
 | Node extraction | `normalizeSchemaForConversion`, `tryParseFlowNodes`, `extractFlowNodes` |
+| Diagnostics | `diagnoseJsonExtractionFailure` — when `extractFlowNodes` returns null, re-parses each fenced block and returns the first concrete `JSON.parse` error with line/column/snippet so the importer can show "JSON parse failed at line X" instead of the generic "no JSON found". |
 | Agent helper | `resolveAliasInSchema`, `mergeAgentPartialSchemaWithCurrentFlow` |
 
 ### `chat_manager.js`
