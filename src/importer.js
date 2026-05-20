@@ -18,7 +18,7 @@
         startY:       200,   // canvas origin Y (px)
         spacingY:      80,   // row height (centre-to-centre)
         componentGap:  80,   // gap between disconnected components
-        edgeGap:       80,   // 4 grid squares between adjacent node edges
+        edgeGap:       40,   // 2 grid squares between adjacent node edges
         maxColumns:     5    // wrap long chains after this many columns
     };
 

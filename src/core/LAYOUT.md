@@ -128,9 +128,10 @@ Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
 estimate approximates the editor's
 `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule as `7.5 px/char + 64 px`
 (30 icon strip + 14 label padding + 14 port stubs on each side). With
-the importer's default `edgeGap = 80` two default-named ~120 px nodes
-sit ~200 px centre-to-centre, leaving ~4 grid squares of visible
-clearance between them.
+the importer's default `edgeGap = 40` two default-named ~120 px nodes
+sit ~160 px centre-to-centre, leaving 2 grid squares of visible
+clearance between them — close to the spacing Node-RED itself produces
+when you drag nodes onto the canvas one at a time.
 
 ## Comment placement
 
