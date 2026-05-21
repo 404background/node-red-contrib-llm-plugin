@@ -265,7 +265,15 @@
     }
 
     // Approximate Node-RED's label-based width:
-    //   max(minW, chars*perChar + 64)  -- 64 px of icon/padding/port chrome.
+    //   regular nodes: max(minW, chars*perChar + 64) -- 64 px of icon/
+    //     padding/port chrome (30 icon strip + 14 label padding + 14 px
+    //     port stub on each side).
+    //   comment nodes: max(minW, chars*perChar + 24) -- comments render
+    //     without port stubs and with only the small "//" comment icon,
+    //     so the chrome is closer to 24 px. Using the 64 px chrome here
+    //     overestimates wide-label comments by ~40 px and pushes the
+    //     comment's rendered left edge that far right of the target
+    //     node's left edge, breaking the comment's intended alignment.
     // ASCII glyphs render ~7.5 px in the default 14 px font; fullwidth
     // glyphs (Japanese / Chinese / Korean) render ~2x wider, so labels
     // containing any wide char need ~14 px/char or the layout under-
@@ -276,7 +284,8 @@
         if (!node || typeof node !== 'object') return minW;
         let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
         let perChar = hasWideChar(label) ? 14 : 7.5;
-        let w = Math.max(minW, label.length * perChar + 64);
+        let chrome = (node.type === 'comment') ? 24 : 64;
+        let w = Math.max(minW, label.length * perChar + chrome);
         return Math.ceil(w / grid) * grid;
     }
 

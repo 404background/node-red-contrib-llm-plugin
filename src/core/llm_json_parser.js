@@ -661,8 +661,18 @@
                 let conversionSchema = normalizeSchemaForConversion(sourceSchema, options, cfg);
                 if (Object.keys(conversionSchema.nodes).length === 0) return [];
 
+                // Always preserve aliases on rebuilt nodes -- the importer
+                // needs them to resolve `above` references for comments
+                // (each `above: <alias>` is matched against rebuilt nodes
+                // via `_llmAlias`). Without it, a fresh import has no way
+                // to map a comment's anchor alias back to the real node id
+                // generated for the same alias in toNodeRed, and every
+                // caption falls through to the order-based fallback --
+                // landing above the NEXT sample's inject instead of its
+                // own. _llmAlias is stripped after the importer consumes it,
+                // so leaving it on always is cheap.
                 let converted = cfg.toNodeRed(conversionSchema, {
-                    preserveAlias: !!(options && options.currentFlow && Array.isArray(options.currentFlow) && options.currentFlow.length > 0)
+                    preserveAlias: true
                 });
                 if (converted && converted.length > 0) return converted;
             }
