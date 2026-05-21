@@ -242,21 +242,28 @@
         return Math.round(val / grid) * grid;
     }
 
-    // Approximate Node-RED's label-based width when no DOM measurement is
-    // available. The editor renders nodes as
-    //   max(MIN_NODE_WIDTH, textWidth + iconStrip + labelPadding) + portStubs
-    // where the default 14 px sans-serif font averages ~7.5 px/char, the
-    // icon strip is 30 px, label padding is ~14 px, and the port stubs add
-    // ~7 px on each side (14 px total). 7.5*chars + 64 chrome puts the
-    // estimate close enough to the rendered width that an `edgeGap` of N
-    // grid squares actually shows ~N grid squares between rendered nodes.
+    // True if the label contains any non-ASCII char (Japanese, Chinese,
+    // accented Latin, etc.). Used to switch to a wider per-char estimate.
+    function hasWideChar(label) {
+        for (let i = 0; i < label.length; i++) {
+            if (label.charCodeAt(i) > 127) return true;
+        }
+        return false;
+    }
+
+    // Approximate Node-RED's label-based width:
+    //   max(minW, chars*perChar + 64)  -- 64 px of icon/padding/port chrome.
+    // ASCII glyphs render ~7.5 px in the default 14 px font; fullwidth
+    // glyphs (Japanese / Chinese / Korean) render ~2x wider, so labels
+    // containing any wide char need ~14 px/char or the layout under-
+    // estimates and neighbours overlap.
     function estimateNodeWidth(node, opts) {
         let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
         let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
         if (!node || typeof node !== 'object') return minW;
         let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
-        let estimated = label.length * 7.5 + 64;
-        let w = Math.max(minW, estimated);
+        let perChar = hasWideChar(label) ? 14 : 7.5;
+        let w = Math.max(minW, label.length * perChar + 64);
         return Math.ceil(w / grid) * grid;
     }
 
@@ -387,6 +394,139 @@
         });
     }
 
+    // Record the offset of each comment that sits TOUCHING the thing
+    // directly below it (a node or another comment). Walking these
+    // touching-hops downward identifies the non-comment "anchor target"
+    // for each caption -- including comments stacked above a node, which
+    // chain through their lower neighbour to reach the target.
+    //
+    // Standalone comments -- those with empty space below them, bird's-
+    // eye annotations, sidebars, legends -- find no touching neighbour
+    // and get NO anchor. applyCommentAnchors leaves them untouched.
+    //
+    // "Touching" = the next thing's centre is at most `stackStep + grid`
+    // (one stack level + grid margin = ~60 px) below, and horizontally
+    // inside its rendered bounding box (+/- gridSize). Tight on purpose:
+    // only captions visibly attached to a node move with the node.
+    function captureCommentAnchors(canvasNodes, opts) {
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let stackStep  = (gridSize > 0)
+            ? Math.ceil(nodeHeight / gridSize) * gridSize
+            : nodeHeight;
+        let touchingTol = stackStep + gridSize;
+        let xMargin = gridSize;
+
+        let positioned = (canvasNodes || []).filter(function(n) {
+            return n && n.id && typeof n.x === 'number' && typeof n.y === 'number';
+        });
+
+        function touchingBelow(from, visited) {
+            let best = null;
+            let bestDy = Infinity;
+            for (let i = 0; i < positioned.length; i++) {
+                let n = positioned[i];
+                if (visited[n.id]) continue;
+                let inX;
+                if (n.type === 'comment') {
+                    inX = Math.abs(n.x - from.x) <= gridSize;
+                } else {
+                    let tHalf = getNodeWidth(n, opts) / 2;
+                    inX = Math.abs(n.x - from.x) <= tHalf + xMargin;
+                }
+                if (!inX) continue;
+                let dy = n.y - from.y;
+                if (dy <= 0 || dy > touchingTol) continue;
+                if (dy < bestDy) { bestDy = dy; best = n; }
+            }
+            return best;
+        }
+
+        let anchors = {};
+        positioned.forEach(function(c) {
+            if (c.type !== 'comment') return;
+            let visited = {};
+            visited[c.id] = true;
+            let current = c;
+            let hops = 10;
+            while (hops-- > 0) {
+                let next = touchingBelow(current, visited);
+                if (!next) break;
+                visited[next.id] = true;
+                if (next.type !== 'comment') {
+                    anchors[c.id] = {
+                        targetId: next.id,
+                        dx: c.x - next.x,
+                        dy: c.y - next.y
+                    };
+                    break;
+                }
+                current = next;
+            }
+        });
+        return anchors;
+    }
+
+    // Re-apply each captured anchor: comment.(x,y) = target.(x,y) + offset.
+    // Skips entries whose target was deleted from the rebuilt flow (the
+    // comment stays at its last position rather than vanishing).
+    function applyCommentAnchors(canvasNodes, anchors) {
+        if (!anchors) return;
+        let byId = {};
+        (canvasNodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+        (canvasNodes || []).forEach(function(c) {
+            if (!c || c.type !== 'comment') return;
+            let info = anchors[c.id];
+            if (!info) return;
+            let target = byId[info.targetId];
+            if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') return;
+            c.x = target.x + info.dx;
+            c.y = target.y + info.dy;
+        });
+    }
+
+    // Final safety net: scan every (canvas-node, canvas-node) pair and
+    // push the lower one further down whenever their X bounding boxes
+    // overlap AND their Y centres are within nodeHeight. Runs as the
+    // last step so it only fires when the directional pushes in steps
+    // 3.4 / 3.5a / 3.5b couldn't reach the collision (e.g. a new node
+    // dropped at the same Y as an unrelated existing node, or a node
+    // whose `liveNodeWidth` hook turned out optimistic). Comments are
+    // skipped here -- they are re-aligned to their target by the
+    // comment pass that runs after.
+    function resolveOverlaps(canvasNodes, opts) {
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+        let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+
+        let nodes = (canvasNodes || []).filter(function(n) {
+            return n && n.type !== 'comment' && typeof n.x === 'number' && typeof n.y === 'number';
+        });
+        if (nodes.length < 2) return;
+
+        let stepY = Math.max(spacingY, nodeHeight + gridSize);
+        let maxPasses = nodes.length + 5;
+        let changed = true;
+        while (changed && maxPasses-- > 0) {
+            changed = false;
+            nodes.sort(function(a, b) {
+                return (a.y - b.y) || (a.x - b.x);
+            });
+            for (let i = 0; i < nodes.length; i++) {
+                let a = nodes[i];
+                let aw = getNodeWidth(a, opts);
+                for (let j = i + 1; j < nodes.length; j++) {
+                    let b = nodes[j];
+                    let bw = getNodeWidth(b, opts);
+                    if (Math.abs(a.x - b.x) < (aw + bw) / 2 && (b.y - a.y) < nodeHeight) {
+                        b.y = snapToGrid(a.y + stepY, gridSize);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
     // --- Canvas-level layout (./LAYOUT.md §§ 2 and 3) ---
 
     function reflowCanvasNodes(nodes, options) {
@@ -404,13 +544,24 @@
         let canvasNodes = (nodes || []).filter(isCanvas);
         if (canvasNodes.length < 2) return nodes;
 
+        // Snapshot caption-to-target offsets BEFORE the grid layout
+        // rewrites node coordinates. Attached comments follow their
+        // target via applyCommentAnchors below; standalone comments
+        // are excluded from the grid pass entirely so the user's
+        // deliberate placement survives the reflow.
+        let commentAnchors = captureCommentAnchors(canvasNodes, opts);
+
         let byId = {};
         let ids = [];
         canvasNodes.forEach(function(n) {
-            if (n && n.id) { byId[n.id] = n; ids.push(n.id); }
+            if (n && n.id && n.type !== 'comment') {
+                byId[n.id] = n;
+                ids.push(n.id);
+            }
         });
+        if (ids.length === 0) return nodes;
 
-        let adj = buildWireAdjacency(canvasNodes, byId);
+        let adj = buildWireAdjacency(canvasNodes.filter(function(n) { return n.type !== 'comment'; }), byId);
         let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
 
         let colMaxWidth = {};
@@ -441,6 +592,8 @@
             node.y = snapToGrid(pos.row * spacingY + (compOffsets[ci] || 0), gridSize);
         });
 
+        resolveOverlaps(canvasNodes, opts);
+        applyCommentAnchors(canvasNodes, commentAnchors);
         repositionCommentsByLlmOrder(canvasNodes, opts);
         return nodes;
     }
@@ -473,6 +626,15 @@
                 n.y = basePositions[n.id].y;
             }
         });
+
+        // Snapshot each existing comment's offset to its anchor target
+        // AFTER step 1 -- the rebuild stage replaces every LLM-mentioned
+        // existing node with the update payload (which has no x/y), so
+        // capturing earlier would miss any target node that was renamed
+        // or otherwise touched by the LLM and leave its caption stranded.
+        // Re-applied after resolveOverlaps so captions stay glued to
+        // their target even when 3.4 / 3.5b or the safety net shifts it.
+        let commentAnchors = captureCommentAnchors(canvasNodes, opts);
 
         // Step 2: Wire adjacency
         let adj = buildWireAdjacency(canvasNodes, byId);
@@ -711,6 +873,13 @@
                     if (dyR <= 0) dyR = (gridSize > 0) ? gridSize : Math.round(dy);
                     candidates.forEach(function(oid) {
                         nodesByComp[oid].forEach(function(n) {
+                            // Captions never move under this pass --
+                            // they are tied to their target by the
+                            // comment-anchor mechanism instead, so a
+                            // standalone bird's-eye annotation stays
+                            // where the user put it even when it
+                            // happens to sit inside a modifier's bbox.
+                            if (n.type === 'comment') return;
                             if (typeof n.y === 'number') n.y = n.y + dyR;
                         });
                         compBoxes[oid] = bbox(nodesByComp[oid]);
@@ -721,15 +890,16 @@
             }
         })();
 
-        // Step 3.6: position new comments by schema declaration order so
-        // they don't fall into the orphan band below.
-        repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
-            return !existingIdMap[c.id];
-        });
+        // Excuse EVERY comment from the orphan layout -- comments are
+        // captions, not graph nodes. A comment with x/y (existing or
+        // raw-JSON import) keeps that position. New LLM comments from
+        // the Vibe Schema get placed onto their target by the final
+        // repositionCommentsByLlmOrder pass below.
         remaining = remaining.filter(function(n) {
-            if (n.type === 'comment' && typeof n._llmOrder === 'number'
-                && typeof n.x === 'number' && typeof n.y === 'number') {
-                positioned[n.id] = true;
+            if (n && n.type === 'comment') {
+                if (typeof n.x === 'number' && typeof n.y === 'number') {
+                    positioned[n.id] = true;
+                }
                 return false;
             }
             return true;
@@ -789,10 +959,21 @@
             });
         }
 
-        // Final comment pass: step 3.6 ran before the orphan band placed
-        // any new canvas targets, so a comment whose target only got
-        // coordinates in step 4 still points at the old (zero/stale)
-        // position. Re-run now that every target is in its final spot.
+        // Safety net: resolve any residual node-on-node overlap that the
+        // directional pushes above couldn't reach. Must run before the
+        // final comment pass so comments re-align to targets at their
+        // final Y.
+        resolveOverlaps(canvasNodes, opts);
+
+        // Carry existing comments along with their (possibly moved)
+        // anchor target. Runs before the new-comment pass so that pass
+        // can stack new comments above the re-aligned existing ones.
+        applyCommentAnchors(canvasNodes, commentAnchors);
+
+        // Place new schema comments above their resolved target. Runs
+        // here, after every canvas target (including orphan-band ones)
+        // has its final coordinates, so the comment lands on the right
+        // spot in one go.
         repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
             return !existingIdMap[c.id];
         });
@@ -809,6 +990,8 @@
         buildWireAdjacency:           buildWireAdjacency,
         computeComponentYOffsets:     computeComponentYOffsets,
         reflowCanvasNodes:            reflowCanvasNodes,
-        placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors
+        placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
+        captureCommentAnchors:        captureCommentAnchors,
+        applyCommentAnchors:          applyCommentAnchors
     };
 });

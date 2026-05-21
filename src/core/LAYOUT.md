@@ -126,7 +126,8 @@ Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
 `estimateNodeWidth`). The hook lets callers feed in live measured widths
 (e.g. `RED.nodes.node(id).w` from the live editor); the fallback
 estimate approximates the editor's
-`max(MIN_NODE_WIDTH, labelWidth + chrome)` rule as `7.5 px/char + 64 px`
+`max(MIN_NODE_WIDTH, labelWidth + chrome)` rule by summing per-character
+widths (Latin ~7.5 px, CJK / fullwidth ~14 px) plus 64 px of chrome
 (30 icon strip + 14 label padding + 14 port stubs on each side). With
 the importer's default `edgeGap = 40` two default-named ~120 px nodes
 sit ~160 px centre-to-centre, leaving 2 grid squares of visible
@@ -195,9 +196,11 @@ a comment reaches the layout engine it is guaranteed to have a target.
 | 3 | Iteratively place each new node next to its positioned neighbours: both → `x = max(rightEdge(pred)) + edgeGap + width(N)/2`, `y = mid(avg(pred.y), avg(succ.y))`. Only preds → above, right of preds. Only succs → above, left of succs. |
 | 3.4 | For each `(new node N, existing succ S)` pair, if `rightEdge(N) + edgeGap > leftEdge(S)`, BFS forward through `outgoing` from S and shift every reachable node's x by `needed`. Max shift wins on converging paths. IDs touched here are recorded as "shifted" and feed into Step 3.5b. |
 | 3.5a | **Within-component nudge** — push any newly placed node down by `spacingY` if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of a **same-component** positioned node AND their rows are within `spacingY*0.8`. Re-runs until stable. Cross-component collisions are deliberately ignored here (handled by 3.5b). |
-| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)` and shift every collected `O` by that same `dy`. Sizing the shift to the topmost candidate preserves the original vertical gaps between the pushed components (so a comment sitting 40 px above its inject stays 40 px above it, instead of landing on top of it). Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
-| 3.6 | `repositionCommentsByLlmOrder` for new leading comments. |
-| 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes at `maxY + bandGap`, left-aligned to `minX`. |
+| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)` and shift every collected `O` by that same `dy`. **Comments are never moved by this pass** — they ride along with their target via the comment-anchor mechanism, or stay put if they are standalone (so a bird's-eye annotation sitting inside a modifier's bbox is preserved). Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
+| 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes at `maxY + bandGap`, left-aligned to `minX`. **Comments are always excluded** from the orphan band — captions keep whatever x/y they came in with, or are placed onto their schema-named target by the final comment pass. |
+| 5 | `resolveOverlaps` (safety net): scan all canvas-node pairs and push the lower one further down whenever their boxes overlap. Comments are skipped here too. |
+| 6 | `applyCommentAnchors`: re-glue each comment that was *directly touching* a canvas node (or another comment in such a stack) to that node's new position, preserving the original offset. Standalone comments — anything beyond `stackStep + gridSize` below the nearest target, or outside its rendered bbox + one grid square — are NOT anchored and stay where the user put them. |
+| 7 | Final `repositionCommentsByLlmOrder`: position newly-added schema comments above their resolved target (now that all targets, including orphan-band ones, have final coordinates). |
 
 #### `maxColumns` in incremental layout
 

@@ -293,25 +293,48 @@
         return !isConfigNodeObj(node);
     }
 
-    // After a destructive workspace mutation, force Node-RED to re-render
-    // the canvas. Deferred redraws are needed because the first can run
-    // before newly imported nodes have attached SVG elements — especially
-    // when a workspace tab switch happens in the same tick (checkpoint
-    // restore), which can otherwise leave wires drawn but nodes invisible.
-    function stabilizeWorkspaceView() {
+    // Collect canvas-level entities of a workspace, separated by type
+    // because Node-RED's remove API is type-specific:
+    //   nodes      -> RED.nodes.remove(id)
+    //   groups     -> RED.nodes.removeGroup(groupObj)
+    //   junctions  -> RED.nodes.removeJunction(juncObj)
+    function collectWorkspaceEntities(wsId) {
+        let out = { nodes: [], groups: [], junctions: [] };
+        if (!RED || !RED.nodes) return out;
+        if (typeof RED.nodes.filterNodes === 'function') out.nodes = RED.nodes.filterNodes({ z: wsId }) || [];
+        if (typeof RED.nodes.groups === 'function')      out.groups = RED.nodes.groups(wsId) || [];
+        if (typeof RED.nodes.junctions === 'function')   out.junctions = RED.nodes.junctions(wsId) || [];
+        return out;
+    }
+
+    // Repaint the canvas after a destructive flow change. Node-RED's
+    // _redraw only repaints a node / group / junction body when its
+    // `dirty` flag is set, so without this step a plain redraw after
+    // RED.nodes.import paints wires but leaves the bodies blank.
+    // Marks every canvas-level entity in the touched workspaces, then
+    // forces a sync redraw plus one rAF-deferred redraw (the latter
+    // covers cases where the SVG <g> for new nodes hadn't attached
+    // yet, e.g. when checkpoint restore switches tabs in the same tick).
+    function refreshCanvasView(workspaceIds) {
+        if (!RED || !RED.view) return;
         try { RED.actions.invoke('core:select-none'); } catch (e) { /* ignore */ }
-        function safeRedraw() {
-            try { RED.view.redraw(true); } catch (e) { /* ignore */ }
+        try { RED.nodes.dirty(true); } catch (e) { /* ignore */ }
+
+        function markAndRedraw() {
+            (workspaceIds || []).forEach(function(wsId) {
+                let ents = collectWorkspaceEntities(wsId);
+                ents.nodes.forEach(function(n)     { if (n) n.dirty = true; });
+                ents.groups.forEach(function(g)    { if (g) g.dirty = true; });
+                ents.junctions.forEach(function(j) { if (j) j.dirty = true; });
+            });
+            try { RED.view.redraw(true, true); } catch (e) { /* ignore */ }
         }
-        try {
-            RED.nodes.dirty(true);
-            safeRedraw();
-            let raf = (typeof window !== 'undefined' && window.requestAnimationFrame)
-                ? window.requestAnimationFrame.bind(window)
-                : function(cb) { return setTimeout(cb, 16); };
-            raf(function() { raf(safeRedraw); });
-            setTimeout(safeRedraw, 80);
-        } catch (e) { /* ignore */ }
+
+        markAndRedraw();
+        let raf = (typeof window !== 'undefined' && window.requestAnimationFrame)
+            ? window.requestAnimationFrame.bind(window)
+            : function(cb) { return setTimeout(cb, 16); };
+        raf(markAndRedraw);
     }
 
     // ================================================================== //
@@ -515,15 +538,21 @@
 
         let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
         if (layout) {
-            // Prefer Node-RED's live `.w` (set by the editor view) for
-            // existing nodes — the static estimate is a fallback that
-            // doesn't see custom node defs or measured label widths.
+            // Prefer Node-RED's live `.w` (measured from the rendered SVG)
+            // for existing nodes when the label is unchanged. If the LLM
+            // renamed the node or changed its type the cached width no
+            // longer matches the post-import label, so fall back to the
+            // estimate which can grow the column to fit the new label.
             function liveNodeWidth(n) {
                 if (!n || !n.id) return undefined;
                 if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.node !== 'function') return undefined;
                 try {
                     let live = RED.nodes.node(n.id);
-                    if (live && typeof live.w === 'number' && live.w > 0) return live.w;
+                    if (!live || typeof live.w !== 'number' || live.w <= 0) return undefined;
+                    let liveLabel = (typeof live.name === 'string' && live.name.trim()) ? live.name : (live.type || '');
+                    let newLabel  = (typeof n.name    === 'string' && n.name.trim())    ? n.name    : (n.type    || '');
+                    if (liveLabel !== newLabel) return undefined;
+                    return live.w;
                 } catch (e) { /* ignore */ }
                 return undefined;
             }
@@ -563,11 +592,17 @@
     // Selective layout: reflow only the nodes named by `aliases` (and any
     // already-existing wires between them), keeping their IDs intact. The
     // subset is translated back to its previous top-left corner so the
-    // rest of the canvas is undisturbed.
+    // rest of the canvas is undisturbed. Comment captions anchored above
+    // any subset node are carried along by capture/apply so they don't
+    // get left behind their target's old position.
     function repositionSubsetByAliases(allNodes, aliases, layoutOpts) {
         if (!Array.isArray(aliases) || aliases.length === 0) return;
         let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
         if (!layout || typeof layout.reflowCanvasNodes !== 'function') return;
+
+        let commentAnchors = (typeof layout.captureCommentAnchors === 'function')
+            ? layout.captureCommentAnchors(allNodes, layoutOpts)
+            : null;
 
         let cfg = getConfigurator();
         let lookup = buildFlowLookup(allNodes, cfg);
@@ -634,6 +669,11 @@
             if (typeof c.x === 'number') n.x = c.x + dx;
             if (typeof c.y === 'number') n.y = c.y + dy;
         });
+
+        // Re-align captions to follow their (now moved) anchor target.
+        if (commentAnchors && typeof layout.applyCommentAnchors === 'function') {
+            layout.applyCommentAnchors(allNodes, commentAnchors);
+        }
     }
 
     // ================================================================== //
@@ -646,24 +686,23 @@
             : getActiveWorkspaceId();
         if (!workspaceId) return { ok: false, error: 'Active workspace not found' };
 
-        function collectWorkspaceEntities() {
-            let list = RED.nodes.filterNodes({ z: workspaceId }) || [];
-            if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: workspaceId }) || []);
-            if (RED.nodes.filterJunctions) list = list.concat(RED.nodes.filterJunctions({ z: workspaceId }) || []);
-            return list;
-        }
-
         let backupEntitiesJSON = [];
         try {
-            let allEntities = collectWorkspaceEntities().filter(isCanvasNode);
-            backupEntitiesJSON = allEntities.map(function(n) { return JSON.parse(JSON.stringify(n)); });
-
-            if (allEntities.length > 0) {
-                allEntities.forEach(function(n) {
-                    try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ } 
-                });
-            }
-            try { RED.view.redraw(true, true); } catch (e) {}
+            let ents = collectWorkspaceEntities(workspaceId);
+            let canvasNodes = ents.nodes.filter(isCanvasNode);
+            backupEntitiesJSON = canvasNodes.map(function(n) { return JSON.parse(JSON.stringify(n)); });
+            canvasNodes.forEach(function(n) {
+                try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ }
+            });
+            ents.junctions.forEach(function(j) {
+                try { RED.nodes.removeJunction(j); } catch (e) { /* ignore */ }
+            });
+            ents.groups.forEach(function(g) {
+                try { RED.nodes.removeGroup(g); } catch (e) { /* ignore */ }
+            });
+            // Flush d3 exit() before re-importing so any same-id node from
+            // the new flow gets a fresh <g> + enter() (computes w/h).
+            try { RED.view.redraw(true, true); } catch (e) { /* ignore */ }
         } catch (e) {
             return { ok: false, error: 'Failed to clear current workspace nodes: ' + (e.message || e) };
         }
@@ -718,14 +757,16 @@
         try {
             // Bypass RED.history — rewind via the plugin's checkpoints instead.
             RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
-            stabilizeWorkspaceView();
+            try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
+            refreshCanvasView([workspaceId]);
             return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
         } catch (e) {
             postTerminalLog('error', 'import-nodes-error', 'RED.nodes.import threw an error', { error: e && e.message ? e.message : String(e) });
             try {
-                if (backupEntitiesJSON && backupEntitiesJSON.length > 0) {
+                if (backupEntitiesJSON.length > 0) {
                     RED.nodes.import(backupEntitiesJSON, { generateIds: false, reimport: true, addFlow: false });
-                    stabilizeWorkspaceView();
+                    try { RED.workspaces.refresh(); } catch (e3) { /* ignore */ }
+                    refreshCanvasView([workspaceId]);
                 }
             } catch (e2) { /* ignore */ }
             return { ok: false, error: 'Failed to import restored flow: ' + (e.message || e) };
@@ -1205,103 +1246,76 @@
 
     function restoreMultiFlowCheckpoint(nodes) {
         return new Promise(function(resolve, reject) {
+            if (!window.RED || !RED.nodes || !RED.view) {
+                return reject(new Error("Node-RED API not available"));
+            }
             try {
-                if (!window.RED || !RED.nodes || !RED.view) {
-                    return reject(new Error("Node-RED API not available"));
-                }
-
-                // Identify target workspaces from checkpoint
-                let ids = [];
-                if (LLMPlugin.UI) {
-                    ids = LLMPlugin.UI.extractWorkspaceIds(nodes);
-                } else {
-                    let workspaceIds = {};
-                    nodes.forEach(function(n) {
-                        if (n && n.type === 'tab' && n.id) workspaceIds[n.id] = true;
-                        if (n && n.z) workspaceIds[n.z] = true;
-                    });
-                    ids = Object.keys(workspaceIds);
-                }
-
+                // Identify target workspaces from the snapshot, falling
+                // back to the active one if no `tab` / `z` is present.
+                let ids = LLMPlugin.UI
+                    ? LLMPlugin.UI.extractWorkspaceIds(nodes)
+                    : (function() {
+                        let m = {};
+                        (nodes || []).forEach(function(n) {
+                            if (n && n.type === 'tab' && n.id) m[n.id] = true;
+                            if (n && n.z) m[n.z] = true;
+                        });
+                        return Object.keys(m);
+                    })();
                 if (ids.length === 0) {
-                    let activeWs = getActiveWorkspaceId();
-                    if (activeWs) ids = [activeWs];
+                    let active = getActiveWorkspaceId();
+                    if (active) ids = [active];
                 }
 
-                // Clear any UI selection before destructive operations
-                try {
-                    RED.actions.invoke('core:select-none');
-                } catch (e) { /* ignore */ }
-
-                // Restore-specific cleanup filter: clear EVERY canvas-level
-                // entity in the target workspace, including subflow
-                // instances (`subflow:<id>`) which the regular isCanvasNode
-                // check excludes. Tabs and config nodes (no `z`) are
-                // protected — they're either workspace markers or live
-                // outside the canvas.
-                function isRestoreClearable(n) {
-                    if (!n || typeof n !== 'object') return false;
-                    if (typeof n.type !== 'string' || !n.type) return false;
-                    if (n.type === 'tab') return false;
-                    return true;
-                }
-
+                // Clear every non-tab canvas entity (regular nodes +
+                // subflow instances + junctions + groups) via type-
+                // specific Node-RED APIs. Config nodes (no `z`) are
+                // left alone and patched in place below.
                 ids.forEach(function(wsId) {
-                    let list = RED.nodes.filterNodes({ z: wsId }) || [];
-                    if (RED.nodes.filterGroups) list = list.concat(RED.nodes.filterGroups({ z: wsId }) || []);
-                    if (RED.nodes.filterJunctions) list = list.concat(RED.nodes.filterJunctions({ z: wsId }) || []);
-                    list.filter(isRestoreClearable).forEach(function(n) {
-                        try { RED.nodes.remove(n.id); } catch(e) {}
+                    let ents = collectWorkspaceEntities(wsId);
+                    ents.nodes.forEach(function(n) {
+                        if (n && n.type !== 'tab') {
+                            try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ }
+                        }
+                    });
+                    ents.junctions.forEach(function(j) {
+                        try { RED.nodes.removeJunction(j); } catch (e) { /* ignore */ }
+                    });
+                    ents.groups.forEach(function(g) {
+                        try { RED.nodes.removeGroup(g); } catch (e) { /* ignore */ }
                     });
                 });
-                // Flush removals from the canvas before re-importing so
-                // stale SVG elements don't collide with the new nodes.
-                try { RED.view.redraw(true); } catch(e) { /* ignore */ }
+                // Flush d3 exit() so id-reused nodes get fresh <g>s on import.
+                try { RED.view.redraw(true, true); } catch (e) { /* ignore */ }
 
-                let configNodesToUpdate = [];
-                let importNodes = (nodes || []).filter(function(n) {
-                    if (n.type === 'tab') return false; // Do not touch tabs via import, keep existing
+                // Partition: skip tabs, patch existing config nodes in
+                // place, import the rest (canvas + missing configs).
+                let importNodes = [];
+                (nodes || []).forEach(function(n) {
+                    if (!n || n.type === 'tab') return;
                     if (!isCanvasNode(n)) {
                         let existing = RED.nodes.node(n.id);
                         if (existing) {
-                            configNodesToUpdate.push(n);
-                            return false; // Do not pass existing config nodes to RED.nodes.import (avoids duplicates/deletion)
+                            let changed = false;
+                            Object.keys(n).forEach(function(key) {
+                                if (key === 'id' || key === 'type') return;
+                                if (JSON.stringify(existing[key]) === JSON.stringify(n[key])) return;
+                                existing[key] = n[key];
+                                changed = true;
+                            });
+                            if (changed) { existing.dirty = true; existing.changed = true; }
+                            return;
                         }
-                        return true; // Config node is missing, so we must import it to fully restore the state.
                     }
-                    return true;
+                    importNodes.push(n);
                 });
 
-                configNodesToUpdate.forEach(function(nn) {
-                    try {
-                        let existing = RED.nodes.node(nn.id);
-                        if (!existing) return;
-
-                        let isDirty = false;
-                        Object.keys(nn).forEach(function(key) {
-                            if (key === 'id' || key === 'type') return;
-                            if (existing[key] !== nn[key] &&
-                                JSON.stringify(existing[key]) !== JSON.stringify(nn[key])) {
-                                existing[key] = nn[key];
-                                isDirty = true;
-                            }
-                        });
-
-                        if (isDirty) {
-                            existing.dirty = true;
-                            existing.changed = true;
-                        }
-                    } catch(e) {}
-                });
-
-                // Import the canvas nodes verbatim (do not alter `z` so nodes return to their original tabs)
                 RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
-
-                try { RED.workspaces.refresh(); } catch(e) { /* ignore */ }
-                stabilizeWorkspaceView();
+                try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
+                refreshCanvasView(ids);
 
                 resolve({ ok: true, msg: 'Checkpoint restored' });
-            } catch(e) {
+            } catch (e) {
                 reject(e);
             }
         });
