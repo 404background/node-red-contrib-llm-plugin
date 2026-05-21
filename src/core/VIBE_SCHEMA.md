@@ -203,7 +203,9 @@ declaration order.
 
 If `above` is omitted (legacy schemas), the layout falls back to "the
 next canvas node in declaration order" and trailing comments (no canvas
-node after them) are silently dropped. See
+node after them and no `above`) are silently dropped. Comments WITH
+`above` are always kept regardless of where they sit in the `nodes`
+list — declaration order doesn't matter once the anchor is named. See
 [LAYOUT.md](./LAYOUT.md#comment-placement) for the placement geometry.
 
 ### Detection helpers
@@ -236,9 +238,11 @@ node after them) are silently dropped. See
    matching node entry get a stub `{ type: '<key>-config', config: true,
    _autoStub: true }` (or a mapping from `CONFIG_REF_KEYS` like
    `broker → mqtt-broker`).
-2. **Drop trailing comments** — comments with no canvas node later in
-   declaration order are silently removed. All other comments are kept
-   and each heads the next canvas node ahead of it.
+2. **Drop trailing comments** — comments with no `above` AND no canvas
+   node later in declaration order are silently removed. Comments with
+   `above` are always kept (declaration order is irrelevant once the
+   anchor is named); other comments are kept and each heads the next
+   canvas node ahead of it.
 3. **Generate IDs** — fresh `'id_' + base36` per alias.
 4. **Separate canvas / config aliases** — config nodes skip layout.
 5. **Build adjacency from connections**, dropping edges where source is a

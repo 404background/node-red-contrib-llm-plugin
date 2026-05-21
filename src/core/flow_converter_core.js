@@ -315,10 +315,16 @@
         });
 
         // --- Comment-node placement rule ---
-        // Comments are kept whenever there is a canvas node later in
-        // declaration order to head — `{c1, n1, c2, n2}` keeps both
-        // comments so each lands above its own sequence. Only trailing
-        // comments (no canvas node after them) are dropped.
+        // Comments are kept whenever:
+        //   - they declare an explicit `above: <alias>` (the LLM is
+        //     naming its anchor target -- importer.resolveCommentAboveRefs
+        //     resolves it against the schema OR the live canvas, so order
+        //     within `nodes` is irrelevant), OR
+        //   - there is a canvas node *later* in declaration order to head
+        //     — `{c1, n1, c2, n2}` keeps both so each lands above its own
+        //     sequence.
+        // Trailing comments with no `above` and no canvas node after them
+        // are dropped (they have no resolvable target).
         // Exception: if the schema contains no canvas nodes at all (e.g. a
         // merge-mode patch that only adds standalone annotations), every
         // comment is intentional — keep them all.
@@ -341,6 +347,15 @@
                 // `type` and aren't comments, so keep them so the importer
                 // sees the delete request.
                 if (!spec || spec.type !== 'comment') { kept[alias] = true; return; }
+                // Explicit `above` means the LLM took ownership of the
+                // anchor target. Keep the comment regardless of where it
+                // sits in declaration order; the importer will resolve
+                // the alias to either a new schema node or an existing
+                // canvas node.
+                if (typeof spec.above === 'string' && spec.above.length > 0) {
+                    kept[alias] = true;
+                    return;
+                }
                 for (let j = idx + 1; j < order.length; j++) {
                     if (aliasIsCanvas(order[j])) { kept[alias] = true; return; }
                 }
