@@ -13,8 +13,9 @@ Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/{generate,agent-gener
    importFlowFromMessage  ◄──────────────────────────────┘
         │
         ├── extractFlowNodes  (LLMJsonParser → Vibe Schema → FlowConverterCore.toNodeRed)
-        ├── rebuildWorkspaceFromSnapshot (additive wires + property preservation)
-        └── replaceWorkspaceFlow → RED.nodes.import → CanvasLayout positions x / y
+        ├── rebuildWorkspaceFromSnapshot (additive wires + property preservation
+        │                                 + CanvasLayout positions x / y)
+        └── replaceWorkspaceFlow → RED.nodes.import (canvas already laid out)
 ```
 
 Three independent core modules under `src/core/` form the conversion +
@@ -169,10 +170,13 @@ Full import workflow with these guarantees:
    settings.
 4. **Comment placement** — every comment names its target canvas node
    via `above: <alias>` and lands directly atop that node with zero grid
-   gap. New comments stack above any existing comment touching the same
-   target instead of overlapping. Legacy schemas without `above` fall
-   back to "next canvas node in declaration order"; trailing comments
-   are dropped. See [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
+   gap, **left edge aligned** with the target's left edge (not its
+   centre). New comments stack above any existing comment touching the
+   same target instead of overlapping. Comments with `above` are
+   kept regardless of declaration order — only comments WITHOUT `above`
+   AND with no canvas node later in the list are dropped. Legacy
+   schemas without `above` fall back to "next canvas node in
+   declaration order". See [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
 5. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
 6. **Reposition without ID churn** — a top-level `reposition: [alias…]`

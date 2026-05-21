@@ -70,7 +70,7 @@ const positions = Layout.layoutNodes(
                                       ▼
                        ┌──────────────────────────────┐
                        │ repositionCommentsByLlmOrder │
-                       │  (leading comments only)     │
+                       │  (every schema comment)      │
                        └──────────────┬───────────────┘
                                       ▼
                              nodes mutated in place
@@ -126,8 +126,10 @@ uniform `rowPitch = nodeHeight + spacingY` for vertical spacing.
 Comment stacking uses a step of `ceil(nodeHeight / gridSize) * gridSize`
 (= 40 px with the defaults) so a stack of comments rises at a regular
 visual cadence even though `nodeHeight` (30) is not a grid multiple.
-Comments are placed at the exact x/y of their anchor target — no extra
-snap — so they stay glued to their target's centre.
+Comments are placed so their **left edge** matches the anchor target's
+left edge (`commentX = target.leftEdge + commentWidth / 2`) — no extra
+snap — so a wide caption visibly aligns under the column it heads
+rather than drifting off-axis.
 
 Every layout function accepts an `options` object overriding any of
 these. `placeAddedNodesNearNeighbors` also accepts `bandGap` (defaults
@@ -147,18 +149,31 @@ Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
 (e.g. `RED.nodes.node(id).w` from the live editor); the fallback
 estimate approximates the editor's
 `max(MIN_NODE_WIDTH, labelWidth + chrome)` rule by summing per-character
-widths (Latin ~7.5 px, CJK / fullwidth ~14 px) plus 64 px of chrome
-(30 icon strip + 14 label padding + 14 port stubs on each side). With
-the importer's default `edgeGap = 40` two default-named ~120 px nodes
-sit ~160 px centre-to-centre, leaving 2 grid squares of visible
+widths (Latin ~7.5 px, CJK / fullwidth ~14 px) plus a node-type-dependent
+chrome:
+
+- **Regular nodes** (inject, function, debug, etc.): chrome = 64 px
+  (30 icon strip + 14 label padding + 14 px port stub on each side).
+- **Comment nodes** (`type === 'comment'`): chrome = 24 px — comments
+  render without port stubs and with only the small "//" icon, so
+  using the 64 px chrome here would overestimate wide captions by
+  ~40 px and visibly push them right of their target's left edge.
+
+With the importer's default `edgeGap = 40` two default-named ~120 px
+nodes sit ~160 px centre-to-centre, leaving 2 grid squares of visible
 clearance between them — close to the spacing Node-RED itself produces
 when you drag nodes onto the canvas one at a time.
 
 ## Comment placement
 
-Each comment is placed directly above its target canvas node, touching
-that node's top edge with **zero grid gap** (centre-to-centre delta =
-`nodeHeight` = 30 px).
+Each comment is placed directly above its target canvas node:
+
+- **Vertically**: touching the target's top edge with **zero grid gap**
+  (centre-to-centre delta = `nodeHeight` = 30 px).
+- **Horizontally**: the comment's **left edge** matches the target's
+  left edge (`commentX = target.leftEdge + commentWidth / 2`), so a
+  wide caption sits in the same column as the node it heads instead
+  of being centred on the target's narrow centre.
 
 Target selection per comment:
 
@@ -175,9 +190,12 @@ the comment beneath it). The stack also accounts for any **existing**
 comment nodes already directly above the target on the canvas — new
 comments land above the existing stack rather than overlapping it.
 
-**Trailing comments are dropped.** `FlowConverterCore.toNodeRed` strips
-any comment with no `above` and no canvas node after it, so by the time
-a comment reaches the layout engine it is guaranteed to have a target.
+**Trailing comments without an explicit `above` are dropped.**
+`FlowConverterCore.toNodeRed` strips any comment that has no `above`
+AND no canvas node later in declaration order, so by the time a comment
+reaches the layout engine it is guaranteed to have a resolvable target.
+Comments that DO set `above` are kept regardless of where they appear
+in the `nodes` map.
 
 ## Pass details
 

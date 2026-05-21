@@ -196,10 +196,12 @@ Every comment **must** name the canvas node it sits above:
 
 `above` is the alias of the canvas node directly beneath the comment;
 the layout places the comment touching that node's top edge with no grid
-gap. The target may be a node defined in this same schema *or* a node
-already on the live canvas (the importer resolves the alias either way).
-Multiple comments sharing the same `above` target stack upward in
-declaration order.
+gap AND with its **left edge aligned** to the target's left edge (so a
+wide caption sits in the same column as the node it heads). The target
+may be a node defined in this same schema *or* a node already on the
+live canvas (the importer resolves the alias either way). Multiple
+comments sharing the same `above` target stack upward in declaration
+order.
 
 If `above` is omitted (legacy schemas), the layout falls back to "the
 next canvas node in declaration order" and trailing comments (no canvas
