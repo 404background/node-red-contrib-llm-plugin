@@ -362,8 +362,12 @@
         // return the y where the bottommost NEW comment should land
         // (i.e. just above the topmost existing comment, or directly
         // touching the target if no existing stack is present).
+        // Stacking is detected by LEFT EDGE proximity, not centre
+        // proximity, because comments and their targets share a left
+        // edge (not a centre) -- a wide comment over a narrow node has
+        // a very different centre.
         function findStackBottomY(target, group) {
-            let targetX = target.x || 0;
+            let targetLeft = (target.x || 0) - getNodeWidth(target, opts) / 2;
             let targetY = target.y || 0;
             let groupIds = {};
             group.forEach(function(c) { groupIds[c.id] = true; });
@@ -373,7 +377,8 @@
                 if (!n || n.type !== 'comment') return;
                 if (groupIds[n.id]) return;
                 if (typeof n.x !== 'number' || typeof n.y !== 'number') return;
-                if (Math.abs(n.x - targetX) > gridSize) return;
+                let nLeft = n.x - getNodeWidth(n, opts) / 2;
+                if (Math.abs(nLeft - targetLeft) > gridSize) return;
                 if (n.y >= targetY) return;
                 candidates.push(n);
             });
@@ -400,13 +405,14 @@
             // stack, or touching the target's top edge if none. Earlier
             // declaration order = higher in the stack (further from target).
             let bottomY = findStackBottomY(target, group);
-            // Glue each comment to its target's exact centre (and stack
-            // step). Snapping here would drift the caption off-axis
-            // whenever the target's centre lands on a half-grid offset
-            // (which is normal now that node centres come from
-            // `leftEdge + width/2` instead of a grid-snapped value).
+            // Align each comment's LEFT EDGE with the target's left edge
+            // -- captions and their target node share a column, not a
+            // centre. Centring a wide caption (e.g. a long Japanese label)
+            // on a narrow inject would push the caption past the canvas
+            // margin and visually drift the inject right of the caption.
+            let targetLeft = (target.x || 0) - getNodeWidth(target, opts) / 2;
             group.forEach(function(c, i) {
-                c.x = (target.x || 0);
+                c.x = targetLeft + getNodeWidth(c, opts) / 2;
                 c.y = bottomY - (group.length - 1 - i) * stackStep;
             });
         });
@@ -442,17 +448,18 @@
         function touchingBelow(from, visited) {
             let best = null;
             let bestDy = Infinity;
+            // Compare LEFT EDGES rather than centres -- captions and their
+            // target node share a left edge (the new repositionComments
+            // pass enforces that), and a wide caption over a narrow inject
+            // has a centre that sits well outside the inject's bounding
+            // box. A leftEdge-vs-leftEdge tolerance still catches stacks
+            // with minor drift while admitting wide captions properly.
+            let fromLeft = (from.x || 0) - getNodeWidth(from, opts) / 2;
             for (let i = 0; i < positioned.length; i++) {
                 let n = positioned[i];
                 if (visited[n.id]) continue;
-                let inX;
-                if (n.type === 'comment') {
-                    inX = Math.abs(n.x - from.x) <= gridSize;
-                } else {
-                    let tHalf = getNodeWidth(n, opts) / 2;
-                    inX = Math.abs(n.x - from.x) <= tHalf + xMargin;
-                }
-                if (!inX) continue;
+                let nLeft = (n.x || 0) - getNodeWidth(n, opts) / 2;
+                if (Math.abs(nLeft - fromLeft) > xMargin) continue;
                 let dy = n.y - from.y;
                 if (dy <= 0 || dy > touchingTol) continue;
                 if (dy < bestDy) { bestDy = dy; best = n; }
