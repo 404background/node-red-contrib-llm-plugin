@@ -9,16 +9,16 @@
     // ================================================================== //
     //  Layout Constants                                                   //
     // ================================================================== //
-    // Plugin-specific overrides passed to CanvasLayout. The horizontal
-    // spacing is now width-aware (see core/LAYOUT.md): adjacent nodes are
-    // placed with `edgeGap` pixels of clearance regardless of label
-    // length, so we no longer specify a fixed centre-to-centre distance.
+    // Plugin-specific overrides passed to CanvasLayout. All gap values are
+    // EDGE-TO-EDGE clearances (the visible whitespace), not centre-to-
+    // centre distances — CanvasLayout adds the rendered node size
+    // internally. See core/LAYOUT.md for the full spacing rule.
     let LAYOUT = {
-        startX:       200,   // canvas origin X (px) - left margin for first column
-        startY:       200,   // canvas origin Y (px)
-        spacingY:      80,   // row height (centre-to-centre)
-        componentGap:  80,   // gap between disconnected components
-        edgeGap:       40,   // 2 grid squares between adjacent node edges
+        startX:       200,   // canvas origin X (px) - left edge of first column
+        startY:       200,   // canvas origin Y (px) - top edge of first row
+        spacingY:      40,   // 2 grid squares between stacked node edges (within a flow)
+        componentGap:  80,   // 4 grid squares between disconnected flow components
+        edgeGap:       40,   // 2 grid squares between adjacent node edges (horizontal)
         maxColumns:     5    // wrap long chains after this many columns
     };
 

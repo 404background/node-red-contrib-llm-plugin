@@ -673,33 +673,58 @@
 
         // Stack disconnected components vertically using the shared helper
         // (also used by reflowCanvasNodes / placeAddedNodesNearNeighbors).
+        // spacingY / componentGap are EDGE-TO-EDGE clearances; the helper
+        // turns them into the centre-to-centre pitch internally.
+        let nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
+        let rowPitch = nodeHeight + spacingY;
         let compYOffsets = computeComponentYOffsets(
-            canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap
+            canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap, nodeHeight
         );
 
-        // Width-aware column positioning: each column's x-centre is the
-        // previous column's right edge plus edgeGap plus half this column's
-        // max node width. Mirrors CanvasLayout.reflowCanvasNodes so a
-        // toNodeRed call produces the same coordinates as an explicit
-        // reflow over the resulting array.
-        let colMaxWidth = {};
+        // Per-predecessor left-edge placement. Each alias' left edge sits
+        // exactly `edgeGap` to the right of `max(pred.rightEdge)`. Roots
+        // (no preds inside the component) sit at `startX`, so column-0
+        // nodes of every component line up and direct branch siblings
+        // sharing a predecessor line up — but downstream nodes in each
+        // chain advance by THIS chain's widths only. Mirrors the matching
+        // pass in CanvasLayout.reflowCanvasNodes so a toNodeRed call
+        // produces the same coordinates as an explicit reflow over the
+        // resulting array.
+        let nodeWidthByAlias = {};
         canvasAliases.forEach(function(alias) {
             let spec = nodeSpecs[alias];
-            let col = (layout[alias] || {}).col || 0;
-            // Pass a node-shaped object (type + name) so estimateNodeWidth
-            // measures the same label that Node-RED would render.
             let probe = { type: spec.type, name: spec.name || '' };
-            let w = CanvasLayout.getNodeWidth(probe, opts);
-            if (!colMaxWidth[col] || colMaxWidth[col] < w) colMaxWidth[col] = w;
+            nodeWidthByAlias[alias] = CanvasLayout.getNodeWidth(probe, opts);
         });
-        let _colKeys = Object.keys(colMaxWidth).map(Number).sort(function(a, b) { return a - b; });
-        let colX = {};
-        let _cursorRight = startX;
-        _colKeys.forEach(function(col, idx) {
-            let w = colMaxWidth[col];
-            let centre = (idx === 0) ? (_cursorRight + w / 2) : (_cursorRight + edgeGap + w / 2);
-            colX[col] = centre;
-            _cursorRight = centre + w / 2;
+        let leftEdgeByAlias = {};
+        let compBuckets = {};
+        canvasAliases.forEach(function(alias) {
+            let ci = (layout[alias] || {}).comp || 0;
+            (compBuckets[ci] = compBuckets[ci] || []).push(alias);
+        });
+        Object.keys(compBuckets).forEach(function(ci) {
+            let compAliases = compBuckets[ci].slice().sort(function(a, b) {
+                let pa = layout[a] || { col: 0, row: 0 };
+                let pb = layout[b] || { col: 0, row: 0 };
+                return (pa.col - pb.col) || (pa.row - pb.row);
+            });
+            compAliases.forEach(function(alias) {
+                let preds = (incoming[alias] || []).filter(function(p) {
+                    return leftEdgeByAlias[p] !== undefined;
+                });
+                let leftEdge;
+                if (preds.length === 0) {
+                    leftEdge = startX;
+                } else {
+                    let maxRight = -Infinity;
+                    preds.forEach(function(p) {
+                        let r = leftEdgeByAlias[p] + (nodeWidthByAlias[p] || 0);
+                        if (r > maxRight) maxRight = r;
+                    });
+                    leftEdge = maxRight + edgeGap;
+                }
+                leftEdgeByAlias[alias] = leftEdge;
+            });
         });
 
         // --- Assemble Node-RED nodes ---
@@ -736,12 +761,17 @@
             if (spec.name) node.name = spec.name;
             if (workspace && !isConfig) node.z = workspace;
 
-            // Config nodes don't appear on the canvas — skip coordinates
+            // Config nodes don't appear on the canvas — skip coordinates.
+            // No snap on derived x/y: the per-pred leftEdge gives exact
+            // `edgeGap` clearance from the upstream chain, and the
+            // constant `rowPitch` keeps vertical spacing uniform.
             if (!isConfig) {
-                node.x = Math.round(colX[pos.col] !== undefined ? colX[pos.col] : startX);
+                let left = (leftEdgeByAlias[alias] !== undefined) ? leftEdgeByAlias[alias] : startX;
+                let w = nodeWidthByAlias[alias] || CanvasLayout.getNodeWidth({ type: spec.type, name: spec.name || '' }, opts);
+                node.x = left + w / 2;
                 let yOff = (pos.comp !== undefined && compYOffsets[pos.comp] !== undefined)
                     ? compYOffsets[pos.comp] : 0;
-                node.y = Math.round(pos.row * spacingY + yOff);
+                node.y = pos.row * rowPitch + yOff;
             }
 
             // Flatten type-specific props (from both spec.props and root spec)

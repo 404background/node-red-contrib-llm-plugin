@@ -13,12 +13,17 @@
 
     // See ./LAYOUT.md for the meaning of each constant and the width-aware
     // spacing rule (`distance = (widthA + widthB)/2 + edgeGap`).
+    //
+    // `spacingY`, `componentGap`, `edgeGap` all represent EDGE-TO-EDGE
+    // clearance (the visible whitespace), not centre-to-centre distance.
+    // Row pitch / component pitch is computed internally as
+    // `nodeHeight + gap` whenever the centre coordinate is needed.
     let LAYOUT_DEFAULTS = {
         startX:        60,
         startY:        60,
-        spacingY:      80,
-        componentGap:  80,
-        edgeGap:       60,    // 3 Node-RED grid squares between adjacent node edges
+        spacingY:      40,    // 2 grid squares between stacked node edges (within a flow)
+        componentGap:  80,    // 4 grid squares between disconnected flow components
+        edgeGap:       40,    // 2 grid squares between adjacent node edges (horizontal)
         minNodeWidth: 100,
         nodeHeight:    30,    // Node-RED's standard rendered node height
         gridSize:      20,
@@ -207,7 +212,15 @@
         return { outgoing: outgoing, incoming: incoming };
     }
 
-    function computeComponentYOffsets(ids, positions, startY, spacingY, gap) {
+    // `spacingY` and `gap` are EDGE-TO-EDGE clearances. The row pitch
+    // (centre-to-centre) is `nodeHeight + spacingY`; the component step
+    // (last centre of comp N to first centre of comp N+1) is
+    // `nodeHeight + gap`. `nodeHeight` defaults to LAYOUT_DEFAULTS.nodeHeight
+    // when the caller omits it.
+    function computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight) {
+        if (typeof nodeHeight !== 'number') nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
+        let rowPitch = nodeHeight + spacingY;
+        let compStep = nodeHeight + gap;
         let info = {};
         ids.forEach(function(id) {
             let pos = positions[id] || { col: 0, row: 0 };
@@ -221,8 +234,8 @@
         let nextY = startY;
         keys.forEach(function(ci) {
             let c = info[ci];
-            offsets[ci] = nextY - c.minRow * spacingY;
-            nextY = nextY + (c.maxRow - c.minRow) * spacingY + gap;
+            offsets[ci] = nextY - c.minRow * rowPitch;
+            nextY = nextY + (c.maxRow - c.minRow) * rowPitch + compStep;
         });
         return offsets;
     }
@@ -387,9 +400,14 @@
             // stack, or touching the target's top edge if none. Earlier
             // declaration order = higher in the stack (further from target).
             let bottomY = findStackBottomY(target, group);
+            // Glue each comment to its target's exact centre (and stack
+            // step). Snapping here would drift the caption off-axis
+            // whenever the target's centre lands on a half-grid offset
+            // (which is normal now that node centres come from
+            // `leftEdge + width/2` instead of a grid-snapped value).
             group.forEach(function(c, i) {
-                c.x = snapToGrid(target.x || 0, gridSize);
-                c.y = snapToGrid(bottomY - (group.length - 1 - i) * stackStep, gridSize);
+                c.x = (target.x || 0);
+                c.y = bottomY - (group.length - 1 - i) * stackStep;
             });
         });
     }
@@ -504,7 +522,10 @@
         });
         if (nodes.length < 2) return;
 
-        let stepY = Math.max(spacingY, nodeHeight + gridSize);
+        // spacingY is edge-to-edge; the actual row pitch (centre delta) is
+        // nodeHeight + spacingY. Floor stepY at a single grid square so
+        // tightly-packed nodes always advance at least one snap unit.
+        let stepY = nodeHeight + Math.max(spacingY, gridSize);
         let maxPasses = nodes.length + 5;
         let changed = true;
         while (changed && maxPasses-- > 0) {
@@ -519,7 +540,10 @@
                     let b = nodes[j];
                     let bw = getNodeWidth(b, opts);
                     if (Math.abs(a.x - b.x) < (aw + bw) / 2 && (b.y - a.y) < nodeHeight) {
-                        b.y = snapToGrid(a.y + stepY, gridSize);
+                        // Push by exact `stepY` (= nodeHeight + max(spacingY,
+                        // gridSize)); snapping would break the consistent
+                        // per-row pitch that the rest of the layout enforces.
+                        b.y = a.y + stepY;
                         changed = true;
                     }
                 }
@@ -537,9 +561,10 @@
         let spacingY     = pickOption(opts, 'spacingY',     LAYOUT_DEFAULTS.spacingY);
         let componentGap = pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
         let edgeGap      = pickOption(opts, 'edgeGap',      LAYOUT_DEFAULTS.edgeGap);
-        let gridSize     = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
+        let nodeHeight   = pickOption(opts, 'nodeHeight',   LAYOUT_DEFAULTS.nodeHeight);
         let rawMaxCols   = pickOption(opts, 'maxColumns',   LAYOUT_DEFAULTS.maxColumns);
         let maxColumns   = (rawMaxCols >= 2) ? Math.floor(rawMaxCols) : LAYOUT_DEFAULTS.maxColumns;
+        let rowPitch     = nodeHeight + spacingY;
 
         let canvasNodes = (nodes || []).filter(isCanvas);
         if (canvasNodes.length < 2) return nodes;
@@ -563,33 +588,66 @@
 
         let adj = buildWireAdjacency(canvasNodes.filter(function(n) { return n.type !== 'comment'; }), byId);
         let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
+        let incoming = adj.incoming;
 
-        let colMaxWidth = {};
+        // Per-predecessor left-edge placement (NOT shared-column widths).
+        // Each node's left edge sits exactly `edgeGap` to the right of
+        // `max(pred.rightEdge)`. Roots (no preds inside the component)
+        // sit at `startX`, so:
+        //   - Column-0 nodes of every component share the same left edge
+        //     (the canvas-wide "first column" the user wants aligned).
+        //   - Direct branch siblings sharing a predecessor share that
+        //     predecessor's `rightEdge + edgeGap`, so they line up too.
+        //   - Further-downstream nodes in a chain advance by THIS chain's
+        //     widths only — they no longer get dragged right just because
+        //     a parallel flow happens to have a wide label in the same
+        //     column index.
+        let leftEdgeById = {};
+        let compBuckets = {};
         ids.forEach(function(id) {
-            let col = (positions[id] || {}).col || 0;
-            let w = getNodeWidth(byId[id], opts);
-            if (!colMaxWidth[col] || colMaxWidth[col] < w) colMaxWidth[col] = w;
+            let ci = (positions[id] || {}).comp || 0;
+            (compBuckets[ci] = compBuckets[ci] || []).push(id);
         });
-        let colKeys = Object.keys(colMaxWidth).map(Number).sort(function(a, b) { return a - b; });
-        let colX = {};
-        let cursorRight = startX;
-        colKeys.forEach(function(col, idx) {
-            let w = colMaxWidth[col];
-            let centre = (idx === 0)
-                ? (cursorRight + w / 2)
-                : (cursorRight + edgeGap + w / 2);
-            colX[col] = centre;
-            cursorRight = centre + w / 2;
+        Object.keys(compBuckets).forEach(function(ci) {
+            let compIds = compBuckets[ci].slice().sort(function(a, b) {
+                let pa = positions[a] || { col: 0, row: 0 };
+                let pb = positions[b] || { col: 0, row: 0 };
+                return (pa.col - pb.col) || (pa.row - pb.row);
+            });
+            compIds.forEach(function(id) {
+                let preds = (incoming[id] || []).filter(function(p) {
+                    return leftEdgeById[p] !== undefined;
+                });
+                let leftEdge;
+                if (preds.length === 0) {
+                    leftEdge = startX;
+                } else {
+                    let maxRight = -Infinity;
+                    preds.forEach(function(p) {
+                        let r = leftEdgeById[p] + getNodeWidth(byId[p], opts);
+                        if (r > maxRight) maxRight = r;
+                    });
+                    leftEdge = maxRight + edgeGap;
+                }
+                leftEdgeById[id] = leftEdge;
+            });
         });
 
-        let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap);
+        let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight);
 
+        // No snapToGrid on derived X/Y here: snapping the CENTRE distorts
+        // visible alignment when nodes have widths whose halves don't
+        // share a grid residue. We keep each leftEdge exactly and derive
+        // the centre as `leftEdge + width/2`. A uniform `rowPitch` gives
+        // consistent row spacing even though `nodeHeight` (30) is not a
+        // grid multiple.
         ids.forEach(function(id) {
             let node = byId[id];
             let pos = positions[id] || { col: 0, row: 0 };
             let ci = pos.comp || 0;
-            node.x = snapToGrid(colX[pos.col] !== undefined ? colX[pos.col] : startX, gridSize);
-            node.y = snapToGrid(pos.row * spacingY + (compOffsets[ci] || 0), gridSize);
+            let left = (leftEdgeById[id] !== undefined) ? leftEdgeById[id] : startX;
+            node.x = left + getNodeWidth(node, opts) / 2;
+            node.y = pos.row * rowPitch + (compOffsets[ci] || 0);
         });
 
         resolveOverlaps(canvasNodes, opts);
@@ -603,12 +661,13 @@
         let isCanvas = resolveCanvasFilter(opts);
         let spacingY = pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY);
         let edgeGap  = pickOption(opts, 'edgeGap',  LAYOUT_DEFAULTS.edgeGap);
-        let gridSize = pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let bandGap = (typeof opts.bandGap === 'number')
             ? opts.bandGap
             : pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
         let rawMaxCols = pickOption(opts, 'maxColumns', LAYOUT_DEFAULTS.maxColumns);
         let maxColumns = (rawMaxCols >= 2) ? rawMaxCols : LAYOUT_DEFAULTS.maxColumns;
+        let rowPitch = nodeHeight + spacingY;
 
         existingIdMap = existingIdMap || {};
         basePositions = basePositions || {};
@@ -652,23 +711,27 @@
             let succs = outgoing[n.id].filter(function(id) { return positioned[id]; });
             if (preds.length === 0 && succs.length === 0) return false;
 
+            // No snap on derived X/Y -- keeps the exact `edgeGap` clearance
+            // between the placed node and its neighbour, and keeps the new
+            // node's left edge aligned with `predRightEdge + edgeGap` even
+            // when the neighbour's centre is at an odd half-grid offset.
             let nHalf = getNodeWidth(n, opts) / 2;
             if (preds.length > 0 && succs.length > 0) {
                 let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
-                n.x = snapToGrid(maxPredRight + edgeGap + nHalf, gridSize);
-                n.y = snapToGrid((avgPredY + avgSuccY) / 2, gridSize);
+                n.x = maxPredRight + edgeGap + nHalf;
+                n.y = (avgPredY + avgSuccY) / 2;
             } else if (preds.length > 0) {
                 let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
-                n.x = snapToGrid(maxPredRight + edgeGap + nHalf, gridSize);
-                n.y = snapToGrid(avgPredY, gridSize);
+                n.x = maxPredRight + edgeGap + nHalf;
+                n.y = avgPredY;
             } else {
                 let minSuccLeft = Math.min.apply(null, succs.map(function(id) { return nodeLeftEdge(byId[id], opts); }));
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
-                n.x = snapToGrid(minSuccLeft - edgeGap - nHalf, gridSize);
-                n.y = snapToGrid(avgSuccY, gridSize);
+                n.x = minSuccLeft - edgeGap - nHalf;
+                n.y = avgSuccY;
             }
             positioned[n.id] = true;
             return true;
@@ -718,7 +781,12 @@
             Object.keys(toShift).forEach(function(id) {
                 let node = byId[id];
                 if (node && typeof node.x === 'number') {
-                    node.x = snapToGrid(node.x + toShift[id], gridSize);
+                    // No snap -- the shift amount comes from edge-aware
+                    // math (`needed = nRight + edgeGap - succLeft`); snap
+                    // here would round the clearance off by up to a
+                    // half-grid and break left-edge alignment further down
+                    // the chain.
+                    node.x = node.x + toShift[id];
                     shiftedIds[id] = true;
                 }
             });
@@ -752,9 +820,9 @@
 
         // Step 3.5a: within-component sibling nudge — when a newly-placed
         // node ends up at the same row as a same-component node (e.g. two
-        // siblings of one predecessor), push it down by spacingY until
-        // clear. Cross-component collisions are handled by Step 3.5b so
-        // we deliberately skip them here.
+        // siblings of one predecessor), push it down by one row pitch
+        // (= nodeHeight + spacingY) until clear. Cross-component collisions
+        // are handled by Step 3.5b so we deliberately skip them here.
         let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
         let newlyPlaced = canvasNodes.filter(function(n) {
             return !existingIdMap[n.id] && positioned[n.id];
@@ -779,8 +847,8 @@
                         let otherHalf = getNodeWidth(other, opts) / 2;
                         let xThreshold = curHalf + otherHalf + edgeGap * 0.5;
                         if (Math.abs((cur.x || 0) - (other.x || 0)) < xThreshold &&
-                            Math.abs((cur.y || 0) - (other.y || 0)) < spacingY * 0.8) {
-                            cur.y = snapToGrid((other.y || 0) + spacingY, gridSize);
+                            Math.abs((cur.y || 0) - (other.y || 0)) < nodeHeight) {
+                            cur.y = (other.y || 0) + rowPitch;
                             changed = true;
                         }
                     }
@@ -867,10 +935,15 @@
                         if (oBox.minY < topMinY) topMinY = oBox.minY;
                     }
                     if (candidates.length === 0) continue;
+                    // `dy` is the exact amount needed to leave `bandGap` of
+                    // edge-to-edge clearance between the modifier's bottom
+                    // and the topmost candidate's top. We apply it as-is
+                    // (no snap) so the clearance is exactly `bandGap`
+                    // regardless of where modifier's bbox falls relative
+                    // to the grid.
                     let dy = (mBox.maxY + bandGap) - topMinY;
                     if (dy <= 0) continue;
-                    let dyR = snapToGrid(dy, gridSize);
-                    if (dyR <= 0) dyR = (gridSize > 0) ? gridSize : Math.round(dy);
+                    let dyR = dy;
                     candidates.forEach(function(oid) {
                         nodesByComp[oid].forEach(function(n) {
                             // Captions never move under this pass --
@@ -905,18 +978,35 @@
             return true;
         });
 
-        // Step 4: orphan band — entirely-new chains land below at maxY + bandGap.
+        // Step 4: orphan band — entirely-new chains land below the deepest
+        // existing/positioned node, with `bandGap` of edge-to-edge clearance
+        // and left-aligned to the leftmost existing left edge. The Y formula
+        // here mirrors the edge-based maths Step 3.5b uses, so a brand-new
+        // disjoint flow lands the same `bandGap` below the previous flow no
+        // matter whether it arrived via the orphan band or the cross-
+        // component push.
         if (remaining.length > 0) {
-            let maxY = Number.NEGATIVE_INFINITY;
-            let minX = Number.POSITIVE_INFINITY;
+            let maxBottomEdge = Number.NEGATIVE_INFINITY;
+            let minLeftEdge   = Number.POSITIVE_INFINITY;
             canvasNodes.forEach(function(n) {
                 if (!positioned[n.id] && !existingIdMap[n.id]) return;
-                if ((n.y || 0) > maxY) maxY = n.y;
-                if ((n.x || 0) < minX) minX = n.x;
+                if (typeof n.x !== 'number' || typeof n.y !== 'number') return;
+                // Comments are kept out of the Y bound — captions are
+                // anchored to their target separately, and a sidebar
+                // annotation should not push the next flow further down.
+                if (n.type !== 'comment') {
+                    let bottom = n.y + nodeHeight / 2;
+                    if (bottom > maxBottomEdge) maxBottomEdge = bottom;
+                }
+                let left = n.x - getNodeWidth(n, opts) / 2;
+                if (left < minLeftEdge) minLeftEdge = left;
             });
-            if (!isFinite(maxY)) maxY = LAYOUT_DEFAULTS.startY;
-            if (!isFinite(minX)) minX = LAYOUT_DEFAULTS.startX;
-            let orphanStartY = maxY + bandGap;
+            if (!isFinite(maxBottomEdge)) maxBottomEdge = LAYOUT_DEFAULTS.startY + nodeHeight / 2;
+            if (!isFinite(minLeftEdge))   minLeftEdge   = LAYOUT_DEFAULTS.startX;
+            // First orphan row's CENTRE = (deepest bottom edge) + bandGap +
+            // half a node height = exactly `bandGap` of visible whitespace
+            // between the previous bottom edge and the orphan's top edge.
+            let orphanStartY = maxBottomEdge + bandGap + nodeHeight / 2;
 
             let orphanIds = remaining.map(function(n) { return n.id; });
             let orphanSet = {};
@@ -933,29 +1023,56 @@
                 });
             });
             let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
-            let orphanOffsets = computeComponentYOffsets(orphanIds, orphanPositions, orphanStartY, spacingY, bandGap);
+            let orphanOffsets = computeComponentYOffsets(
+                orphanIds, orphanPositions, orphanStartY, spacingY, bandGap, nodeHeight
+            );
 
-            let orphanColMaxWidth = {};
+            // Per-predecessor left-edge placement (same idea as
+            // reflowCanvasNodes). Each orphan component's column-0 nodes
+            // sit at `minLeftEdge` so the first node of every new flow
+            // lines up with the canvas's leftmost edge; everything
+            // downstream advances by THIS chain's widths only.
+            let orphanById = {};
+            remaining.forEach(function(n) { orphanById[n.id] = n; });
+            let orphanLeftEdgeById = {};
+            let orphanCompBuckets = {};
             orphanIds.forEach(function(id) {
-                let col = (orphanPositions[id] || {}).col || 0;
-                let w = getNodeWidth(byId[id], opts);
-                if (!orphanColMaxWidth[col] || orphanColMaxWidth[col] < w) orphanColMaxWidth[col] = w;
+                let ci = (orphanPositions[id] || {}).comp || 0;
+                (orphanCompBuckets[ci] = orphanCompBuckets[ci] || []).push(id);
             });
-            let orphanColKeys = Object.keys(orphanColMaxWidth).map(Number).sort(function(a, b) { return a - b; });
-            let orphanColX = {};
-            let orphanCursorRight = minX;
-            orphanColKeys.forEach(function(col, idx) {
-                let w = orphanColMaxWidth[col];
-                let centre = (idx === 0) ? (orphanCursorRight + w / 2) : (orphanCursorRight + edgeGap + w / 2);
-                orphanColX[col] = centre;
-                orphanCursorRight = centre + w / 2;
+            Object.keys(orphanCompBuckets).forEach(function(ci) {
+                let compIds = orphanCompBuckets[ci].slice().sort(function(a, b) {
+                    let pa = orphanPositions[a] || { col: 0, row: 0 };
+                    let pb = orphanPositions[b] || { col: 0, row: 0 };
+                    return (pa.col - pb.col) || (pa.row - pb.row);
+                });
+                compIds.forEach(function(id) {
+                    let preds = (orphanIn[id] || []).filter(function(p) {
+                        return orphanLeftEdgeById[p] !== undefined;
+                    });
+                    let leftEdge;
+                    if (preds.length === 0) {
+                        leftEdge = minLeftEdge;
+                    } else {
+                        let maxRight = -Infinity;
+                        preds.forEach(function(p) {
+                            let r = orphanLeftEdgeById[p] + getNodeWidth(orphanById[p], opts);
+                            if (r > maxRight) maxRight = r;
+                        });
+                        leftEdge = maxRight + edgeGap;
+                    }
+                    orphanLeftEdgeById[id] = leftEdge;
+                });
             });
 
             remaining.forEach(function(n) {
                 let pos = orphanPositions[n.id] || { col: 0, row: 0 };
                 let ci = pos.comp || 0;
-                n.x = snapToGrid(orphanColX[pos.col] !== undefined ? orphanColX[pos.col] : minX, gridSize);
-                n.y = snapToGrid(pos.row * spacingY + (orphanOffsets[ci] || 0), gridSize);
+                let left = (orphanLeftEdgeById[n.id] !== undefined) ? orphanLeftEdgeById[n.id] : minLeftEdge;
+                // No snap -- see the matching block in reflowCanvasNodes
+                // for why centre-snapping breaks left-edge alignment.
+                n.x = left + getNodeWidth(n, opts) / 2;
+                n.y = pos.row * rowPitch + (orphanOffsets[ci] || 0);
             });
         }
 
