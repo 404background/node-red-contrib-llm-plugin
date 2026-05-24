@@ -672,6 +672,43 @@
         return nodes;
     }
 
+    // Reflow a single connected component in place. Used by Step 3.6 of
+    // placeAddedNodesNearNeighbors when an insertion (a new node placed
+    // between two existing nodes) still overlaps after the cheaper
+    // directional pushes. The component's current top-left corner is
+    // snapshotted first and passed to reflowCanvasNodes as startX /
+    // startY, so neighbouring components stay where they are. Comments
+    // ride along via reflowCanvasNodes' built-in capture/apply pass.
+    function reflowComponentInPlace(componentNodes, opts) {
+        if (!Array.isArray(componentNodes) || componentNodes.length < 2) return;
+
+        let nonComments = componentNodes.filter(function(n) {
+            return n && n.type !== 'comment' &&
+                   typeof n.x === 'number' && typeof n.y === 'number';
+        });
+        if (nonComments.length < 2) return;
+
+        let minLeft = Infinity, minTop = Infinity;
+        nonComments.forEach(function(n) {
+            let w = getNodeWidth(n, opts);
+            let left = n.x - w / 2;
+            if (left < minLeft) minLeft = left;
+            if (n.y < minTop) minTop = n.y;
+        });
+        if (!isFinite(minLeft)) minLeft = pickOption(opts, 'startX', LAYOUT_DEFAULTS.startX);
+        if (!isFinite(minTop))  minTop  = pickOption(opts, 'startY', LAYOUT_DEFAULTS.startY);
+
+        // Pin the reflow to the component's existing top-left. Disable
+        // column folding — a mid-chain insertion should never trigger a
+        // hard line break the user didn't ask for.
+        let pinnedOpts = Object.assign({}, opts || {}, {
+            startX: minLeft,
+            startY: minTop,
+            maxColumns: Infinity
+        });
+        reflowCanvasNodes(componentNodes, pinnedOpts);
+    }
+
     function placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options) {
         let opts = options || {};
         let isCanvas = resolveCanvasFilter(opts);
@@ -871,6 +908,36 @@
                 }
             }
         }
+
+        // Step 3.6: insertion reflow — any time a new node has been
+        // wired into the graph (i.e. tryPlace succeeded on it because a
+        // positioned pred or succ existed), reflow that node's whole
+        // component in place. The per-edge pushes in 3.4 / 3.5a fix the
+        // common overlap symptoms but leave the rest of the user's
+        // pre-existing nodes pinned, which causes uneven gaps along the
+        // chain whenever the LLM inserts a node whose width differs
+        // from the surrounding cadence. Running a full reflow on every
+        // connected insertion guarantees the affected chain comes out
+        // with a uniform width-aware spacing — exactly what the user
+        // would expect after a "node was added in between" operation.
+        //
+        // Orphan-band new nodes (no positioned neighbour) are excluded:
+        // they are laid out fresh by Step 4 and have no existing-node
+        // cadence to honour. Components with only one canvas node are
+        // also skipped — there is nothing to reflow.
+        let componentsNeedingReflow = {};
+        newlyPlaced.forEach(function(n) {
+            let cidN = compOf[n.id];
+            if (cidN !== undefined) componentsNeedingReflow[cidN] = true;
+        });
+        let reflowedComponents = {};
+        Object.keys(componentsNeedingReflow).forEach(function(cidStr) {
+            let cid = Number(cidStr);
+            let compNodes = canvasNodes.filter(function(n) { return compOf[n.id] === cid; });
+            if (compNodes.length < 2) return;
+            reflowComponentInPlace(compNodes, opts);
+            reflowedComponents[cid] = true;
+        });
 
         // Step 3.5b: cross-component push — when an unrelated component
         // sits where the modified component now extends, shift the WHOLE

@@ -232,24 +232,50 @@
     // older schemas or model outputs still carry it.
 
     // ================================================================== //
+    //  Unified Alias Lookup                                               //
+    // ================================================================== //
+
+    // Wraps buildFlowLookup with an extra index for `_llmAlias` markers
+    // carried by freshly-added nodes from toNodeRed. Without this, a
+    // connection like `{ from: "inject_existing", to: "function_new" }`
+    // resolves the source (auto-generated alias from toIntermediate over
+    // the rebuilt flow) but loses the target — its auto-alias is just
+    // "function", not the LLM-chosen "function_new". With the _llmAlias
+    // index, the schema's own alias resolves to the new node's id.
+    function buildUnifiedLookup(flowNodes) {
+        let cfg = getConfigurator();
+        let lookup = buildFlowLookup(flowNodes, cfg);
+        if (Array.isArray(flowNodes)) {
+            flowNodes.forEach(function(n) {
+                if (!n || !n.id) return;
+                if (typeof n._llmAlias !== 'string' || !n._llmAlias) return;
+                // The _llmAlias is authoritative for new nodes; even if the
+                // auto-alias map already had a different mapping for this
+                // string, the schema's own alias wins.
+                lookup.aliasToId[n._llmAlias] = n.id;
+            });
+        }
+        return lookup;
+    }
+
+    // ================================================================== //
     //  Apply Connection Hints                                             //
     // ================================================================== //
 
-    function applyConnectionHints(flowNodes, hints) {
+    function applyConnectionHints(flowNodes, hints, precomputedLookup) {
         if (!Array.isArray(flowNodes) || !Array.isArray(hints) || hints.length === 0) return flowNodes;
 
-        let cfg = getConfigurator();
-        let lookup = buildFlowLookup(flowNodes, cfg);
+        let lookup = precomputedLookup || buildUnifiedLookup(flowNodes);
 
         let desiredByFromPort = {};
         hints.forEach(function(h) {
             // exactOnly: a hint's alias must match a real alias/name/ID
-            // exactly. Fuzzy matching here is unsafe  - a new-node alias
+            // exactly. Fuzzy matching here is unsafe — a new-node alias
             // like "inject_py_1" can prefix-match an existing "inject"
             // and silently reroute every connection to the wrong node.
-            // New-to-new wires are already baked into node.wires by
-            // toNodeRed, so we only need hints to land when they
-            // reference something unambiguously.
+            // The unified lookup already indexes new nodes by `_llmAlias`,
+            // so exact resolution handles both existing and just-added
+            // nodes without falling back to fuzzy.
             let fromId = lookup.resolve(h.from, { exactOnly: true });
             let toId = lookup.resolve(h.to, { exactOnly: true });
             if (!fromId || !toId || !lookup.byId[fromId] || !lookup.byId[toId]) return;
@@ -358,14 +384,19 @@
             }
         });
         let directives = flowDirectives || { removeTokens: [], removeConnections: [], repositionTokens: [] };
+        let cfg = getConfigurator();
 
         function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
-        function removeNodesByTokens(nodes, removeTokens) {
-            if (!Array.isArray(removeTokens) || removeTokens.length === 0) return nodes;
-            let cfg = getConfigurator();
+        // Returns { remainingNodes, removedIdSet } so Phase 2 can refuse to
+        // re-introduce a just-deleted alias. Resolves removeTokens against
+        // the provided nodes list (typically the original beforeFlow).
+        function applyNodeDeletions(nodes, removeTokens) {
+            let removedIdSet = {};
+            if (!Array.isArray(removeTokens) || removeTokens.length === 0) {
+                return { remainingNodes: nodes, removedIdSet: removedIdSet };
+            }
             let lookup = buildFlowLookup(nodes, cfg);
-            let removeIdSet = {};
 
             removeTokens.forEach(function(tok) {
                 let t = String(tok || '').trim();
@@ -377,33 +408,48 @@
                     if (targetNode && !isCanvasNode(targetNode) && targetNode.type !== 'tab') {
                         return;
                     }
-                    removeIdSet[id] = true;
+                    removedIdSet[id] = true;
                 }
+                // Preserve the raw token too — Phase 2 also checks
+                // _llmAlias against this set so a brand-new node carrying
+                // the same alias as a delete directive cannot sneak in.
+                removedIdSet[t] = true;
             });
 
-            if (Object.keys(removeIdSet).length === 0) return nodes;
+            let removedRealIds = {};
+            Object.keys(removedIdSet).forEach(function(k) {
+                if (lookup.byId[k]) removedRealIds[k] = true;
+            });
+            if (Object.keys(removedRealIds).length === 0) {
+                return { remainingNodes: nodes, removedIdSet: removedIdSet };
+            }
 
             nodes = nodes.filter(function(n) {
-                return !!(n && n.id) && !removeIdSet[n.id];
+                return !!(n && n.id) && !removedRealIds[n.id];
             });
             nodes.forEach(function(n) {
                 if (!Array.isArray(n.wires)) return;
                 n.wires = n.wires.map(function(port) {
                     if (!Array.isArray(port)) return [];
-                    return port.filter(function(tid) { return !removeIdSet[tid]; });
+                    return port.filter(function(tid) { return !removedRealIds[tid]; });
                 });
             });
-            return nodes;
+            return { remainingNodes: nodes, removedIdSet: removedIdSet };
         }
 
-        // --- Deletion-first pass ---
-        base = removeNodesByTokens(base, directives.removeTokens);
+        // ====================================================== //
+        //  Phase 1: Delete                                        //
+        //    Drop every node named in removeTokens from base.     //
+        //    Edge deletions (`removeConnections`) are deferred to //
+        //    Phase 3 because they need the post-merge alias map   //
+        //    to resolve new-node endpoints.                       //
+        // ====================================================== //
+        let deletion = applyNodeDeletions(base, directives.removeTokens);
+        base = deletion.remainingNodes;
+        let removedIdSet = deletion.removedIdSet;
 
         let baseIds = {};
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
-
-        let byId = {};
-        base.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
         // Identity / placement / editor-state keys never carried over from
         // existing to proposed during the merge.
@@ -430,6 +476,16 @@
             });
         }
 
+        // ====================================================== //
+        //  Phase 2: Add / Update                                  //
+        //    Merge each update into byId. Nodes whose ID or       //
+        //    _llmAlias appears in removedIdSet are skipped — the  //
+        //    schema explicitly asked for their deletion, and we   //
+        //    must not let the merge re-introduce them.            //
+        // ====================================================== //
+        let byId = {};
+        base.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+
         updates.forEach(function(n) {
             if (!n || !n.id) return;
             // Config Node Protection: the LLM may only reference existing
@@ -438,10 +494,14 @@
                 return;
             }
             if (n._autoStub && byId[n.id]) return;
+            // Refuse to re-add a node the deletion phase just removed.
+            if (removedIdSet[n.id]) return;
+            if (typeof n._llmAlias === 'string' && removedIdSet[n._llmAlias]) return;
+
             let existing = byId[n.id];
             if (existing) {
                 // Additive wire merge — existing connections are only ever
-                // severed by `directives.removeConnections` below.
+                // severed by `directives.removeConnections` in Phase 3.
                 if (Array.isArray(existing.wires) && existing.wires.length > 0) {
                     let maxPorts = Math.max(
                         Array.isArray(n.wires) ? n.wires.length : 0,
@@ -462,30 +522,19 @@
 
         let rebuilt = Object.keys(byId).map(function(id) { return byId[id]; });
 
-        // Second deletion pass catches nodes that updates just added.
-        rebuilt = removeNodesByTokens(rebuilt, directives.removeTokens);
-
-        if (Array.isArray(directives.removeConnections) && directives.removeConnections.length > 0) {
-            let rcLookup = buildFlowLookup(rebuilt, getConfigurator());
-
-            directives.removeConnections.forEach(function(rc) {
-                let fromId = rcLookup.resolve(rc.from);
-                let toId = rcLookup.resolve(rc.to);
-                if (!fromId || !toId || !rcLookup.byId[fromId]) return;
-                let port = (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : 0;
-                let fromNode = rcLookup.byId[fromId];
-                if (!Array.isArray(fromNode.wires) || !Array.isArray(fromNode.wires[port])) return;
-                fromNode.wires[port] = fromNode.wires[port].filter(function(tid) { return tid !== toId; });
-            });
-        }
-
         if (workspaceId && typeof workspaceId === 'string') {
             rebuilt.forEach(function(n) {
                 if (isCanvasNode(n)) n.z = workspaceId;
             });
         }
 
-        // Prune wires pointing to removed nodes
+        // ====================================================== //
+        //  Phase 3: Connect                                       //
+        //    Build a unified alias map (existing auto-aliases +   //
+        //    new-node _llmAlias + names + IDs), prune dangling    //
+        //    wires, apply edge deletions, then add the schema's   //
+        //    connections via the same lookup.                     //
+        // ====================================================== //
         let validIds = {};
         rebuilt.forEach(function(n) { if (n && n.id) validIds[n.id] = true; });
         rebuilt.forEach(function(n) {
@@ -496,7 +545,21 @@
             });
         });
 
-        applyConnectionHints(rebuilt, connectionHints || []);
+        let connLookup = buildUnifiedLookup(rebuilt);
+
+        if (Array.isArray(directives.removeConnections) && directives.removeConnections.length > 0) {
+            directives.removeConnections.forEach(function(rc) {
+                let fromId = connLookup.resolve(rc.from);
+                let toId = connLookup.resolve(rc.to);
+                if (!fromId || !toId || !connLookup.byId[fromId]) return;
+                let port = (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : 0;
+                let fromNode = connLookup.byId[fromId];
+                if (!Array.isArray(fromNode.wires) || !Array.isArray(fromNode.wires[port])) return;
+                fromNode.wires[port] = fromNode.wires[port].filter(function(tid) { return tid !== toId; });
+            });
+        }
+
+        applyConnectionHints(rebuilt, connectionHints || [], connLookup);
 
         // Resolve comment `above: <alias>` references to real node ids.
         // The alias may name a NEW node from the same schema (look up its
@@ -834,15 +897,42 @@
             if (isUntagged) subNodes[alias] = spec;
         });
 
+        // Endpoint classification per sub-import:
+        //   - in `aliasSet`           → a node owned by THIS sub-schema
+        //   - tagged with a different `flow`  → owned by ANOTHER sub-import
+        //   - untagged in schema.nodes        → shared (config / cross-cutting)
+        //   - not in schema.nodes at all      → an existing canvas node on
+        //                                       the target workspace, to be
+        //                                       resolved by the sub-import's
+        //                                       unified alias lookup
+        // The connection is forwarded to this sub-import when at least one
+        // endpoint belongs here and neither endpoint is tagged to a
+        // different flow (cross-flow wires are not supported by Node-RED).
+        function endpointBelongsToAnotherFlow(endpoint) {
+            if (aliasSet[endpoint]) return false;
+            let spec = schema.nodes && schema.nodes[endpoint];
+            if (!spec || typeof spec !== 'object') return false;
+            let flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
+            return flow.length > 0;
+        }
+
         let subConns = [];
         (schema.connections || []).forEach(function(c) {
             if (!c || typeof c !== 'object') return;
             if (c.remove && typeof c.remove === 'object') {
                 let r = c.remove;
-                if (aliasSet[r.from] && aliasSet[r.to]) subConns.push(c);
+                if (!r || typeof r.from !== 'string' || typeof r.to !== 'string') return;
+                if (!aliasSet[r.from] && !aliasSet[r.to]) return;
+                if (endpointBelongsToAnotherFlow(r.from)) return;
+                if (endpointBelongsToAnotherFlow(r.to)) return;
+                subConns.push(c);
                 return;
             }
-            if (aliasSet[c.from] && aliasSet[c.to]) subConns.push(c);
+            if (typeof c.from !== 'string' || typeof c.to !== 'string') return;
+            if (!aliasSet[c.from] && !aliasSet[c.to]) return;
+            if (endpointBelongsToAnotherFlow(c.from)) return;
+            if (endpointBelongsToAnotherFlow(c.to)) return;
+            subConns.push(c);
         });
 
         let out = {
@@ -854,6 +944,123 @@
             out.remove = schema.remove.filter(function(t) { return aliasSet[t]; });
         }
         return out;
+    }
+
+    // ================================================================== //
+    //  Implicit Flow Tagging                                              //
+    // ================================================================== //
+
+    // LLMs often forget to set `flow: "<tab name>"` on every node, even
+    // when the message clearly spans multiple workspaces (e.g. "MCU 側"
+    // / "Server 側"). Without tags, collectFlowGroupsFromSchema sees no
+    // groups, the multi-flow dispatch never fires, and connections that
+    // cross the active workspace boundary fail to resolve — exactly the
+    // "nothing connects to mqtt_out" symptom users report.
+    //
+    // This helper scans EVERY workspace, builds a global
+    // `alias → workspace label` map, seeds it onto schema nodes whose
+    // alias already exists on some canvas, and propagates labels through
+    // `connections` so brand-new nodes inherit the flow of their
+    // existing-node neighbors. The schema is cloned, never mutated.
+    function inferImplicitFlowTagging(schema) {
+        if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return schema;
+        let cfg = getConfigurator();
+        if (typeof RED === 'undefined' || !RED.nodes || !cfg || typeof cfg.toIntermediate !== 'function') return schema;
+        if (typeof RED.nodes.eachWorkspace !== 'function' || typeof RED.nodes.filterNodes !== 'function') return schema;
+
+        let aliasToWorkspaceLabel = {};
+        try {
+            RED.nodes.eachWorkspace(function(ws) {
+                if (!ws || ws.type !== 'tab' || !ws.id) return;
+                let label = (typeof ws.label === 'string' && ws.label.trim()) ? ws.label : ws.id;
+                let nodes = RED.nodes.filterNodes({ z: ws.id }) || [];
+                if (nodes.length === 0) return;
+                let inter = cfg.toIntermediate(nodes, { includeIdMap: true });
+                let interNodes = (inter && inter.nodes) ? inter.nodes : {};
+                Object.keys(interNodes).forEach(function(alias) {
+                    if (!aliasToWorkspaceLabel[alias]) {
+                        aliasToWorkspaceLabel[alias] = label;
+                    }
+                });
+            });
+        } catch (e) { return schema; }
+
+        if (Object.keys(aliasToWorkspaceLabel).length === 0) return schema;
+
+        // Seed inferred flow per schema-node alias.
+        let inferred = {};
+        Object.keys(schema.nodes).forEach(function(alias) {
+            let spec = schema.nodes[alias];
+            if (!spec || typeof spec !== 'object') return;
+            if (spec.config === true) return;
+            if (typeof spec.flow === 'string' && spec.flow.trim()) {
+                inferred[alias] = spec.flow.trim();
+                return;
+            }
+            if (aliasToWorkspaceLabel[alias]) {
+                inferred[alias] = aliasToWorkspaceLabel[alias];
+            }
+        });
+
+        // Propagate labels along connections. A connection's endpoint is
+        // either: a schema-node alias (in `inferred` once set), or an
+        // existing canvas alias (always in `aliasToWorkspaceLabel`). When
+        // one endpoint is known and the schema-node endpoint isn't, the
+        // unknown side inherits the known side's label.
+        let connections = Array.isArray(schema.connections) ? schema.connections : [];
+        let changed = true;
+        let safety = 64;
+        while (changed && safety-- > 0) {
+            changed = false;
+            connections.forEach(function(c) {
+                if (!c || typeof c !== 'object' || c.remove) return;
+                let from = c.from, to = c.to;
+                if (typeof from !== 'string' || typeof to !== 'string') return;
+                let fromFlow = inferred[from] || aliasToWorkspaceLabel[from];
+                let toFlow   = inferred[to]   || aliasToWorkspaceLabel[to];
+                if (fromFlow && schema.nodes[to] && !inferred[to]) {
+                    let toSpec = schema.nodes[to];
+                    if (toSpec && typeof toSpec === 'object' && toSpec.config !== true) {
+                        inferred[to] = fromFlow;
+                        changed = true;
+                    }
+                }
+                if (toFlow && schema.nodes[from] && !inferred[from]) {
+                    let fromSpec = schema.nodes[from];
+                    if (fromSpec && typeof fromSpec === 'object' && fromSpec.config !== true) {
+                        inferred[from] = toFlow;
+                        changed = true;
+                    }
+                }
+            });
+        }
+
+        let touched = false;
+        Object.keys(inferred).forEach(function(alias) {
+            let spec = schema.nodes[alias];
+            if (!spec || typeof spec !== 'object') return;
+            if (typeof spec.flow === 'string' && spec.flow.trim()) return;
+            touched = true;
+        });
+        if (!touched) return schema;
+
+        let cloned = JSON.parse(JSON.stringify(schema));
+        Object.keys(cloned.nodes).forEach(function(alias) {
+            let spec = cloned.nodes[alias];
+            if (!spec || typeof spec !== 'object') return;
+            if (spec.config === true) return;
+            if (typeof spec.flow === 'string' && spec.flow.trim()) return;
+            if (inferred[alias]) spec.flow = inferred[alias];
+        });
+        return cloned;
+    }
+
+    // Re-serialize a schema back into a fenced ```json``` block so an
+    // outer-level import can hand its inferred-tagged version off to the
+    // sub-import path (which re-parses the message via extractFlowNodes
+    // / extractConnectionHints from the surrounding text).
+    function serializeSchemaAsMessage(schema) {
+        return '```json\n' + JSON.stringify(schema, null, 2) + '\n```';
     }
 
     async function dispatchMultiFlowImport(messageContent, schema, flowGroups, options) {
@@ -907,19 +1114,33 @@
         options = options || {};
         try {
             // Multi-flow dispatch: when the schema tags nodes with `flow`,
-            // split the proposal per workspace before importing.
+            // split the proposal per workspace before importing. If the
+            // LLM omitted `flow` tags but the schema's nodes / connections
+            // can be resolved against existing canvases across multiple
+            // workspaces, inferImplicitFlowTagging fills the tags in so
+            // this dispatch still fires.
             if (!options._isSubImport) {
-                let dispatchSchema = extractLastVibeSchema(messageContent);
+                let rawSchema = extractLastVibeSchema(messageContent);
+                let dispatchSchema = inferImplicitFlowTagging(rawSchema);
+                let inferredContent = (dispatchSchema && dispatchSchema !== rawSchema)
+                    ? serializeSchemaAsMessage(dispatchSchema)
+                    : messageContent;
                 let flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
                 let flowLabels = flowGroups ? Object.keys(flowGroups) : [];
                 if (flowLabels.length > 1) {
-                    return await dispatchMultiFlowImport(messageContent, dispatchSchema, flowGroups, options);
+                    return await dispatchMultiFlowImport(inferredContent, dispatchSchema, flowGroups, options);
                 }
                 if (flowLabels.length === 1) {
                     let targetLabel = flowLabels[0];
                     let onlyWs = resolveFlowLabelToWorkspace(targetLabel);
                     if (onlyWs) {
                         options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
+                        // Use the inferred-tagged message so downstream
+                        // parsing sees the same flow tags that drove the
+                        // workspace decision.
+                        if (inferredContent !== messageContent) {
+                            messageContent = inferredContent;
+                        }
                     } else {
                         if (window.RED && RED.notify) {
                             RED.notify('Target flow "' + targetLabel + '" not found. Using current workspace instead.', 'warning');

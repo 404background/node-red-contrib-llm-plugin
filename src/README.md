@@ -160,15 +160,37 @@ Full import workflow with these guarantees:
    deletes aliases mapped to `null`, and leaves everything not mentioned
    alone. There is no `applyMode` field; one schema can freely combine
    adds, updates, and deletions.
-2. **Additive wire merge** — when a proposed node matches an existing
+2. **Implicit flow inference** — when the schema omits `flow` tags but
+   its nodes / connections reference existing aliases on multiple
+   workspaces (a common LLM mistake when the conversation spans MCU /
+   Server style splits), `inferImplicitFlowTagging` scans every
+   workspace, seeds the tag for any schema alias that matches an
+   existing canvas node, then propagates the tag through `connections`
+   so brand-new nodes inherit the flow of their existing-node
+   neighbors. The inferred-tagged schema is then handed to
+   `collectFlowGroupsFromSchema` so the multi-flow dispatch fires even
+   without explicit `flow` markers.
+3. **Strict delete → add → connect ordering** —
+   `rebuildWorkspaceFromSnapshot` runs three labeled phases so a single
+   schema cannot contradict itself mid-merge:
+   - *Phase 1 (Delete)* drops every node named in a delete directive
+     from the snapshot.
+   - *Phase 2 (Add/Update)* merges remaining proposals into `byId`,
+     skipping any whose ID or `_llmAlias` was just removed in Phase 1.
+   - *Phase 3 (Connect)* builds a unified alias map (existing
+     auto-aliases ∪ new-node `_llmAlias` ∪ names ∪ IDs), prunes
+     dangling wires, applies `removeConnections`, then adds the
+     schema's `connections` via the same lookup so new-node aliases
+     resolve regardless of which mode (ask / agent) produced them.
+4. **Additive wire merge** — when a proposed node matches an existing
    one, its `wires` are unioned with the existing wires (per port).
    Connections are only severed by explicit `remove` directives.
-3. **Property preservation** — properties the LLM did NOT mention are
+5. **Property preservation** — properties the LLM did NOT mention are
    restored from the existing node. Mentioned-key set comes from
    `_llmSpecKeys` (Vibe Schema path) or `n[key] !== undefined`
    (raw-JSON path), so normaliser-default values don't override user
    settings.
-4. **Comment placement** — every comment names its target canvas node
+6. **Comment placement** — every comment names its target canvas node
    via `above: <alias>` and lands directly atop that node with zero grid
    gap, **left edge aligned** with the target's left edge (not its
    centre). New comments stack above any existing comment touching the
@@ -177,14 +199,14 @@ Full import workflow with these guarantees:
    AND with no canvas node later in the list are dropped. Legacy
    schemas without `above` fall back to "next canvas node in
    declaration order". See [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
-5. **Config Node Protection** — the LLM cannot create or delete config
+7. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
-6. **Reposition without ID churn** — a top-level `reposition: [alias…]`
+8. **Reposition without ID churn** — a top-level `reposition: [alias…]`
    directive (see [core/VIBE_SCHEMA.md](./core/VIBE_SCHEMA.md#reposition-directive))
    reflows just the named canvas-node subset while keeping IDs, props,
    and wires. The subset is anchored to its previous top-left so the
    rest of the canvas doesn't visibly shift.
-7. Replace the active workspace atomically; layout is delegated to
+9. Replace the active workspace atomically; layout is delegated to
    `CanvasLayout`.
 
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and
