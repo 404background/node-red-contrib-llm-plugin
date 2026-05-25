@@ -29,7 +29,10 @@ layout backbone:
 
 The rest of `src/` is plugin-specific glue: `importer.js` orchestrates
 the import; `chat_manager.js` handles session persistence; `ui_core.js`
-+ `vibe_ui.js` build the sidebar; `server.js` exposes HTTP endpoints.
++ `vibe_ui.js` build the sidebar; `llm_core.js` is the shared LLM engine;
+`server.js` exposes HTTP endpoints. The runtime workflow nodes under
+`node/` reuse `llm_core.js` so they share one settings + credentials store
+with the sidebar.
 
 ## File map
 
@@ -51,7 +54,11 @@ src/
   ui_core.js            Message rendering, flow export
   settings.js           Settings dialog controller
   vibe_ui.js            Sidebar build + generation workflow
-  server.js             HTTP endpoints, prompts, LLM adapters
+  llm_core.js           Shared LLM engine (settings/creds/providers/prompts)
+  server.js             HTTP endpoints + chat/checkpoint persistence
+node/                   Runtime workflow node (category: llm-plugin)
+  lib/admin_api.js      Local Node-RED Admin API client (GET/POST /flows)
+  llm-request/          "LLM" node — Ask / Agent against msg.payload
 ```
 
 ## Loading sequence (client)
@@ -260,16 +267,39 @@ Main sidebar entry. `createLLMPluginUI()` builds the DOM;
 
 `initializeWhenReady()` polls `RED.sidebar` and registers the tab.
 
-### `server.js`
+### `llm_core.js` — shared LLM engine
+
+`require('./llm_core.js')(RED)` returns the stateless engine used by both
+`server.js` (sidebar) and the runtime nodes under `node/`. Centralising it
+here is what lets a node "inherit" the provider / API key the user set in the
+sidebar — there is only one settings + credentials store.
 
 | Section | Key functions |
 |---------|---------------|
-| Settings + credentials | `getPluginSettings`, `savePluginSettings`, `loadCreds` / `persistCreds` / `setCredField`, `maskApiKey`, `redactSecrets` |
-| Ollama discovery | `listOllamaModels` (CLI + HTTP), `listOllamaModelsFromApi` |
+| Storage resolution | `baseDir` / `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
+| Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-CTR), legacy-key migration, `maskApiKey`, `redactSecrets` |
+| Ollama discovery | `listOllamaModels` (CLI + HTTP) |
+| Prompt construction | `buildFlowContextDescription`, `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`; `options.extraSystem` appends node-specific guidance), `buildChatMessages` (plain Ask-mode chat) |
+| Agent helpers | `parseFlowPayloadFromText`, `isExplanationOnlyRequest` |
+| LLM adapters | `generateWithProvider` → `generateWithOllamaChat` (`/api/chat`), `generateWithOpenAI` (SDK), `generateWithCustomOpenAI` (SDK with `baseURL` for llama.cpp / LM Studio / vLLM / LocalAI) |
+
+### `server.js`
+
+Thin HTTP layer over `llm_core.js`, plus the sidebar-only persistence.
+
+| Section | Key functions |
+|---------|---------------|
 | Chat history | `saveChatHistory`, `loadAllChatHistories` (per-chat JSON files) |
-| Prompt construction | `buildFlowContextDescription`, `buildMessages` (loads `prompt_system.txt`, calls `Configurator.toIntermediate`) |
-| LLM adapters | `generateWithOllamaChat` (`/api/chat`), `generateWithOpenAI` (SDK), `generateWithCustomOpenAI` (SDK with `baseURL` for llama.cpp / LM Studio / vLLM / LocalAI) |
-| HTTP admin endpoints | All `RED.httpAdmin.*` routes |
+| Checkpoints | `saveCheckpoint` (per-import flow snapshots) |
+| Client logging | `writeClientEvent` (structured, secret-redacted) |
+| HTTP admin endpoints | All `RED.httpAdmin.*` routes (delegating generation to the engine) |
+
+### `node/` — runtime workflow node
+
+The `llm-request` node (and its Admin-API helper) reuse this engine. It is
+documented separately in **[../node/README.md](../node/README.md)**. Note: the
+sidebar's chat history retains the target flow **name** (`ui_core.js` badge +
+`vibe_ui.js` `metaOpts.targetFlowName`).
 
 Prompt assembly:
 

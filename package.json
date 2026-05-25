@@ -3,6 +3,15 @@
   "version": "0.5.1",
   "description": "Node-RED sidebar plugin for chatting with LLMs (Ollama / OpenAI / Custom OpenAI-compatible endpoints), generating flows, and importing results",
   "main": "llm_plugin.js",
+  "files": [
+    "llm_plugin.js",
+    "llm_plugin.html",
+    "llm-plugin_styles.css",
+    "src/",
+    "node/",
+    "examples/",
+    "images/"
+  ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -10,6 +19,9 @@
     "version": ">=4.0.0",
     "plugins": {
       "llm_plugin": "llm_plugin.js"
+    },
+    "nodes": {
+      "llm-request": "node/llm-request/llm-request.js"
     }
   },
   "keywords": [

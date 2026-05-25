@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/@background404/node-red-contrib-llm-plugin?style=flat-square)](https://www.npmjs.com/package/@background404/node-red-contrib-llm-plugin)
 [![npm downloads](https://img.shields.io/npm/dm/@background404/node-red-contrib-llm-plugin?style=flat-square)](https://www.npmjs.com/package/@background404/node-red-contrib-llm-plugin)
 
-LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/modifying flows, and importing results into the active tab.
+LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/modifying flows, and importing results into the active tab. It also ships an **LLM workflow node** so flows can call an LLM (and, in Agent mode, add nodes to a flow) without the sidebar — see [Workflow Node](#workflow-node).
 
 ## Demos
 
@@ -16,6 +16,9 @@ With python-venv node:
 
 With Dashboard 2.0:
 [![LLM Plugin with Dashboard 2.0](images/with_dashboard.png)](https://youtu.be/HPYuoEL6y_o)
+
+With Node-RED MCU (v0.5):
+[![LLM Plugin with Node-RED MCU(v0.5)](images/v0.5_thumbnail.jpg)](https://youtu.be/bnRr9mLuTVQ)
 
 ## Install
 
@@ -58,8 +61,24 @@ The model will then follow real node/property patterns from that sample instead 
 - Agent mode seamlessly handles connection updates and LLM-driven deletions.
 - All schema applies use merge semantics: listed nodes are added or updated, aliases mapped to `null` are deleted, anything not mentioned is left alone.
 
+## Workflow Node
+
+The package also registers an `LLM` runtime node (palette category
+**llm-plugin**) so a flow can call an LLM. Provider, model and target flows are
+set on the node; API keys and URLs come from the sidebar Settings.
+
+- **Ask** — returns the model's reply on `msg.payload`. Selected flows are sent as context.
+- **Agent** — same, then applies the changes **live in the open editor**, like the sidebar; review and Deploy.
+
+Flows are a multi-select (none / one / many) and apply in both modes. Agent mode
+needs an open editor; node interactions are not saved to chat history and have no
+Restore Checkpoint. Import `examples/llm-nodes.json` to try it.
+
+See **[node/README.md](node/README.md)** for full details.
+
 ## More Docs
 
+- Workflow node: [node/README.md](node/README.md)
 - Implementation guide: [src/README.md](src/README.md)
 - Prompt template: [src/prompt_system.txt](src/prompt_system.txt)
 

@@ -1,0 +1,3 @@
+[submodule "node-create-guidelines"]
+	path = node-create-guidelines
+	url = https://github.com/404background/node-create-guidelines.git

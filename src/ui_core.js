@@ -436,6 +436,11 @@
                 if (meta.model && typeof meta.model === 'string') {
                     parts.push(meta.model);
                 }
+                // Target flow name (which flow this turn acted on) — kept in
+                // chat history so it stays readable when reviewing later.
+                if (meta.targetFlowName && typeof meta.targetFlowName === 'string') {
+                    parts.push('→ ' + meta.targetFlowName);
+                }
                 parts.push((meta.elapsedMs / 1000).toFixed(1) + 's');
                 elapsed.textContent = parts.join(' / ');
                 message.appendChild(elapsed);

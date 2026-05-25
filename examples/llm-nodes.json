@@ -1,0 +1,93 @@
+[
+    {
+        "id": "llm_nodes_demo_tab",
+        "type": "tab",
+        "label": "LLM nodes demo",
+        "disabled": false,
+        "info": "Demonstrates the llm-request node. Configure the LLM Plugin settings (provider / model / API key) in the editor sidebar first."
+    },
+    {
+        "id": "demo_inject_ask",
+        "type": "inject",
+        "z": "llm_nodes_demo_tab",
+        "name": "Ask: a question",
+        "props": [{ "p": "payload" }],
+        "repeat": "",
+        "once": false,
+        "topic": "",
+        "payload": "Explain what Node-RED is in one sentence.",
+        "payloadType": "str",
+        "x": 170,
+        "y": 100,
+        "wires": [["demo_llm_ask"]]
+    },
+    {
+        "id": "demo_llm_ask",
+        "type": "llm-request",
+        "z": "llm_nodes_demo_tab",
+        "name": "",
+        "mode": "ask",
+        "provider": "ollama",
+        "model": "",
+        "targetFlows": [],
+        "editorUrl": "",
+        "x": 420,
+        "y": 100,
+        "wires": [["demo_debug_ask"]]
+    },
+    {
+        "id": "demo_debug_ask",
+        "type": "debug",
+        "z": "llm_nodes_demo_tab",
+        "name": "reply",
+        "active": true,
+        "tosidebar": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 650,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "demo_inject_agent",
+        "type": "inject",
+        "z": "llm_nodes_demo_tab",
+        "name": "Agent: build a flow",
+        "props": [{ "p": "payload" }],
+        "repeat": "",
+        "once": false,
+        "topic": "",
+        "payload": "Add an inject node wired to a debug node that logs the timestamp.",
+        "payloadType": "str",
+        "x": 180,
+        "y": 200,
+        "wires": [["demo_llm_agent"]]
+    },
+    {
+        "id": "demo_llm_agent",
+        "type": "llm-request",
+        "z": "llm_nodes_demo_tab",
+        "name": "",
+        "mode": "agent",
+        "provider": "ollama",
+        "model": "",
+        "targetFlows": ["llm_nodes_demo_tab"],
+        "editorUrl": "",
+        "x": 430,
+        "y": 200,
+        "wires": [["demo_debug_agent"]]
+    },
+    {
+        "id": "demo_debug_agent",
+        "type": "debug",
+        "z": "llm_nodes_demo_tab",
+        "name": "agent reply",
+        "active": true,
+        "tosidebar": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 660,
+        "y": 200,
+        "wires": []
+    }
+]

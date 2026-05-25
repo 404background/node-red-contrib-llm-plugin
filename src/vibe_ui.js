@@ -647,11 +647,21 @@
                 let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
                 let msgEl = null;
                 let usedModel = (data && data.model) ? data.model : model;
+                let targetFlowName = null;
+                if (flowIdsToSend && flowIdsToSend.length > 0 && window.RED && RED.nodes && typeof RED.nodes.workspace === 'function') {
+                    try {
+                        targetFlowName = flowIdsToSend.map(function(id) {
+                            let ws = RED.nodes.workspace(id);
+                            return (ws && ws.label) ? ws.label : id;
+                        }).join(', ');
+                    } catch (e) { targetFlowName = null; }
+                }
                 let metaOpts = {
                     mode: mode,
                     elapsedMs: totalElapsed,
                     model: usedModel,
-                    targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null
+                    targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null,
+                    targetFlowName: targetFlowName
                 };
                 if (window.LLMPlugin && LLMPlugin.ChatManager) {
                     msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);

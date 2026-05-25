@@ -1,0 +1,172 @@
+<script type="text/javascript">
+    RED.nodes.registerType('llm-request', {
+        category: 'llm-plugin',
+        color: '#ffd700',
+        defaults: {
+            name:        { value: '' },
+            mode:        { value: 'ask' },
+            provider:    { value: 'ollama' },
+            model:       { value: '', required: false },
+            targetFlows: { value: [] },
+            editorUrl:   { value: '' }
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: 'font-awesome/fa-comments',
+        paletteLabel: 'LLM',
+        label: function() {
+            return this.name || ('LLM (' + (this.mode === 'agent' ? 'agent' : 'ask') + ')');
+        },
+        oneditprepare: function() {
+            // Refresh the flow list every time the dialog opens.
+            var sel = $('#node-input-targetFlows').empty();
+            RED.nodes.eachWorkspace(function(ws) {
+                sel.append($('<option>').val(ws.id).text(ws.label || ws.id));
+            });
+            sel.val(Array.isArray(this.targetFlows) ? this.targetFlows : []);
+
+            // Agent-only hints follow the mode dropdown.
+            function syncMode() {
+                $('.llm-request-agent-only').toggle($('#node-input-mode').val() === 'agent');
+            }
+            $('#node-input-mode').on('change', syncMode);
+            syncMode();
+        },
+        oneditsave: function() {
+            this.targetFlows = $('#node-input-targetFlows').val() || [];
+        }
+    });
+</script>
+
+<script type="text/javascript">
+    // Editor-side bridge for Agent mode. The runtime node publishes the LLM
+    // reply over comms (topic "llm-plugin/agent-apply"); here we apply it to the
+    // canvas with the plugin's importer — the same path as the sidebar's Agent
+    // import — so changes appear live in the open editor. Bound once per session.
+    // Node interactions are NOT recorded in chat history and create no Restore
+    // Checkpoint (see the node's help).
+    (function () {
+        if (typeof RED === 'undefined' || !RED.comms || typeof RED.comms.subscribe !== 'function') return;
+        if (window.__llmPluginAgentApplyBound) return;
+        window.__llmPluginAgentApplyBound = true;
+
+        function notify(text, type) { if (RED.notify) RED.notify(text, type || 'info'); }
+
+        function flowNames(ids) {
+            if (!Array.isArray(ids) || ids.length === 0) return 'the flow';
+            return ids.map(function (id) {
+                try { var ws = RED.nodes.workspace(id); return (ws && ws.label) ? ws.label : id; }
+                catch (e) { return id; }
+            }).join(', ');
+        }
+
+        function applyAgentResult(payload) {
+            var ids = Array.isArray(payload.targetFlows) ? payload.targetFlows : [];
+            var P = window.LLMPlugin;
+            if (!P || !P.Importer || typeof P.Importer.importFlowFromMessage !== 'function') {
+                notify('LLM node: plugin not fully loaded yet — open the LLM Plugin sidebar once, then retry.', 'warning');
+                return;
+            }
+            // A single target tab: focus it so the importer (which targets the
+            // active tab) lands the nodes there. Multiple tabs rely on the
+            // schema's flow tags, like the sidebar.
+            if (ids.length === 1 && RED.workspaces && typeof RED.workspaces.show === 'function') {
+                try { RED.workspaces.show(ids[0]); } catch (e) { /* tab may be gone */ }
+            }
+            P.Importer.importFlowFromMessage(payload.response, { mode: 'agent' })
+                .then(function (result) {
+                    if (result && result.ok) {
+                        notify('LLM node applied changes to ' + flowNames(ids) + '. Review and Deploy.', 'success');
+                    } else if (result && result.error) {
+                        notify('LLM node: ' + result.error, 'warning');
+                    }
+                })
+                .catch(function (e) {
+                    notify('LLM node import error: ' + (e && e.message ? e.message : e), 'error');
+                });
+        }
+
+        RED.comms.subscribe('llm-plugin/agent-apply', function (topic, payload) {
+            try { if (payload && typeof payload.response === 'string') applyAgentResult(payload); }
+            catch (e) { if (window.console) console.error('[llm-request] agent-apply failed', e); }
+        });
+    })();
+</script>
+
+<script type="text/html" data-template-name="llm-request">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="LLM">
+    </div>
+    <div class="form-row">
+        <label for="node-input-mode"><i class="fa fa-cogs"></i> Mode</label>
+        <select id="node-input-mode">
+            <option value="ask">Ask</option>
+            <option value="agent">Agent</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-provider"><i class="fa fa-server"></i> Provider</label>
+        <select id="node-input-provider">
+            <option value="ollama">Ollama</option>
+            <option value="openai">OpenAI</option>
+            <option value="custom">Custom</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-model"><i class="fa fa-microchip"></i> Model</label>
+        <input type="text" id="node-input-model" placeholder="e.g. llama3.1 / gpt-4o-mini">
+    </div>
+    <div class="form-row">
+        <label for="node-input-targetFlows" style="vertical-align:top;"><i class="fa fa-sitemap"></i> Flows</label>
+        <select id="node-input-targetFlows" multiple size="4" style="width:70%;"></select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-editorUrl"><i class="fa fa-link"></i> Editor URL</label>
+        <input type="text" id="node-input-editorUrl" placeholder="http://localhost:1880/">
+    </div>
+    <div class="form-tips">
+        <i class="fa fa-info-circle"></i> API keys & URLs are set in the LLM Plugin sidebar. Selected flows are sent to the LLM as context (none, one, or many). Editor URL: blank = auto-detect.
+    </div>
+    <div class="form-tips llm-request-agent-only" style="margin-top:6px;">
+        <i class="fa fa-exclamation-triangle"></i> Agent applies edits live in the open editor. Not saved to chat history; not rewindable (use editor undo). Review, then Deploy.
+    </div>
+</script>
+
+<script type="text/html" data-help-name="llm-request">
+    <p>Sends <code>msg.payload</code> to an LLM and outputs the reply. Provider,
+    model and the selected flows are configured on the node; the provider's API
+    key and URLs come from the <b>LLM Plugin sidebar</b> (Settings).</p>
+
+    <h3>Modes</h3>
+    <dl class="message-properties">
+        <dt>Ask</dt><dd>Returns the model's text reply on <code>msg.payload</code>. The selected flows (if any) are sent as context.</dd>
+        <dt>Agent</dt><dd>Same, then applies the proposed changes <b>live in the open editor</b> using the same importer as the sidebar (add / edit / delete). Review on the canvas and <b>Deploy</b>. An editor must be open.</dd>
+    </dl>
+
+    <h3>Flows</h3>
+    <p>Pick none, one, or several flows to send to the LLM as context. The list
+    refreshes when you open the node. In Agent mode the changes are applied to
+    the selected flow(s); the reply is still on <code>msg.payload</code>.</p>
+
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string | object</span></dt><dd>The prompt. Strings are newline-normalised; objects are JSON-stringified.</dd>
+        <dt class="optional">model <span class="property-type">string</span></dt><dd>Overrides the configured model.</dd>
+        <dt class="optional">editorUrl <span class="property-type">string</span></dt><dd>Overrides the editor URL used to read flow context.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string</span></dt><dd>The model's text reply (natural language — do not <code>JSON.parse</code> it).</dd>
+        <dt>llm <span class="property-type">object</span></dt><dd>mode, provider, model, elapsed ms.</dd>
+        <dt>flow <span class="property-type">object</span> (Agent)</dt><dd><code>{ targetFlows, dispatchedToEditor }</code>.</dd>
+    </dl>
+
+    <h3>Notes</h3>
+    <ul>
+        <li><b>Agent needs an open editor:</b> a runtime node can't edit the canvas directly, so it sends the reply over comms and the editor (with the LLM Plugin loaded) applies it. Headless runs have no canvas to update.</li>
+        <li><b>No chat history / no Restore Checkpoint:</b> node interactions are not recorded in the chat history and cannot be rewound by the plugin. Review before deploying; use the editor's undo if needed.</li>
+        <li><b>Editor URL</b> is auto-detected from the running instance (works when embedded in Express on a non-1880 port). Set it only if auto-detection fails, e.g. <code>http://localhost:8000/red/</code>.</li>
+    </ul>
+</script>
