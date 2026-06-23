@@ -231,7 +231,6 @@
     border: 1px solid #b6d8f2;
     text-decoration: none;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
-    user-select: none;
 }
 .message-content code.llm-node-ref::before {
     content: "\f0c1";
