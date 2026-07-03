@@ -8,6 +8,47 @@
 
 <script src="llm-plugin/src/client.js" charset="utf-8"></script>
 
+<!-- Sidebar DOM. Injected by vibe_ui.js (createLLMPluginUI); kept here so
+     markup lives in HTML, not JS strings. -->
+<script type="text/html" id="llm-plugin-sidebar-template">
+    <div class="llm-plugin-header">
+        <h3 class="llm-plugin-title">LLM Plugin Chat</h3>
+        <div class="header-buttons">
+            <button class="header-btn" data-action="new-chat">New Chat</button>
+            <button class="header-btn" data-action="chat-list">Chats</button>
+            <button class="header-btn" id="llm-plugin-settings-button"><i class="fa fa-cog"></i></button>
+        </div>
+    </div>
+    <div class="llm-plugin-chat" id="llm-plugin-chat"></div>
+    <div class="llm-plugin-input">
+        <details class="llm-session-config" open>
+            <summary style="font-size: 12px; cursor: pointer; color: #666; margin-bottom: 8px; font-weight: bold;">Session Options</summary>
+            <div class="flow-selector" id="llm-plugin-flow-selector">
+                <button type="button" class="flow-selector-toggle" id="llm-plugin-flow-toggle" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="flow-selector-label" id="llm-plugin-flow-label">Current Open Flow</span>
+                    <i class="fa fa-caret-down flow-selector-caret" aria-hidden="true"></i>
+                </button>
+                <div class="flow-selector-panel" id="llm-plugin-flow-panel" role="listbox"></div>
+            </div>
+            <div class="agent-mode-row">
+                <label for="llm-plugin-mode">Mode</label>
+                <select id="llm-plugin-mode" class="mode-select">
+                    <option value="ask" selected>Ask</option>
+                    <option value="agent">Agent</option>
+                </select>
+            </div>
+            <input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        </details>
+        <div class="prompt-input-group">
+            <textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>
+            <button id="llm-plugin-generate" class="generate-btn">Send</button>
+        </div>
+    </div>
+    <div id="llm-plugin-settings-overlay" class="llm-settings-overlay" role="dialog" aria-modal="true" aria-hidden="true">
+        <div id="llm-plugin-settings-dialog" class="llm-settings-dialog"></div>
+    </div>
+</script>
+
 <script type="text/html" id="llm-plugin-settings-template" data-template-name="llm-plugin-settings-template">
     <div class="form-row">
         <label for="llm-provider"><i class="fa fa-cogs"></i> LLM Provider</label>
@@ -65,5 +106,10 @@
         <div class="form-tips" style="font-size: 12px; color: #666; margin-top: 5px;">
             <i class="fa fa-info-circle"></i> Maximum character length for prompts sent to the LLM. Range: 100 - 100,000. Default: 10,000.
         </div>
+    </div>
+
+    <div class="llm-settings-actions">
+        <button type="button" id="llm-plugin-settings-cancel" class="llm-settings-btn secondary">Cancel</button>
+        <button type="button" id="llm-plugin-settings-save" class="llm-settings-btn primary">Save</button>
     </div>
 </script>

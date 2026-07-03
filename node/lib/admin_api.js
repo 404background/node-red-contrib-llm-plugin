@@ -1,26 +1,14 @@
 // LLM Plugin nodes  -  Node-RED Admin API helper (read-only)
 //
-// The LLM node's Agent mode needs the current flow as prompt context, but the
-// node-facing `RED` object can't read flows (`RED.nodes` only exposes
-// createNode/getNode/eachNode/registerType + credential helpers — see
-// @node-red/registry createNodeApi). So we GET it over the local HTTP Admin API:
-//   GET <adminRoot>/flows   (Node-RED-API-Version: v2)  -> { flows, rev }
-// (Applying changes is NOT done here — Agent mode hands the result to the open
-// editor over comms, which applies it client-side like the sidebar.)
+// The node-facing `RED.nodes` cannot read flows, so flow context comes from
+// GET <adminRoot>/flows (v2). Changes are NOT applied here — Agent hands the
+// reply to the open editor over comms.
 //
-// Base-URL resolution (so this works whether Node-RED runs its own server on
-// 1880 OR is embedded in an Express app on some other port / mount path):
-//   1. An explicit editor URL passed from the node (opts.url), e.g.
-//      "http://localhost:8000/red/". Used as-is. This is the manual fallback.
-//   2. Otherwise auto-detect from the live runtime:
-//        - port     : RED.server.address().port  (the ACTUAL listening port,
-//                     correct for embedded apps too) → uiPort → 1880
-//        - root     : RED.settings.httpAdminRoot   ('/red/', '/', …)
-//        - protocol : https if RED.server is an https.Server or settings.https
-//
-// Auth: targets the local instance with no extra credentials by default
-// (same posture as the rest of the plugin). An optional Bearer token can be
-// supplied via opts.token for instances with adminAuth enabled.
+// Base URL: opts.url if set (manual fallback); otherwise auto-detected from
+// the live runtime — port from RED.server.address() (correct even when
+// embedded in Express) → uiPort → 1880, root from settings.httpAdminRoot,
+// https if RED.server is an https.Server. Auth: none by default (plugin
+// assumes adminAuth off); opts.token adds a Bearer token.
 // Docs: https://nodered.org/docs/api/admin/methods/get/flows/
 const http = require('http');
 const https = require('https');

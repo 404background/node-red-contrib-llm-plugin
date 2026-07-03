@@ -38,7 +38,10 @@
     //  Basic Utilities                                                    //
     // ================================================================== //
 
-    function genId() { return 'id_' + Math.random().toString(36).substr(2,9); }
+    let Common = window.LLMPlugin.Common;
+    let notify = Common.notify;
+
+    function genId() { return Common.randomId('id_'); }
 
     function safeGetCurrentFlow(workspaceId) {
         if (!window.LLMPlugin || !LLMPlugin.UI) return null;
@@ -1092,8 +1095,8 @@
             }
         }
 
-        if (unresolved.length > 0 && window.RED && RED.notify) {
-            RED.notify('Skipped unknown flow(s): ' + unresolved.join(', '), 'warning');
+        if (unresolved.length > 0) {
+            notify('Skipped unknown flow(s): ' + unresolved.join(', '), 'warning');
         }
 
         let allOk = results.length > 0 && results.every(function(r) { return r && r.ok; });
@@ -1142,9 +1145,7 @@
                             messageContent = inferredContent;
                         }
                     } else {
-                        if (window.RED && RED.notify) {
-                            RED.notify('Target flow "' + targetLabel + '" not found. Using current workspace instead.', 'warning');
-                        }
+                        notify('Target flow "' + targetLabel + '" not found. Using current workspace instead.', 'warning');
                     }
                 }
             }
@@ -1189,16 +1190,14 @@
                             : '';
                         let near = diag.snippet ? ' Near: …' + diag.snippet + '…' : '';
                         let detail = 'JSON parse failed' + where + ': ' + diag.error + '.' + near;
-                        if (window.RED && RED.notify) {
-                            RED.notify(detail, { type: 'warning', timeout: 12000 });
-                        }
+                        notify(detail, { type: 'warning', timeout: 12000 });
                         try { console.warn('[LLM Plugin] JSON parse failed:', diag); } catch (e) {}
                         postTerminalLog('warn', 'json-parse-failed',
                             'LLM response contained a fenced code block that failed to parse',
                             { line: diag.line, column: diag.column, error: diag.error });
                         return { ok: false, error: detail };
                     }
-                    if (window.RED && RED.notify) RED.notify('No JSON flow found in message', 'warning');
+                    notify('No JSON flow found in message', 'warning');
                     return { ok: false, error: 'No JSON flow found in message' };
                 }
             }
@@ -1392,10 +1391,7 @@
                     if (isCanvasNode(n)) n.z = currentWorkspace;
                 });
             } else {
-                try {
-                    if (window && window.RED && RED.notify)
-                        RED.notify('Warning: could not determine active workspace; imported nodes may not be in the deployed flow', 'warning');
-                } catch(e) {}
+                notify('Warning: could not determine active workspace; imported nodes may not be in the deployed flow', 'warning');
             }
 
             let hasDirectives = (flowDirectives.removeTokens || []).length > 0 ||
@@ -1403,16 +1399,13 @@
                                 (flowDirectives.repositionTokens || []).length > 0 ||
                                 (connectionHints || []).length > 0;
             if (!newNodes.length && !hasDirectives) {
-                try {
-                    if (window && window.RED && RED.notify)
-                        RED.notify('Import aborted: no valid nodes found (removed tab/blank nodes)', 'warning');
-                } catch(e) {}
+                notify('Import aborted: no valid nodes found (removed tab/blank nodes)', 'warning');
                 return { ok: false, error: 'No valid nodes after sanitization' };
             }
 
             let bad = newNodes.find(function(n) { return typeof n.type !== 'string' || n.type.length === 0; });
             if (bad) {
-                if (RED && RED.notify) RED.notify('Import aborted: invalid node shape', 'error');
+                notify('Import aborted: invalid node shape', 'error');
                 console.warn('[LLM Plugin] bad node', bad);
                 return { ok: false, error: 'Invalid node shape' };
             }
@@ -1421,14 +1414,14 @@
             let rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
             if (!rebuiltResult || !rebuiltResult.ok) {
                 let errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
-                if (window && window.RED && RED.notify) RED.notify('Import failed: ' + errMsg, 'error');
+                notify('Import failed: ' + errMsg, 'error');
                 return {
                     ok: false,
                     error: errMsg
                 };
             }
 
-            if (RED && RED.notify) RED.notify('Flow reloaded successfully', 'success');
+            notify('Flow reloaded successfully', 'success');
 
             let addedNodes = rebuiltFlow.filter(function(n) {
                 return !!(n && n.id) && !beforeIdSet.has(n.id);
@@ -1437,11 +1430,7 @@
             });
 
             if (addedNodes.length > 0) {
-                try {
-                    if (window.RED && RED.notify) {
-                        RED.notify('Applied with ' + addedNodes.length + ' added node(s)', 'warning');
-                    }
-                } catch (e) { /* ignore */ }
+                notify('Applied with ' + addedNodes.length + ' added node(s)', 'warning');
             }
 
             return {
@@ -1456,7 +1445,7 @@
             postTerminalLog('error', 'import-exception', 'Unhandled import exception', {
                 message: err && err.message ? err.message : String(err)
             });
-            if (RED && RED.notify) RED.notify('Failed to import flow: ' + (err && err.message ? err.message : String(err)), 'error');
+            notify('Failed to import flow: ' + (err && err.message ? err.message : String(err)), 'error');
             return { ok: false, error: err && err.message ? err.message : String(err) };
         }
     };

@@ -950,21 +950,16 @@
         (function pushCollidingComponentsDown() {
             let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
-            // Re-glue captions to their targets first so the bboxes below
-            // are computed from truthful caption coordinates (3.4 / 3.6 may
-            // have moved a target since the anchors were captured).
+            // Re-glue captions first so bboxes use truthful coordinates
+            // (earlier steps may have moved a target since anchors were
+            // captured).
             applyCommentAnchors(canvasNodes, commentAnchors);
 
-            // Comments have no wires, so compOf puts each one in a
-            // singleton component. For this pass an ANCHORED caption must
-            // count as part of its target's component: it moves with the
-            // target, and its bbox has to make the target's component
-            // pushable — otherwise a modifier that overlaps only the
-            // caption never pushes the chain underneath, and the anchor
-            // pass gluing the caption back recreates the collision.
-            // Standalone captions never move in this pass and must not
-            // drive the shift distance for everyone else, so they are
-            // left out entirely.
+            // Comments are wireless → singleton components. An ANCHORED
+            // caption counts as part of its target's component here (it
+            // moves with it, and its bbox must make the component
+            // pushable); standalone captions never move in this pass and
+            // are left out so they don't inflate the shift distance.
             let nodesByComp = {};
             allPositioned.forEach(function(n) {
                 let c = compOf[n.id];
@@ -1050,10 +1045,8 @@
                     candidates.forEach(function(oid) {
                         nodesByComp[oid].forEach(function(n) {
                             // Anchored captions shift with their component
-                            // so the recomputed bbox stays truthful; the
-                            // final applyCommentAnchors lands them on the
-                            // same spot. Standalone captions are not in
-                            // any component list, so they stay put.
+                            // (bbox stays truthful); standalone captions
+                            // are in no component list, so they stay put.
                             if (typeof n.y === 'number') n.y = n.y + dyR;
                         });
                         compBoxes[oid] = bbox(nodesByComp[oid]);

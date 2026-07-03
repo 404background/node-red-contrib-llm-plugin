@@ -441,13 +441,10 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // Serve the bundled marked.js (Markdown renderer) to the editor. The
-    // sidebar used to pull it from a CDN, which silently degraded rendering
-    // on offline installs even though the npm dependency ships the same
-    // library. `marked`'s exports map hides lib/, so resolve the package
-    // root via package.json (which IS exported) and read the UMD build
-    // directly — once; the file is immutable for the process lifetime.
-    // ui_core.js falls back to escaped plain text if this 404s.
+    // Serve the bundled marked.js so Markdown rendering works offline (no
+    // CDN). marked's exports map hides lib/, so resolve via package.json
+    // and read the UMD build once (immutable per process). ui_core.js
+    // falls back to escaped plain text if this 404s.
     let markedJsCache = null;
     RED.httpAdmin.get('/llm-plugin/vendor/marked.js', function(req, res) {
         try {

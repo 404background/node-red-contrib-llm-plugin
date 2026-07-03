@@ -1,20 +1,12 @@
 // LLM Plugin  -  "LLM" node (llm-request)
 //
-// A workflow node (NOT the sidebar) for automating LLM interactions:
-//   - Ask   : send msg.payload (+ selected flows as context) to the LLM and
-//             output the text reply.
-//   - Agent : same, then apply the proposed changes LIVE in the open editor —
-//             what the sidebar does, triggered from a flow.
-//
-// Selected flows are sent to the LLM as context in BOTH modes (zero or more).
-// Agent mode reaches the editor over Node-RED's comms channel: a subscriber in
-// this node's .html (running in the editor) applies the reply with the plugin's
-// importer (LLMPlugin.Importer) — the same path as the sidebar. An editor must
-// be open. Node interactions are NOT saved to chat history and do NOT create a
-// Restore Checkpoint.
-//
-// Provider / API-key / endpoint are inherited from the LLM Plugin settings
-// dialog via the shared engine (src/llm_core.js).
+// Workflow node for automating LLM interactions. Ask: msg.payload (+ selected
+// flows as context) → text reply. Agent: same, then the reply is applied LIVE
+// in the open editor — published over comms, applied by the subscriber in
+// llm-request.html via LLMPlugin.Importer (same path as the sidebar; an
+// editor must be open). Node interactions are NOT saved to chat history and
+// create no Restore Checkpoint. Provider / API key / endpoint are inherited
+// from the sidebar settings via the shared engine (src/llm_core.js).
 const path = require('path');
 
 module.exports = function(RED) {

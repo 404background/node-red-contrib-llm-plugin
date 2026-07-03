@@ -38,10 +38,11 @@ with the sidebar.
 
 ```
 llm_plugin.js           Node-RED plugin entry point — loads server.js
-llm_plugin.html         Settings template + CDN links
+llm_plugin.html         Sidebar + settings HTML templates, marked.js include
 llm-plugin_styles.css   All plugin CSS
 src/
-  client.js             Sequential script loader (browser entry)
+  client.js             Script loader (browser entry) + settings dialog controller
+  common.js             Shared helpers (escapeHtml, notify, el, randomId, …)
   prompt_system.txt     System prompt template (server-side)
   core/
     canvas_layout.js    Layout engine (UMD)             ← core/LAYOUT.md
@@ -52,7 +53,6 @@ src/
   chat_manager.js       Chat session CRUD + checkpoint persistence
   importer.js           Extract LLM output, rebuild & import into editor
   ui_core.js            Message rendering, flow export
-  settings.js           Settings dialog controller
   vibe_ui.js            Sidebar build + generation workflow
   llm_core.js           Shared LLM engine (settings/creds/providers/prompts)
   server.js             HTTP endpoints + chat/checkpoint persistence
@@ -67,8 +67,8 @@ node/                   Runtime workflow node (category: llm-plugin)
 which fetches and runs the rest **in order**:
 
 ```
-canvas_layout → flow_converter_core → llm_json_parser
-              → chat_manager → importer → ui_core → settings → vibe_ui
+common → canvas_layout → flow_converter_core → llm_json_parser
+       → chat_manager → importer → ui_core → vibe_ui
 ```
 
 `canvas_layout` must precede `flow_converter_core` because the
@@ -98,7 +98,16 @@ All routes register on `RED.httpAdmin`, picking up Node-RED's own
 
 ### `client.js`
 
-Minimal sequential script loader.
+Sequential script loader, plus the settings dialog controller
+(`window.createLLMPluginSettings`): binds to the form template in
+`llm_plugin.html`, returns `{ load, save, updateVisibility }` (provider
+toggle, masked API-key placeholders, max prompt length 100–100 000).
+
+### `common.js`
+
+Shared helpers on `LLMPlugin.Common`: `escapeHtml`, `escapeRegExp`,
+`notify` (RED.notify with guard), `el` (createElement shorthand),
+`randomId`.
 
 ### `core/flow_converter_core.js` — Vibe Schema converter
 
@@ -233,16 +242,11 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
-### `settings.js`
-
-Settings dialog controller; binds to the form template in
-`llm_plugin.html`. Returns `{ load, save, updateVisibility }`. Provider
-toggle, masked API-key placeholder, max prompt length (100–100 000).
-
 ### `vibe_ui.js`
 
-Main sidebar entry. `createLLMPluginUI()` builds the DOM;
-`initializeClientApp()` wires events:
+Main sidebar entry. `createLLMPluginUI()` builds the DOM from the
+`llm-plugin-sidebar-template` / `llm-plugin-settings-template` HTML
+templates in `llm_plugin.html`; `initializeClientApp()` wires events:
 
 - Generate / Stop toggle (single click handler + `classList`,
   Ctrl+Enter double-trigger guard).

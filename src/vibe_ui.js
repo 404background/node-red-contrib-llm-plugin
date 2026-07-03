@@ -1,60 +1,27 @@
 // Main sidebar UI module — vanilla JS (no jQuery).
 // Builds the plugin sidebar, settings dialog, and generation workflow.
 (function(){
+    let Common = window.LLMPlugin.Common;
 
     /**
-     * Build the sidebar DOM tree and return a raw DOM element.
+     * Build the sidebar DOM from the templates in llm_plugin.html.
      * Node-RED's sidebar.addTab accepts DOM elements for its `content` property.
      */
+    function fromTemplate(el, templateId, missingText) {
+        let tpl = document.getElementById(templateId);
+        el.innerHTML = tpl ? tpl.innerHTML
+            : '<div class="llm-settings-missing">' + missingText + '</div>';
+    }
+
     function createLLMPluginUI() {
         let container = document.createElement('div');
         container.className = 'llm-plugin-container';
-        container.innerHTML =
-            '<div class="llm-plugin-header">' +
-                '<h3 class="llm-plugin-title">LLM Plugin Chat</h3>' +
-                '<div class="header-buttons">' +
-                    '<button class="header-btn" data-action="new-chat">New Chat</button>' +
-                    '<button class="header-btn" data-action="chat-list">Chats</button>' +
-                    '<button class="header-btn" id="llm-plugin-settings-button"><i class="fa fa-cog"></i></button>' +
-                '</div>' +
-            '</div>' +
-            '<div class="llm-plugin-chat" id="llm-plugin-chat"></div>' +
-            '<div class="llm-plugin-input">' +
-                '<details class="llm-session-config" open><summary style="font-size: 12px; cursor: pointer; color: #666; margin-bottom: 8px; font-weight: bold;">Session Options</summary><div class="flow-selector" id="llm-plugin-flow-selector">' +
-                    '<button type="button" class="flow-selector-toggle" id="llm-plugin-flow-toggle" aria-haspopup="listbox" aria-expanded="false">' +
-                        '<span class="flow-selector-label" id="llm-plugin-flow-label">Current Open Flow</span>' +
-                        '<i class="fa fa-caret-down flow-selector-caret" aria-hidden="true"></i>' +
-                    '</button>' +
-                    '<div class="flow-selector-panel" id="llm-plugin-flow-panel" role="listbox"></div>' +
-                '</div>' +
-                '<div class="agent-mode-row">' +
-                    '<label for="llm-plugin-mode">Mode</label>' +
-                    '<select id="llm-plugin-mode" class="mode-select">' +
-                        '<option value="ask" selected>Ask</option>' +
-                        '<option value="agent">Agent</option>' +
-                    '</select>' +
-                '</div>' +
-                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></details>' +
-                '<div class="prompt-input-group">' +
-                    '<textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>' +
-                    '<button id="llm-plugin-generate" class="generate-btn">Send</button>' +
-                '</div>' +
-            '</div>' +
-            '<div id="llm-plugin-settings-overlay" class="llm-settings-overlay" role="dialog" aria-modal="true" aria-hidden="true">' +
-                '<div id="llm-plugin-settings-dialog" class="llm-settings-dialog"></div>' +
-            '</div>';
+        fromTemplate(container, 'llm-plugin-sidebar-template', 'Sidebar template not found.');
 
-        // Inject settings form from the <script> template defined in llm_plugin.html
         let settingsDialog = container.querySelector('#llm-plugin-settings-dialog');
-        let templateEl = document.getElementById('llm-plugin-settings-template');
-        settingsDialog.innerHTML = templateEl
-            ? templateEl.innerHTML
-            : '<div class="llm-settings-missing">Settings template not found.</div>';
-        settingsDialog.insertAdjacentHTML('beforeend',
-            '<div class="llm-settings-actions">' +
-                '<button type="button" id="llm-plugin-settings-cancel" class="llm-settings-btn secondary">Cancel</button>' +
-                '<button type="button" id="llm-plugin-settings-save" class="llm-settings-btn primary">Save</button>' +
-            '</div>');
+        if (settingsDialog) {
+            fromTemplate(settingsDialog, 'llm-plugin-settings-template', 'Settings template not found.');
+        }
 
         // Header buttons
         container.querySelector('[data-action="new-chat"]').addEventListener('click', function() {
@@ -195,11 +162,11 @@
             .then(function(res) {
                 if (!res.ok) return res.json().then(function(d) { throw new Error(d.error || 'Failed to save settings'); });
                 cachedSettings = null;
-                if (window.RED && RED.notify) RED.notify('LLM Plugin settings saved.', 'success');
+                Common.notify('LLM Plugin settings saved.', 'success');
                 closeSettingsDialog();
             })
             .catch(function(err) {
-                if (window.RED && RED.notify) RED.notify(err.message || 'Failed to save settings', 'error');
+                Common.notify(err.message || 'Failed to save settings', 'error');
             })
             .finally(function() {
                 settingsSaving = false;
@@ -231,12 +198,10 @@
             if (e.key === 'Enter' && e.ctrlKey) handleGenerate();
         });
 
-        // --- Shell-style chat history navigation (Up / Down arrows) ---
-        // Up walks backwards through this chat's user messages; Down
-        // walks forward and finally restores whatever the user had
-        // typed before they started navigating. Only triggers when
-        // the cursor sits on the first / last visual line of the
-        // textarea so plain multi-line editing still works.
+        // --- Shell-style history navigation (Up/Down through this chat's
+        // user messages; Down past the newest restores the draft). Only
+        // fires on the textarea's first/last line so multi-line editing
+        // still works.
         let historyIndex = null;        // null when not navigating
         let draftBeforeHistory = '';
 
@@ -321,9 +286,7 @@
             modeSelect.addEventListener('change', function() {
                 try { localStorage.setItem('llm-plugin-last-mode', modeSelect.value); }
                 catch (e) { /* ignore localStorage errors */ }
-                if (window.RED && RED.notify) {
-                    RED.notify('LLM Plugin: Mode = ' + modeSelect.value, { type: 'info', timeout: 1500 });
-                }
+                Common.notify('LLM Plugin: Mode = ' + modeSelect.value, { type: 'info', timeout: 1500 });
             });
         }
 
@@ -372,12 +335,9 @@
             } catch (e) { return false; }
         }
 
-        // Default the selection once RED is ready. Priority:
-        //   1. Previously saved selection from localStorage (subject to later
-        //      pruning if any of those flows no longer exist)
-        //   2. The currently active workspace
-        // Only runs on first successful init: after that, the user's explicit
-        // selection (including a deliberately empty one) is preserved.
+        // First-init default: saved localStorage selection, else the active
+        // workspace. After that the user's explicit selection (even empty)
+        // is preserved.
         function ensureDefaultSelection() {
             if (selectionInitialized) return;
             if (loadSelectedFlows()) {
@@ -577,7 +537,7 @@
 
             let mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
             if (!model || !prompt) {
-                if (window.RED && RED.notify) RED.notify('Please enter both model and prompt', 'warning');
+                Common.notify('Please enter both model and prompt', 'warning');
                 return;
             }
 

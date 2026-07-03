@@ -34,14 +34,10 @@ try {
     SYSTEM_PROMPT_TEMPLATE = FALLBACK_PROMPT;
 }
 
-// Per-process singleton: the sidebar plugin (src/server.js) and the runtime
-// nodes (node/llm-request) both call createLLMCore(RED), and they MUST share
-// one instance — separate instances each cache the decrypted credentials, so
-// an API key saved in the sidebar would never reach the node until restart
-// (and, when no credentialSecret can be persisted, the two instances would
-// encrypt with different in-memory keys and be unable to read each other's
-// credentials file). The plugin RED and the node-facing RED both expose the
-// same settings/log APIs, so whichever loads first can serve both.
+// Per-process singleton: sidebar (server.js) and runtime node MUST share one
+// instance — separate instances would cache credentials independently (a key
+// saved in the sidebar wouldn't reach the node) and could encrypt with
+// different in-memory secrets. Either RED object can serve both.
 let sharedInstance = null;
 
 function createLLMCore(RED) {
@@ -92,17 +88,11 @@ function createLLMCore(RED) {
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
     //
-    // Secrets (the OpenAI API key and the Custom-endpoint API key) are
-    // encrypted at rest in `<baseDir>/credentials.json` using AES-256-CTR
-    // — the same algorithm Node-RED applies to `flows_cred.json`. We
-    // reuse Node-RED's `credentialSecret` (or auto-generated
-    // `_credentialSecret`) so the secret is tied to the existing user setup.
-    //
-    // We deliberately do NOT use `RED.nodes.addCredentials` with a
-    // synthetic id: Node-RED's `cleanCredentials` strips any credential
-    // whose id isn't referenced by a flow node, wiping our entry on every
-    // deploy. A plugin-owned file sidesteps that lifecycle entirely.
-    // Non-secret settings stay in `RED.settings` (plain JSON).
+    // API keys are AES-256-CTR-encrypted in `<baseDir>/credentials.json`
+    // using Node-RED's own credentialSecret. NOT stored via
+    // `RED.nodes.addCredentials`: cleanCredentials wipes entries whose id
+    // no flow node references, on every deploy. Non-secret settings stay
+    // in `RED.settings` (plain JSON).
 
     const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
     let credsCache = null;
@@ -392,13 +382,10 @@ function createLLMCore(RED) {
             };
         }
 
-        // Multi-flow case: emit ONE flat Vibe Schema where every canvas node
-        // carries a `flow` field naming its home flow (tab label). Aliases
-        // come from a single toIntermediate pass so they are globally unique
-        // across all flows, preventing cross-flow alias collisions that
-        // caused the importer to overwrite nodes in the wrong tab.
-        // Config nodes are collected once (referenced by any flow) and
-        // emitted without a `flow` field since they live outside canvases.
+        // Multi-flow case: ONE flat Vibe Schema; every canvas node carries a
+        // `flow` field (tab label). A single toIntermediate pass keeps
+        // aliases globally unique (no cross-flow collisions). Config nodes
+        // get no `flow` field — they live outside canvases.
         const allCanvas = [];
         const neededConfigs = {};
         for (const z of tabIds) {
@@ -496,11 +483,8 @@ function createLLMCore(RED) {
     //  LLM provider adapters                                              //
     // ------------------------------------------------------------------ //
 
-    // `options.timeoutMs` limits how long a single generation may take
-    // (0 / omitted = no explicit limit). The runtime node passes its
-    // configured timeout; the sidebar passes nothing, keeping its
-    // historical behaviour (Ollama waits indefinitely, the OpenAI SDK's
-    // own default applies).
+    // `options.timeoutMs` bounds one generation (0 / omitted = no limit).
+    // The node passes its configured timeout; the sidebar passes nothing.
     function generateWithProvider(provider, settings, model, messages, options) {
         const timeoutMs = (options && typeof options.timeoutMs === 'number' && options.timeoutMs > 0)
             ? Math.floor(options.timeoutMs)
@@ -601,11 +585,8 @@ function createLLMCore(RED) {
         });
     }
 
-    // Turn a raw provider/SDK failure into an actionable message. The OpenAI
-    // SDK does a strict JSON.parse of the HTTP body, so an endpoint that
-    // answers with plain text (a proxy/error page, a text-completion server,
-    // or a model that streamed prose) surfaces as a cryptic
-    // "Unexpected token …, "<text>"… is not valid JSON". Re-label that.
+    // Re-label the OpenAI SDK's cryptic "… is not valid JSON" error (an
+    // endpoint that answered with plain text) into an actionable message.
     function wrapProviderError(err) {
         const m = (err && err.message) ? String(err.message) : String(err);
         if (/is not valid JSON|Unexpected token/.test(m)) {
@@ -627,14 +608,10 @@ function createLLMCore(RED) {
         return content;
     }
 
-    // OpenAI and Custom OpenAI-compatible endpoints (llama.cpp, LM Studio,
-    // vLLM, LocalAI, …) share one adapter: `baseURL` null targets OpenAI
-    // proper. The SDK requires a non-empty `apiKey`, so a blank key becomes
-    // a placeholder — endpoints that don't require auth ignore the
-    // Authorization header anyway (OpenAI itself always gets a real key;
-    // generateWithProvider rejects beforehand when it is missing).
-    // `timeoutMs` > 0 is passed as the SDK's per-request timeout; 0 leaves
-    // the SDK default (10 minutes) in place.
+    // One adapter for OpenAI (`baseURL` null) and OpenAI-compatible
+    // endpoints (llama.cpp / LM Studio / vLLM / LocalAI). Blank key becomes
+    // a placeholder — the SDK insists on one, auth-less endpoints ignore
+    // it. `timeoutMs` > 0 → per-request SDK timeout (0 = SDK default).
     async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs) {
         const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
         const openai = new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });

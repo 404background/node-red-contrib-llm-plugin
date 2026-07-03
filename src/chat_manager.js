@@ -2,23 +2,14 @@
 // Uses fetch API for server communication and native DOM for UI.
 (function(){
     let ChatManager = {};
+    let Common = window.LLMPlugin.Common;
+    let el = Common.el;
 
     let currentChatId = null;
     let chatHistory = {};
 
-    function randomSuffix() {
-        return Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    }
-    function generateChatId()    { return 'chat_' + randomSuffix(); }
-    function generateMessageId() { return 'msg_'  + randomSuffix(); }
-
-    /** Tiny DOM helper: createElement with optional className and textContent. */
-    function el(tag, className, text) {
-        let node = document.createElement(tag);
-        if (className) node.className = className;
-        if (text !== undefined) node.textContent = text;
-        return node;
-    }
+    function generateChatId()    { return Common.randomId('chat_'); }
+    function generateMessageId() { return Common.randomId('msg_'); }
 
     function newChatObject(id) {
         return {
@@ -76,7 +67,7 @@
         currentChatId = generateChatId();
         chatHistory[currentChatId] = newChatObject(currentChatId);
         clearChatArea();
-        if (window.RED && RED.notify) RED.notify('Started new chat', 'success');
+        Common.notify('Started new chat', 'success');
     };
 
     /**
@@ -100,7 +91,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chatId: chatId, chatData: chat })
         }).catch(function() {
-            if (window.RED && RED.notify) RED.notify('Failed to save chat', 'warning');
+            Common.notify('Failed to save chat', 'warning');
         });
     };
 
@@ -119,7 +110,7 @@
                 try { ChatManager.loadChat(currentChatId); } catch(e) {}
             })
             .catch(function() {
-                if (window.RED && RED.notify) RED.notify('Failed to load chat histories', 'warning');
+                Common.notify('Failed to load chat histories', 'warning');
             });
     };
 
@@ -193,7 +184,7 @@
                 LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
             }
         });
-        if (window.RED && RED.notify) RED.notify('Loaded chat: ' + chat.title, 'success');
+        Common.notify('Loaded chat: ' + chat.title, 'success');
     };
 
     ChatManager.updateMessageMeta = function(messageId, patch) {

@@ -2,11 +2,8 @@
 // Handles message rendering, flow context export, and retry logic.
 (function(){
     let UI = {};
-
-    // Escape HTML special characters to prevent XSS
-    function escapeHtml(str) {
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    let Common = window.LLMPlugin.Common;
+    let escapeHtml = Common.escapeHtml;
 
     function formatMessage(text) {
         // Run with marked.js (assumed present in modern Node-RED environments)
@@ -39,22 +36,15 @@
         return escapeHtml(text);
     }
 
-    // Focus on a node — mirrors Node-RED's Debug sidebar exactly
-    // (editor-client/src/js/ui/debug.js → showMessageNode):
-    //
-    //   if (n.z)           { RED.workspaces.show(n.z); }
-    //   n.highlighted = true; n.dirty = true;
-    //   RED.view.reveal(n.id);
-    //   ... clear highlighted after ~10 s
-    //
-    // Config nodes have no canvas position, so they open their edit
-    // dialog (RED.editor.editConfig) instead.
+    // Focus a node like the Debug sidebar does (show tab, highlight,
+    // RED.view.reveal, clear highlight after a delay). Config nodes have
+    // no canvas position, so they open their edit dialog instead.
     function focusCanvasNode(nodeId) {
         try {
             if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
             let node = RED.nodes.node(nodeId);
             if (!node) {
-                if (RED.notify) RED.notify('Node no longer exists', 'warning');
+                Common.notify('Node no longer exists', 'warning');
                 return;
             }
 
@@ -66,7 +56,7 @@
                 if (RED.editor && typeof RED.editor.edit === 'function') {
                     try { RED.editor.edit(node); return; } catch (e) {}
                 }
-                if (RED.notify) RED.notify('Cannot focus config "' + (node.name || node.id) + '"', 'warning');
+                Common.notify('Cannot focus config "' + (node.name || node.id) + '"', 'warning');
                 return;
             }
 
@@ -108,31 +98,16 @@
         });
     }
 
-    // Pass 1: walk inline <code> elements (skipping <pre>) and resolve
-    // each one against the live canvas via buildFlowLookup. Catches
-    // explicit references like `inject_sensor`.
+    // Make node references in an assistant message clickable.
+    // Pass 1: inline <code> elements (outside <pre>) resolved via
+    // buildFlowLookup. Pass 2: plain-text tokens that exactly match a
+    // known alias (safety net when the LLM forgets to backtick-quote).
     //
-    // Pass 2: walk text nodes (skipping <code>, <pre>, <a>, <script>,
-    // <style>) and replace any token that exactly matches a known node
-    // alias with a clickable inline code. The system prompt instructs
-    // the LLM to backtick-quote node references; this scan is the
-    // safety net for when it forgets.
-    //
-    // Alias → ID determinism:
-    //   FlowConverterCore.toIntermediate (which buildFlowLookup wraps)
-    //   numbers duplicate aliases by iteration order — the first
-    //   `change`-typed unnamed node gets `change`, the next gets
-    //   `change_2`, etc. So an alias like `change_2` only resolves to
-    //   the same node IFF the alias map is built from the same node
-    //   list in the same order the LLM saw. When `targetFlowIds` is
-    //   provided we therefore reuse UI.getFlowsByIds, which is the
-    //   exact function that produced the LLM's context — same nodes,
-    //   same per-tab grouping, same config-collection logic — making
-    //   the alias→ID map bit-for-bit identical to what was sent.
-    //   Unscoped (legacy) messages fall back to scanning every node.
-    //   Every subsequent operation (Pass 1 resolve, Pass 2 lookup,
-    //   click handler, focusCanvasNode) keys off the resolved ID, not
-    //   the alias.
+    // Alias → ID determinism: toIntermediate numbers duplicate aliases by
+    // iteration order, so `change_2` only resolves correctly if the alias
+    // map is built from the SAME node list the LLM saw. With targetFlowIds
+    // we therefore reuse UI.getFlowsByIds (the function that produced the
+    // LLM context); unscoped messages fall back to scanning every node.
     function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
         if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
@@ -189,22 +164,16 @@
 
         // --- Pass 2: plain-text alias scan ---------------------------
         let aliasToId = lookup.aliasToId || {};
-        // Any alias that maps to a focusable node is eligible. We sort
-        // longest-first so compound aliases (`change_temperature_series`)
-        // win over their bare-type prefix (`change`) when both would
-        // match the same span. Aliases shorter than 3 chars are skipped
-        // — they're nearly always noise. Single-word aliases like
-        // `inject` are kept because users frequently leave inject /
-        // debug / function nodes unnamed.
+        // Longest-first so compound aliases win over their bare-type prefix;
+        // aliases under 3 chars are skipped as noise.
         let aliases = Object.keys(aliasToId).filter(function(a) {
             return a.length >= 3 && isFocusable(aliasToId[a]);
         });
         if (aliases.length === 0) return;
         aliases.sort(function(a, b) { return b.length - a.length; });
-        function escapeRe(s) { return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'); }
         let pattern;
         try {
-            pattern = new RegExp('\\b(' + aliases.map(escapeRe).join('|') + ')\\b', 'g');
+            pattern = new RegExp('\\b(' + aliases.map(Common.escapeRegExp).join('|') + ')\\b', 'g');
         } catch (e) { return; }
 
         let TreeWalker = window.NodeFilter && document.createTreeWalker;
@@ -265,13 +234,10 @@
         });
     }
 
-    // Re-annotate every assistant message in the chat panel. The chat
-    // panel can render historical messages BEFORE Node-RED finishes
-    // populating RED.nodes (the side panel initializes early in the
-    // editor's bootstrap), in which case the initial
-    // annotateNodeReferences call finds an empty alias map and skips
-    // silently. Hooking RED.events lets us catch up once nodes arrive,
-    // and keeps existing badges in sync when the user edits / deploys.
+    // Re-annotate every assistant message. Historical messages can render
+    // before RED.nodes is populated (empty alias map → silent skip), so
+    // RED.events hooks catch up once nodes arrive and keep annotations in
+    // sync across edits / deploys.
     let _reannotateDebounce = null;
     function reannotateAllAssistantMessages() {
         let chatArea = document.getElementById('llm-plugin-chat');
@@ -327,13 +293,13 @@
             LLMPlugin.Importer.restoreCheckpoint(cpId)
                 .then(function(result) {
                     if (result && result.ok) {
-                        if (window.RED && RED.notify) RED.notify('Checkpoint restored', 'success');
-                    } else if (window.RED && RED.notify) {
-                        RED.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
+                        Common.notify('Checkpoint restored', 'success');
+                    } else {
+                        Common.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
                     }
                 })
                 .catch(function(err) {
-                    if (window.RED && RED.notify) RED.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
+                    Common.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
                 })
                 .finally(function() {
                     btn.disabled = false;
