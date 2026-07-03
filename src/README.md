@@ -6,7 +6,7 @@ Plugin sidebar.
 ## Big picture
 
 ```
-Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/{generate,agent-generate}  ──►  Ollama / OpenAI / Custom
+Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/generate  ──►  Ollama / OpenAI / Custom
         ▲                                              │
         │                                              ▼
    addMessageToUI                          response { response, model, elapsed }
@@ -79,8 +79,7 @@ pattern and communicate via `window.LLMPlugin`.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/llm-plugin/generate` | Send prompt + flow context to LLM |
-| POST | `/llm-plugin/agent-generate` | Agent-mode generation (auto-import on the client) |
+| POST | `/llm-plugin/generate` | Send prompt + flow context to LLM (both Ask and Agent; Agent's auto-import is client-side) |
 | GET / POST | `/llm-plugin/settings` | Read / write settings (whitelisted fields; API key masked on read) |
 | GET | `/llm-plugin/ollama/models` | List available Ollama models |
 | GET | `/llm-plugin/chat-histories` | List persisted chats |
@@ -276,12 +275,11 @@ sidebar — there is only one settings + credentials store.
 
 | Section | Key functions |
 |---------|---------------|
-| Storage resolution | `baseDir` / `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
+| Storage resolution | `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-CTR), legacy-key migration, `maskApiKey`, `redactSecrets` |
 | Ollama discovery | `listOllamaModels` (CLI + HTTP) |
-| Prompt construction | `buildFlowContextDescription`, `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`; `options.extraSystem` appends node-specific guidance), `buildChatMessages` (plain Ask-mode chat) |
-| Agent helpers | `parseFlowPayloadFromText`, `isExplanationOnlyRequest` |
-| LLM adapters | `generateWithProvider` → `generateWithOllamaChat` (`/api/chat`), `generateWithOpenAI` (SDK), `generateWithCustomOpenAI` (SDK with `baseURL` for llama.cpp / LM Studio / vLLM / LocalAI) |
+| Prompt construction | `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`; `options.extraSystem` appends node-specific guidance), `buildChatMessages` (plain Ask-mode chat) |
+| LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
 
 ### `server.js`
 

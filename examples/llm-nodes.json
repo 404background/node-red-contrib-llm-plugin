@@ -31,6 +31,7 @@
         "model": "",
         "targetFlows": [],
         "editorUrl": "",
+        "timeout": 3600,
         "x": 420,
         "y": 100,
         "wires": [["demo_debug_ask"]]
@@ -73,6 +74,7 @@
         "model": "",
         "targetFlows": ["llm_nodes_demo_tab"],
         "editorUrl": "",
+        "timeout": 3600,
         "x": 430,
         "y": 200,
         "wires": [["demo_debug_agent"]]

@@ -584,7 +584,7 @@
             let flowIdsToSend = getSelectedFlowIds();
 
             if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode }, flowIdsToSend);
+                LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode });
             }
             promptInput.value = '';
             if (typeof promptInput._llmPluginResetHistoryNav === 'function') {
@@ -615,18 +615,18 @@
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();
 
-            let endpoint = mode === 'agent' ? 'llm-plugin/agent-generate' : 'llm-plugin/generate';
+            // One endpoint for both modes: the server-side request is
+            // identical; Agent only differs client-side (auto-import below).
             let fetchStart = Date.now();
 
-            fetch(endpoint, {
+            fetch('llm-plugin/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     model: model,
                     prompt: prompt,
                     currentFlow: currentFlow,
-                    activeWorkspaceId: getActiveWorkspaceId(),
-                    mode: mode
+                    activeWorkspaceId: getActiveWorkspaceId()
                 }),
                 signal: currentAbortController.signal
             })

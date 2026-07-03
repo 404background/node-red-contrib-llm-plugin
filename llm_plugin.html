@@ -1,7 +1,10 @@
 <meta charset="utf-8">
 <link rel="stylesheet" type="text/css" href="llm-plugin_styles.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- No Font Awesome CDN: the Node-RED editor bundles Font Awesome 4.7, so we
+     only use fa-* icons that exist in 4.7 and everything works offline. -->
+<!-- marked.js is served from the plugin's own npm dependency so Markdown
+     rendering keeps working on offline installs (no CDN). -->
+<script src="llm-plugin/vendor/marked.js" charset="utf-8"></script>
 
 <script src="llm-plugin/src/client.js" charset="utf-8"></script>
 
@@ -17,7 +20,7 @@
 
     <div id="ollama-settings">
         <div class="form-row">
-            <label for="ollama-url"><i class="fa fa-network-wired"></i> Ollama URL</label>
+            <label for="ollama-url"><i class="fa fa-globe"></i> Ollama URL</label>
             <input type="text" id="ollama-url" placeholder="http://localhost:11434">
         </div>
     </div>
@@ -34,7 +37,7 @@
 
     <div id="custom-settings" style="display: none;">
         <div class="form-row">
-            <label for="custom-base-url"><i class="fa fa-network-wired"></i> Base URL</label>
+            <label for="custom-base-url"><i class="fa fa-globe"></i> Base URL</label>
             <input type="text" id="custom-base-url" placeholder="http://localhost:8080/v1">
         </div>
         <div class="form-row">
@@ -47,7 +50,7 @@
     </div>
 
     <div class="form-row" style="margin-top: 12px;">
-        <label for="llm-system-prompt"><i class="fa fa-comment-alt"></i> System Prompt</label>
+        <label for="llm-system-prompt"><i class="fa fa-comment-o"></i> System Prompt</label>
         <textarea id="llm-system-prompt" rows="6" style="width: 100%; font-family: monospace; font-size: 12px; resize: vertical;" placeholder="Additional instructions for the LLM..."></textarea>
         <div class="form-tips" style="font-size: 12px; color: #666; margin-top: 5px;">
             <i class="fa fa-info-circle"></i> This text is prepended to the built-in system prompt for every request. Use it to give the LLM persistent instructions (e.g. preferred node types, coding style, language).

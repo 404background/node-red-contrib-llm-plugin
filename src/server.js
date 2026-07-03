@@ -14,7 +14,6 @@ function createLLMPluginServer(RED) {
     const core = createLLMCore(RED);
 
     // Storage locations resolved once by the shared core.
-    const baseDir = core.baseDir;
     const chatsDir = core.chatsDir;
     const checkpointsDir = core.checkpointsDir;
     const clientEventsLog = core.clientEventsLog;
@@ -26,7 +25,6 @@ function createLLMPluginServer(RED) {
     const savePluginSettings = core.savePluginSettings;
     const generateWithProvider = core.generateWithProvider;
     const buildMessages = core.buildMessages;
-    const isExplanationOnlyRequest = core.isExplanationOnlyRequest;
     const listOllamaModels = core.listOllamaModels;
     const maskApiKey = core.maskApiKey;
     const redactSecrets = core.redactSecrets;
@@ -169,6 +167,9 @@ function createLLMPluginServer(RED) {
     //  HTTP admin endpoints                                               //
     // ------------------------------------------------------------------ //
 
+    // Single generation endpoint for BOTH sidebar modes: Ask and Agent send
+    // the identical request; what differs is purely client-side (Agent
+    // auto-clicks the Import button on the reply).
     RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
         const { model, prompt, currentFlow, activeWorkspaceId } = req.body;
         if (!model || !prompt) {
@@ -209,58 +210,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/agent-generate', async function(req, res) {
-        const { model, prompt, currentFlow, activeWorkspaceId } = req.body || {};
-
-        if (!model || !prompt) {
-            return res.status(400).json({ error: 'Model and prompt are required' });
-        }
-
-        const settings = getPluginSettings();
-        const maxLen = parseInt(settings.maxPromptLength, 10) || 10000;
-        if (String(prompt).length > maxLen) {
-            return res.status(400).json({ error: 'Prompt exceeds maximum length (' + maxLen + ' characters)' });
-        }
-        const provider = settings.provider || 'ollama';
-
-        try {
-            const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId);
-            const totalStart = Date.now();
-
-            if (isExplanationOnlyRequest(prompt)) {
-                const response = await generateWithProvider(provider, settings, model, enhancedMessages);
-                return res.json({
-                    response,
-                    elapsed: Date.now() - totalStart,
-                    model: model,
-                    agent: {
-                        mode: 'agent',
-                        performed: 1,
-                        singlePass: true,
-                        reason: 'explanation-only'
-                    }
-                });
-            }
-
-            const response = await generateWithProvider(provider, settings, model, enhancedMessages);
-
-            return res.json({
-                response,
-                elapsed: Date.now() - totalStart,
-                model: model,
-                agent: {
-                    mode: 'agent',
-                    performed: 1,
-                    singlePass: true
-                }
-            });
-        } catch (error) {
-            const safeErrorText = redactSecrets(error && error.message ? error.message : error);
-            console.error('[LLM Plugin] Agent generation error:', safeErrorText);
-            return res.status(500).json({ error: redactSecrets(error && error.message ? error.message : 'Agent generation failed') });
-        }
-    });
-
     // --- Settings endpoints ---
     RED.httpAdmin.get('/llm-plugin/settings', function(req, res) {
         const settings = Object.assign({}, getPluginSettings());
@@ -279,6 +228,18 @@ function createLLMPluginServer(RED) {
         res.json(settings);
     });
 
+    // Blank URL fields preserve the existing value (the form shows URLs as
+    // placeholders, not values). API keys use the '__EXISTING_KEY__'
+    // placeholder to mean "keep"; anything else replaces, blank deletes
+    // (a blank key is valid for auth-less custom endpoints).
+    function urlOrExisting(value, existingValue) {
+        return (value && typeof value === 'string' && value.trim() !== '') ? value.trim() : existingValue;
+    }
+    function keyOrExisting(value, existingValue) {
+        if (value === '__EXISTING_KEY__') return existingValue || '';
+        return (value && typeof value === 'string' && value.trim() !== '') ? value.trim() : '';
+    }
+
     RED.httpAdmin.post('/llm-plugin/settings', function(req, res) {
         try {
             const body = req.body || {};
@@ -287,36 +248,10 @@ function createLLMPluginServer(RED) {
                 provider: body.provider || 'ollama'
             };
             const existing = getPluginSettings();
-            // If URL field is empty, preserve existing URL.
-            if (body.ollamaUrl && typeof body.ollamaUrl === 'string' && body.ollamaUrl.trim() !== '') {
-                newSettings.ollamaUrl = body.ollamaUrl.trim();
-            } else {
-                newSettings.ollamaUrl = existing.ollamaUrl || 'http://localhost:11434';
-            }
-            // Handle API key updates (including deletion)
-            if (body.openaiApiKey === '__EXISTING_KEY__') {
-                newSettings.openaiApiKey = existing.openaiApiKey || '';
-            } else if (body.openaiApiKey && typeof body.openaiApiKey === 'string' && body.openaiApiKey.trim() !== '') {
-                newSettings.openaiApiKey = body.openaiApiKey.trim();
-            } else {
-                newSettings.openaiApiKey = '';
-            }
-            // Custom Base URL: same blank-preserves-existing rule as Ollama URL.
-            if (body.customBaseUrl && typeof body.customBaseUrl === 'string' && body.customBaseUrl.trim() !== '') {
-                newSettings.customBaseUrl = body.customBaseUrl.trim();
-            } else {
-                newSettings.customBaseUrl = existing.customBaseUrl || '';
-            }
-            // Custom API key: same placeholder convention as openaiApiKey, but
-            // an empty value is a valid configuration (some endpoints don't
-            // require auth) so we never reject blank submissions.
-            if (body.customApiKey === '__EXISTING_KEY__') {
-                newSettings.customApiKey = existing.customApiKey || '';
-            } else if (body.customApiKey && typeof body.customApiKey === 'string' && body.customApiKey.trim() !== '') {
-                newSettings.customApiKey = body.customApiKey.trim();
-            } else {
-                newSettings.customApiKey = '';
-            }
+            newSettings.ollamaUrl = urlOrExisting(body.ollamaUrl, existing.ollamaUrl || 'http://localhost:11434');
+            newSettings.customBaseUrl = urlOrExisting(body.customBaseUrl, existing.customBaseUrl || '');
+            newSettings.openaiApiKey = keyOrExisting(body.openaiApiKey, existing.openaiApiKey);
+            newSettings.customApiKey = keyOrExisting(body.customApiKey, existing.customApiKey);
             // System prompt (user-authored, always save as-is)
             if (body.systemPrompt !== undefined && body.systemPrompt !== null) {
                 newSettings.systemPrompt = String(body.systemPrompt);
@@ -503,6 +438,29 @@ function createLLMPluginServer(RED) {
             return res.json({ ok: true });
         } catch (error) {
             return res.status(500).json({ ok: false, error: redactSecrets(error.message || 'Failed to write client log') });
+        }
+    });
+
+    // Serve the bundled marked.js (Markdown renderer) to the editor. The
+    // sidebar used to pull it from a CDN, which silently degraded rendering
+    // on offline installs even though the npm dependency ships the same
+    // library. `marked`'s exports map hides lib/, so resolve the package
+    // root via package.json (which IS exported) and read the UMD build
+    // directly — once; the file is immutable for the process lifetime.
+    // ui_core.js falls back to escaped plain text if this 404s.
+    let markedJsCache = null;
+    RED.httpAdmin.get('/llm-plugin/vendor/marked.js', function(req, res) {
+        try {
+            if (markedJsCache === null) {
+                const markedRoot = path.dirname(require.resolve('marked/package.json'));
+                markedJsCache = fs.readFileSync(path.join(markedRoot, 'lib', 'marked.umd.js'), 'utf8');
+            }
+            res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+            res.send(markedJsCache);
+        } catch (error) {
+            console.error('[LLM Plugin] Error serving marked.js:',
+                error && error.message ? error.message : error);
+            res.status(404).send('/* marked.js not available */');
         }
     });
 

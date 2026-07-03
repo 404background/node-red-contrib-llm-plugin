@@ -453,7 +453,9 @@
             let retryBtn = document.createElement('button');
             retryBtn.className = 'retry-btn';
             let retryIcon = document.createElement('i');
-            retryIcon.className = 'fa fa-redo';
+            // fa-refresh, not fa-redo: the editor bundles Font Awesome 4.7
+            // (offline) and fa-redo only exists in FA 5.
+            retryIcon.className = 'fa fa-refresh';
             retryIcon.setAttribute('aria-hidden', 'true');
             retryIcon.style.color = '#222';
             retryBtn.appendChild(retryIcon);

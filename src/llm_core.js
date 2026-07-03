@@ -3,11 +3,11 @@
 // Single source of truth for everything the plugin needs to TALK to an LLM:
 // storage resolution, encrypted credential handling, plugin-settings access,
 // provider adapters (Ollama / OpenAI / Custom OpenAI-compatible), Ollama model
-// discovery, prompt construction (Vibe Schema flow context), secret redaction
-// and the JSON/agent parse helpers.
+// discovery, prompt construction (Vibe Schema flow context) and secret
+// redaction.
 //
 // Both the editor sidebar (`src/server.js`, via its HTTP admin endpoints) AND
-// the runtime nodes (`node/llm-request`, `node/llm-deploy`) consume this module
+// the runtime node (`node/llm-request`) consume this module
 // so they share ONE settings + credentials store. That is what lets a node
 // "inherit" the provider/API-key the user configured in the sidebar settings
 // dialog — there is no second place to keep them.
@@ -22,7 +22,6 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const { OpenAI } = require('openai');
 const Configurator = require('./core/flow_converter_core');
-const LLMJsonParser = require('./core/llm_json_parser');
 
 // Fall back to a minimal embedded prompt if the bundled file is
 // unreadable (sandboxed cloud environments occasionally restrict reads).
@@ -35,7 +34,19 @@ try {
     SYSTEM_PROMPT_TEMPLATE = FALLBACK_PROMPT;
 }
 
+// Per-process singleton: the sidebar plugin (src/server.js) and the runtime
+// nodes (node/llm-request) both call createLLMCore(RED), and they MUST share
+// one instance — separate instances each cache the decrypted credentials, so
+// an API key saved in the sidebar would never reach the node until restart
+// (and, when no credentialSecret can be persisted, the two instances would
+// encrypt with different in-memory keys and be unable to read each other's
+// credentials file). The plugin RED and the node-facing RED both expose the
+// same settings/log APIs, so whichever loads first can serve both.
+let sharedInstance = null;
+
 function createLLMCore(RED) {
+    if (sharedInstance) return sharedInstance;
+
     // --- Storage location resolution ---
     // Try, in order:
     //   1) <userDir>/llm-plugin/   (Node-RED's standard writable user dir)
@@ -48,7 +59,6 @@ function createLLMCore(RED) {
     let checkpointsDir = null;
     let clientEventsLog = null;
     let persistenceEnabled = false;
-    let storageMode = 'memory';
 
     (function setupStorage() {
         let candidates = [];
@@ -65,7 +75,6 @@ function createLLMCore(RED) {
                 checkpointsDir = path.join(base, 'checkpoints');
                 clientEventsLog = path.join(base, 'client-events.log');
                 persistenceEnabled = true;
-                storageMode = candidates[i].label;
                 RED.log.info('[LLM Plugin] Storage: ' + base + ' (' + candidates[i].label + ')');
                 return;
             } catch (e) { /* try next */ }
@@ -484,68 +493,41 @@ function createLLMCore(RED) {
     }
 
     // ------------------------------------------------------------------ //
-    //  Agent-mode parse helpers                                           //
-    // ------------------------------------------------------------------ //
-
-    function parseFlowPayloadFromText(text) {
-        const candidates = [];
-        const codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
-        let m;
-        while ((m = codeBlockRegex.exec(String(text || ''))) !== null) {
-            candidates.push(m[1].trim());
-        }
-        if (candidates.length === 0) {
-            candidates.push(String(text || '').trim());
-        }
-
-        for (let i = candidates.length - 1; i >= 0; i--) {
-            const cleaned = LLMJsonParser.stripJsonComments(candidates[i]).trim();
-            try {
-                return JSON.parse(cleaned);
-            } catch (e1) {
-                try {
-                    return JSON.parse(LLMJsonParser.repairJsonQuotes(cleaned));
-                } catch (e2) { /* keep trying */ }
-            }
-        }
-        return null;
-    }
-
-    function isExplanationOnlyRequest(userPrompt) {
-        const text = String(userPrompt || '').trim();
-        if (!text) return false;
-
-        const explainRe = /(explain|explanation|describe|summary|review|analy[sz]e|walk\s*through)/i;
-        const changeRe = /(create|generate|build|add|modify|update|edit|fix|implement|convert|refactor)/i;
-
-        return explainRe.test(text) && !changeRe.test(text);
-    }
-
-    // ------------------------------------------------------------------ //
     //  LLM provider adapters                                              //
     // ------------------------------------------------------------------ //
 
-    function generateWithProvider(provider, settings, model, messages) {
+    // `options.timeoutMs` limits how long a single generation may take
+    // (0 / omitted = no explicit limit). The runtime node passes its
+    // configured timeout; the sidebar passes nothing, keeping its
+    // historical behaviour (Ollama waits indefinitely, the OpenAI SDK's
+    // own default applies).
+    function generateWithProvider(provider, settings, model, messages, options) {
+        const timeoutMs = (options && typeof options.timeoutMs === 'number' && options.timeoutMs > 0)
+            ? Math.floor(options.timeoutMs)
+            : 0;
         if (provider === 'openai') {
             if (!settings.openaiApiKey) {
                 return Promise.reject(new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.'));
             }
-            return generateWithOpenAI(settings.openaiApiKey, model, messages);
+            return generateWithOpenAICompatible(settings.openaiApiKey, null, model, messages, timeoutMs);
         }
         if (provider === 'custom') {
             let baseUrl = (settings.customBaseUrl && String(settings.customBaseUrl).trim()) || '';
             if (!baseUrl) {
                 return Promise.reject(new Error('Custom endpoint Base URL is not configured. Please set it in LLM Plugin settings.'));
             }
-            return generateWithCustomOpenAI(baseUrl, settings.customApiKey, model, messages);
+            return generateWithOpenAICompatible(settings.customApiKey, baseUrl, model, messages, timeoutMs);
         }
-        return generateWithOllamaChat(model, messages);
+        return generateWithOllamaChat(settings, model, messages, timeoutMs);
     }
 
-    // Ollama chat generation (timeout 0 = wait indefinitely)
-    function generateWithOllamaChat(model, messages, timeout = 0) {
-        const settings = getPluginSettings();
-        const ollamaUrlStr = settings.ollamaUrl || 'http://localhost:11434';
+    // Ollama chat generation (timeout 0 = wait indefinitely).
+    // `timeout` maps to http.request's socket-inactivity timer; since the
+    // non-streaming /api/chat sends nothing until generation completes,
+    // it effectively bounds the total wait. `settings` is passed in like
+    // the other adapters (single settings read per generation).
+    function generateWithOllamaChat(settings, model, messages, timeout = 0) {
+        const ollamaUrlStr = (settings && settings.ollamaUrl) || 'http://localhost:11434';
         let ollamaUrl;
         try {
             ollamaUrl = new URL(ollamaUrlStr);
@@ -607,7 +589,11 @@ function createLLMCore(RED) {
             if (timeout && timeout > 0) {
                 req.on('timeout', () => {
                     req.destroy();
-                    reject(new Error('Request timed out'));
+                    // code ETIMEDOUT lets callers detect timeouts without
+                    // parsing the message (llm-request's status display).
+                    const e = new Error('Request timed out');
+                    e.code = 'ETIMEDOUT';
+                    reject(e);
                 });
             }
             req.write(data);
@@ -641,48 +627,38 @@ function createLLMCore(RED) {
         return content;
     }
 
-    // OpenAI generation
-    async function generateWithOpenAI(apiKey, model, messages) {
-        const openai = new OpenAI({ apiKey });
-        let completion;
-        try {
-            completion = await openai.chat.completions.create({
-                messages: Array.isArray(messages) ? messages : [],
-                model: model,
-            });
-        } catch (e) {
-            throw wrapProviderError(e);
-        }
-        return extractContent(completion);
-    }
-
-    // Custom OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM, LocalAI, …).
-    // The OpenAI SDK requires a non-empty `apiKey`, so we pass a placeholder
-    // when the user leaves it blank — endpoints that don't require auth
-    // ignore the Authorization header anyway.
-    async function generateWithCustomOpenAI(baseURL, apiKey, model, messages) {
+    // OpenAI and Custom OpenAI-compatible endpoints (llama.cpp, LM Studio,
+    // vLLM, LocalAI, …) share one adapter: `baseURL` null targets OpenAI
+    // proper. The SDK requires a non-empty `apiKey`, so a blank key becomes
+    // a placeholder — endpoints that don't require auth ignore the
+    // Authorization header anyway (OpenAI itself always gets a real key;
+    // generateWithProvider rejects beforehand when it is missing).
+    // `timeoutMs` > 0 is passed as the SDK's per-request timeout; 0 leaves
+    // the SDK default (10 minutes) in place.
+    async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs) {
         const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
-        const openai = new OpenAI({ apiKey: effectiveKey, baseURL: baseURL });
+        const openai = new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });
         let completion;
         try {
             completion = await openai.chat.completions.create({
                 messages: Array.isArray(messages) ? messages : [],
                 model: model,
-            });
+            }, (timeoutMs > 0) ? { timeout: timeoutMs } : undefined);
         } catch (e) {
+            // Normalize the SDK's timeout error to the same code the Ollama
+            // adapter uses, so callers detect timeouts without message parsing.
+            if (e && e.name === 'APIConnectionTimeoutError') e.code = 'ETIMEDOUT';
             throw wrapProviderError(e);
         }
         return extractContent(completion);
     }
 
-    return {
+    sharedInstance = {
         // storage (consumed by server.js for chat / checkpoint persistence)
-        baseDir: baseDir,
         chatsDir: chatsDir,
         checkpointsDir: checkpointsDir,
         clientEventsLog: clientEventsLog,
         persistenceEnabled: persistenceEnabled,
-        storageMode: storageMode,
         writeFileAtomic: writeFileAtomic,
         // settings + credentials
         getPluginSettings: getPluginSettings,
@@ -692,15 +668,12 @@ function createLLMCore(RED) {
         // discovery
         listOllamaModels: listOllamaModels,
         // prompt construction
-        buildFlowContextDescription: buildFlowContextDescription,
         buildMessages: buildMessages,
         buildChatMessages: buildChatMessages,
-        // agent helpers
-        parseFlowPayloadFromText: parseFlowPayloadFromText,
-        isExplanationOnlyRequest: isExplanationOnlyRequest,
         // generation
         generateWithProvider: generateWithProvider
     };
+    return sharedInstance;
 }
 
 module.exports = createLLMCore;

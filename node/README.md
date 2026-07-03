@@ -13,11 +13,15 @@ node; API keys and URLs are inherited from the **LLM Plugin sidebar** (Settings)
 | Model | Free text (e.g. `llama3.1`, `gpt-4o-mini`). `msg.model` overrides per message. |
 | Flows | Multi-select (none / one / many). Sent to the LLM as context in **both** modes; the list refreshes when the node is opened. |
 | Editor URL | Used to read flow context. Blank = auto-detect (works when embedded in Express on a non-1880 port). `msg.editorUrl` overrides. |
+| Timeout | Seconds; default **3600** (1 h — local LLMs can be slow). `0` = no limit. `msg.timeout` overrides per message. |
 
 **Inputs:** `payload` (prompt; strings are newline-normalised, objects are
 JSON-stringified). **Outputs:** `payload` (text reply — do not `JSON.parse` it),
 `llm` (mode/provider/model/elapsed), and in Agent mode `flow`
 (`{ targetFlows, dispatchedToEditor }`).
+
+**Status:** blue dot while requesting (ticks the elapsed seconds), green
+`done (…)` / `sent to editor` on success, red `error` / `timeout` on failure.
 
 ## How Agent mode applies changes
 
@@ -44,6 +48,9 @@ node/
 The shared LLM engine (settings, credentials, provider adapters, prompt build)
 lives in [`../src/llm_core.js`](../src/llm_core.js) and is reused by the sidebar.
 
-## Example
+## Examples
 
-Import `examples/llm-nodes.json` for ready-made Ask and Agent flows.
+Import via **Menu → Import → Examples** (or the JSON files in `examples/`):
+
+- `llm-request-simple` — minimal inject → LLM (Ask) → debug.
+- `llm-nodes` — Ask and Agent side by side.

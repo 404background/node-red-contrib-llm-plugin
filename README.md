@@ -72,7 +72,12 @@ set on the node; API keys and URLs come from the sidebar Settings.
 
 Flows are a multi-select (none / one / many) and apply in both modes. Agent mode
 needs an open editor; node interactions are not saved to chat history and have no
-Restore Checkpoint. Import `examples/llm-nodes.json` to try it.
+Restore Checkpoint. The node shows its progress as a status (elapsed time while
+waiting) and has a configurable timeout (default 3600 s — local LLMs can be slow;
+0 = no limit, `msg.timeout` overrides).
+
+To try it, import an example via **Menu → Import → Examples**:
+`llm-request-simple` (minimal inject → LLM → debug) or `llm-nodes` (Ask + Agent demo).
 
 See **[node/README.md](node/README.md)** for full details.
 

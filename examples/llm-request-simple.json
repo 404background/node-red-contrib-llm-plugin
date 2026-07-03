@@ -1,0 +1,52 @@
+[
+    {
+        "id": "llm_simple_tab",
+        "type": "tab",
+        "label": "LLM request (simple)",
+        "disabled": false,
+        "info": "Minimal example of the llm-request node.\n\n1. Configure the LLM Plugin in the editor sidebar first (provider, model, API key if needed).\n2. Set a model on the LLM node (or leave it and pass msg.model).\n3. Click the inject button and watch the debug sidebar.\n\nThe node shows its progress as a status: blue while waiting (with elapsed seconds), green when done, red on error or timeout. The timeout defaults to 3600 seconds (1 hour) because local LLMs can be slow; lower it here or via msg.timeout if you prefer to fail fast."
+    },
+    {
+        "id": "simple_inject",
+        "type": "inject",
+        "z": "llm_simple_tab",
+        "name": "Ask a question",
+        "props": [{ "p": "payload" }],
+        "repeat": "",
+        "once": false,
+        "topic": "",
+        "payload": "Summarize what MQTT is in two sentences.",
+        "payloadType": "str",
+        "x": 160,
+        "y": 100,
+        "wires": [["simple_llm"]]
+    },
+    {
+        "id": "simple_llm",
+        "type": "llm-request",
+        "z": "llm_simple_tab",
+        "name": "",
+        "mode": "ask",
+        "provider": "ollama",
+        "model": "",
+        "targetFlows": [],
+        "editorUrl": "",
+        "timeout": 3600,
+        "x": 380,
+        "y": 100,
+        "wires": [["simple_debug"]]
+    },
+    {
+        "id": "simple_debug",
+        "type": "debug",
+        "z": "llm_simple_tab",
+        "name": "LLM reply",
+        "active": true,
+        "tosidebar": true,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 590,
+        "y": 100,
+        "wires": []
+    }
+]

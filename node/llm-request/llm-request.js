@@ -61,6 +61,16 @@ module.exports = function(RED) {
         return ctx.length > 0 ? ctx : null;
     }
 
+    // Timeout in whole seconds. Deliberately long by default (1 hour):
+    // local LLMs routinely take many minutes on modest hardware, and a
+    // short default would break the primary use case. 0 = no limit.
+    const DEFAULT_TIMEOUT_SEC = 3600;
+    function toTimeoutSec(value, fallback) {
+        if (value === undefined || value === null || value === '') return fallback;
+        const n = parseInt(value, 10);
+        return (isNaN(n) || n < 0) ? fallback : n;
+    }
+
     function LLMRequestNode(config) {
         RED.nodes.createNode(this, config);
         const node = this;
@@ -68,14 +78,36 @@ module.exports = function(RED) {
         const providerOverride = config.provider || '';
         const configModel = config.model || '';
         const configEditorUrl = config.editorUrl || '';
+        const configTimeoutSec = toTimeoutSec(config.timeout, DEFAULT_TIMEOUT_SEC);
         // Multi-select flow ids; tolerate the legacy single-string field.
         const targetFlows = Array.isArray(config.targetFlows)
             ? config.targetFlows.slice()
             : (config.targetFlow ? [config.targetFlow] : []);
 
+        // While a request is in flight, tick the node status with the
+        // elapsed time so long local-LLM runs are visibly alive (status
+        // text stays under the ~20-char guideline). Last writer wins if
+        // several messages are in flight at once.
+        let statusTimer = null;
+        function stopStatusTicker() {
+            if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+        }
+        function startStatusTicker(started) {
+            stopStatusTicker();
+            statusTimer = setInterval(function() {
+                const secs = Math.round((Date.now() - started) / 1000);
+                node.status({ fill: 'blue', shape: 'dot', text: 'waiting ' + secs + 's' });
+            }, 5000);
+        }
+        node.on('close', function() {
+            stopStatusTicker();
+            node.status({});
+        });
+
         node.on('input', async function(msg, send, done) {
             send = send || function() { node.send.apply(node, arguments); };
             done = done || function(err) { if (err) node.error(err, msg); };
+            const timeoutSec = toTimeoutSec(msg.timeout, configTimeoutSec);
 
             try {
                 const settings = core.getPluginSettings();
@@ -97,6 +129,9 @@ module.exports = function(RED) {
 
                 node.status({ fill: 'blue', shape: 'dot', text: 'requesting…' });
                 const started = Date.now();
+                startStatusTicker(started);
+                // 0 stays 0 (= no limit); the engine owns that interpretation.
+                const genOptions = { timeoutMs: timeoutSec * 1000 };
 
                 // Best-effort flow context for the selected flows (both modes).
                 let context = null;
@@ -119,17 +154,18 @@ module.exports = function(RED) {
                 let response;
                 if (context) {
                     response = await core.generateWithProvider(provider, settings, model,
-                        core.buildMessages(prompt, context, targetFlows[0]));
+                        core.buildMessages(prompt, context, targetFlows[0]), genOptions);
                 } else if (mode === 'agent') {
                     // No context selected: still use the flow-building prompt so
                     // the model can propose a new flow from scratch.
                     response = await core.generateWithProvider(provider, settings, model,
-                        core.buildMessages(prompt, null, null));
+                        core.buildMessages(prompt, null, null), genOptions);
                 } else {
                     // Ask with no flows selected: plain chat.
                     response = await core.generateWithProvider(provider, settings, model,
-                        core.buildChatMessages(prompt));
+                        core.buildChatMessages(prompt), genOptions);
                 }
+                stopStatusTicker();
 
                 msg.payload = response;
                 msg.llm = { mode: mode, provider: provider, model: model, elapsed: Date.now() - started };
@@ -151,12 +187,21 @@ module.exports = function(RED) {
                         node.status({ fill: 'yellow', shape: 'ring', text: 'no editor channel' });
                     }
                 } else {
-                    node.status({ fill: 'green', shape: 'dot', text: 'done (' + (Date.now() - started) + 'ms)' });
+                    const elapsedMs = Date.now() - started;
+                    // Keep the status text short (<20 chars per the docs);
+                    // hour-long local runs read better in seconds.
+                    const elapsedText = elapsedMs < 10000
+                        ? elapsedMs + 'ms'
+                        : Math.round(elapsedMs / 1000) + 's';
+                    node.status({ fill: 'green', shape: 'dot', text: 'done (' + elapsedText + ')' });
                 }
                 send(msg);
                 done();
             } catch (err) {
-                node.status({ fill: 'red', shape: 'ring', text: 'error' });
+                stopStatusTicker();
+                // The engine tags timeouts with code ETIMEDOUT (both adapters).
+                const text = (err && err.code === 'ETIMEDOUT') ? 'timeout' : 'error';
+                node.status({ fill: 'red', shape: 'ring', text: text });
                 done(err);
             }
         });

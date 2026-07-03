@@ -949,9 +949,29 @@
         // pushed (we only ever move things down).
         (function pushCollidingComponentsDown() {
             let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+
+            // Re-glue captions to their targets first so the bboxes below
+            // are computed from truthful caption coordinates (3.4 / 3.6 may
+            // have moved a target since the anchors were captured).
+            applyCommentAnchors(canvasNodes, commentAnchors);
+
+            // Comments have no wires, so compOf puts each one in a
+            // singleton component. For this pass an ANCHORED caption must
+            // count as part of its target's component: it moves with the
+            // target, and its bbox has to make the target's component
+            // pushable — otherwise a modifier that overlaps only the
+            // caption never pushes the chain underneath, and the anchor
+            // pass gluing the caption back recreates the collision.
+            // Standalone captions never move in this pass and must not
+            // drive the shift distance for everyone else, so they are
+            // left out entirely.
             let nodesByComp = {};
             allPositioned.forEach(function(n) {
                 let c = compOf[n.id];
+                if (n.type === 'comment') {
+                    let info = commentAnchors[n.id];
+                    c = (info && info.targetId !== undefined) ? compOf[info.targetId] : undefined;
+                }
                 if (c === undefined) return;
                 (nodesByComp[c] = nodesByComp[c] || []).push(n);
             });
@@ -1029,13 +1049,11 @@
                     let dyR = dy;
                     candidates.forEach(function(oid) {
                         nodesByComp[oid].forEach(function(n) {
-                            // Captions never move under this pass --
-                            // they are tied to their target by the
-                            // comment-anchor mechanism instead, so a
-                            // standalone bird's-eye annotation stays
-                            // where the user put it even when it
-                            // happens to sit inside a modifier's bbox.
-                            if (n.type === 'comment') return;
+                            // Anchored captions shift with their component
+                            // so the recomputed bbox stays truthful; the
+                            // final applyCommentAnchors lands them on the
+                            // same spot. Standalone captions are not in
+                            // any component list, so they stay put.
                             if (typeof n.y === 'number') n.y = n.y + dyR;
                         });
                         compBoxes[oid] = bbox(nodesByComp[oid]);

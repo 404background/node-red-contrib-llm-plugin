@@ -199,7 +199,7 @@
     box-shadow: 0 1px 2px rgba(0,0,0,0.08);
     margin-left: 4px;
 }
-.retry-btn i.fa-redo {
+.retry-btn i.fa-refresh {
     color: #222;
     font-size: 16px;
     margin: 0;
@@ -251,16 +251,13 @@
 .message-content code.llm-node-ref:active {
     background: #084178;
 }
-.message-content pre,
-.json-block {
+.message-content pre {
     background: #2d3748;
     color: #e2e8f0;
     padding: 10px;
     border-radius: 5px;
     margin: 10px 0;
     overflow-x: auto;
-}
-.message-content pre {
     white-space: pre-wrap;
 }
 .message-content strong {
@@ -299,19 +296,6 @@
 .restore-btn:hover {
     background: #d97706;
 }
-.raw-json {
-    background: #2d3748;
-    color: #e2e8f0;
-    padding: 10px;
-    border-radius: 5px;
-    margin: 10px 0;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    border: none;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-}
-
 /* Collapsible JSON blocks */
 .json-collapsible {
     margin: 10px 0;
@@ -456,14 +440,6 @@
     color: #666;
 }
 .mode-select {
-    border: 1px solid #ccc;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-size: 12px;
-    background: #fff;
-}
-.agent-checks-input {
-    width: 62px;
     border: 1px solid #ccc;
     border-radius: 3px;
     padding: 4px 6px;
