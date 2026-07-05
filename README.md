@@ -76,8 +76,12 @@ Restore Checkpoint. The node shows its progress as a status (elapsed time while
 waiting) and has a configurable timeout (default 3600 s — local LLMs can be slow;
 0 = no limit, `msg.timeout` overrides).
 
+Agent mode can optionally **Auto deploy** right after applying (a developer
+feature — no review step; intended for automated dev loops, not production).
+
 To try it, import an example via **Menu → Import → Examples**:
-`llm-request-simple` (minimal inject → LLM → debug) or `llm-nodes` (Ask + Agent demo).
+`llm-request-simple` (minimal inject → LLM → debug), `llm-nodes` (Ask + Agent
+demo), or `llm-self-feedback` (Agent + Auto deploy loop, capped at 5 iterations).
 
 See **[node/README.md](node/README.md)** for full details.
 

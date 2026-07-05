@@ -71,6 +71,8 @@ module.exports = function(RED) {
         const configModel = config.model || '';
         const configEditorUrl = config.editorUrl || '';
         const configTimeoutSec = toTimeoutSec(config.timeout, DEFAULT_TIMEOUT_SEC);
+        // Developer feature: the editor deploys right after applying (Agent).
+        const autoDeploy = config.autoDeploy === true;
         // Multi-select flow ids; tolerate the legacy single-string field.
         const targetFlows = Array.isArray(config.targetFlows)
             ? config.targetFlows.slice()
@@ -169,13 +171,14 @@ module.exports = function(RED) {
                         RED.comms.publish(AGENT_APPLY_TOPIC, {
                             response: response,
                             targetFlows: targetFlows,
+                            autoDeploy: autoDeploy,
                             nodeId: node.id,
                             ts: Date.now()
                         }, false);
-                        msg.flow = { targetFlows: targetFlows, dispatchedToEditor: true };
+                        msg.flow = { targetFlows: targetFlows, dispatchedToEditor: true, autoDeploy: autoDeploy };
                         node.status({ fill: 'green', shape: 'dot', text: 'sent to editor' });
                     } else {
-                        msg.flow = { targetFlows: targetFlows, dispatchedToEditor: false };
+                        msg.flow = { targetFlows: targetFlows, dispatchedToEditor: false, autoDeploy: autoDeploy };
                         node.status({ fill: 'yellow', shape: 'ring', text: 'no editor channel' });
                     }
                 } else {
