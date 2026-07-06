@@ -81,7 +81,6 @@ pattern and communicate via `window.LLMPlugin`.
 |--------|------|---------|
 | POST | `/llm-plugin/generate` | Send prompt + flow context to LLM (both Ask and Agent; Agent's auto-import is client-side) |
 | GET / POST | `/llm-plugin/settings` | Read / write settings (whitelisted fields; API key masked on read) |
-| GET | `/llm-plugin/ollama/models` | List available Ollama models |
 | GET | `/llm-plugin/chat-histories` | List persisted chats |
 | POST | `/llm-plugin/save-chat` | Persist a chat |
 | POST | `/llm-plugin/delete-chat` | Delete by filename or chat id |
@@ -281,7 +280,6 @@ sidebar — there is only one settings + credentials store.
 |---------|---------------|
 | Storage resolution | `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-CTR), legacy-key migration, `maskApiKey`, `redactSecrets` |
-| Ollama discovery | `listOllamaModels` (CLI + HTTP) |
 | Prompt construction | `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`; `options.extraSystem` appends node-specific guidance), `buildChatMessages` (plain Ask-mode chat) |
 | LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
 

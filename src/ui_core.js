@@ -5,6 +5,36 @@
     let Common = window.LLMPlugin.Common;
     let escapeHtml = Common.escapeHtml;
 
+    // Strip dangerous URL schemes from marked's output. A plain
+    // href=~javascript: regex is trivially bypassed with HTML-entity
+    // encoding (`javascript&colon;`, `&#106;avascript:`) which the browser
+    // decodes on click — so we resolve each URL through the DOM (exactly
+    // what the browser does) and drop anything outside a scheme allowlist.
+    // This matters because the message renders in the editor, which holds
+    // full RED admin privileges.
+    let SAFE_URL_SCHEMES = { 'http:': 1, 'https:': 1, 'mailto:': 1, 'tel:': 1 };
+    function sanitizeRenderedHtml(html) {
+        let holder = document.createElement('div');
+        holder.innerHTML = html;
+        // Anchors: keep the text, drop an unsafe href (relative/#/http(s)
+        // resolve to http:/https: and are allowed).
+        holder.querySelectorAll('a[href]').forEach(function(a) {
+            let scheme = '';
+            try { scheme = (a.protocol || '').toLowerCase(); } catch (e) { scheme = ''; }
+            if (!SAFE_URL_SCHEMES[scheme]) a.removeAttribute('href');
+            a.setAttribute('rel', 'noopener noreferrer');
+        });
+        // Media src (markdown images): forbid non-http(s) so data:/javascript
+        // sources can't smuggle anything past the escape of raw < >.
+        holder.querySelectorAll('[src]').forEach(function(el) {
+            let scheme = '';
+            try { scheme = new URL(el.getAttribute('src'), document.baseURI).protocol.toLowerCase(); }
+            catch (e) { scheme = ''; }
+            if (scheme && scheme !== 'http:' && scheme !== 'https:') el.removeAttribute('src');
+        });
+        return holder.innerHTML;
+    }
+
     function formatMessage(text) {
         // Run with marked.js (assumed present in modern Node-RED environments)
         if (typeof marked !== 'undefined' && marked.parse) {
@@ -30,7 +60,7 @@
 
             let safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             let html = marked.parse(safeText);
-            return html.replace(/href\s*=\s*(["'])\s*javascript:/gi, 'href=$1#blocked:');
+            return sanitizeRenderedHtml(html);
         }
 
         return escapeHtml(text);

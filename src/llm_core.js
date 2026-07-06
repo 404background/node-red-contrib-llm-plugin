@@ -2,9 +2,8 @@
 //
 // Single source of truth for everything the plugin needs to TALK to an LLM:
 // storage resolution, encrypted credential handling, plugin-settings access,
-// provider adapters (Ollama / OpenAI / Custom OpenAI-compatible), Ollama model
-// discovery, prompt construction (Vibe Schema flow context) and secret
-// redaction.
+// provider adapters (Ollama / OpenAI / Custom OpenAI-compatible), prompt
+// construction (Vibe Schema flow context) and secret redaction.
 //
 // Both the editor sidebar (`src/server.js`, via its HTTP admin endpoints) AND
 // the runtime node (`node/llm-request`) consume this module
@@ -19,7 +18,6 @@ const os = require('os');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { exec } = require('child_process');
 const { OpenAI } = require('openai');
 const Configurator = require('./core/flow_converter_core');
 
@@ -252,70 +250,6 @@ function createLLMCore(RED) {
         text = text.replace(/https?:\/\/[^\s'"`]+/gi, '***URL_REDACTED***');
         text = text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '***IP_REDACTED***');
         return text;
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Ollama model discovery                                             //
-    // ------------------------------------------------------------------ //
-
-    function listOllamaModels() {
-        const settings = getPluginSettings();
-        const ollamaUrl = settings.ollamaUrl || 'http://localhost:11434';
-
-        // If localhost, try CLI first as it's more reliable for local installs
-        if (ollamaUrl.includes('localhost') || ollamaUrl.includes('127.0.0.1')) {
-            return new Promise((resolve) => {
-                exec('ollama list --format json', { timeout: 5000 }, (error, stdout) => {
-                    if (!error && stdout) {
-                        const models = [];
-                        stdout.split(/\r?\n/).forEach(line => {
-                            const trimmed = line.trim();
-                            if (!trimmed) return;
-                            try {
-                                const parsed = JSON.parse(trimmed);
-                                const name = parsed.name || parsed.model || '';
-                                if (name) models.push(name);
-                            } catch (e) {}
-                        });
-                        return resolve(Array.from(new Set(models)));
-                    }
-                    // Fallback to API if CLI fails
-                    listOllamaModelsFromApi(ollamaUrl).then(resolve);
-                });
-            });
-        } else {
-            return listOllamaModelsFromApi(ollamaUrl);
-        }
-    }
-
-    function listOllamaModelsFromApi(baseUrl) {
-        return new Promise((resolve) => {
-            try {
-                let base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-                const url = new URL(base + '/api/tags');
-                const httpModule = url.protocol === 'https:' ? https : http;
-                const req = httpModule.request(url.toString(), { method: 'GET', timeout: 5000 }, (res) => {
-                    let data = '';
-                    res.on('data', chunk => data += chunk);
-                    res.on('end', () => {
-                        if (res.statusCode && res.statusCode >= 400) {
-                            return resolve([]);
-                        }
-                        try {
-                            const parsed = JSON.parse(data);
-                            if (parsed && parsed.models) {
-                                resolve(parsed.models.map(m => m.name));
-                            } else {
-                                resolve([]);
-                            }
-                        } catch (e) { resolve([]); }
-                    });
-                });
-                req.on('error', () => resolve([]));
-                req.on('timeout', () => { req.destroy(); resolve([]); });
-                req.end();
-            } catch (e) { resolve([]); }
-        });
     }
 
     // ------------------------------------------------------------------ //
@@ -642,8 +576,6 @@ function createLLMCore(RED) {
         savePluginSettings: savePluginSettings,
         maskApiKey: maskApiKey,
         redactSecrets: redactSecrets,
-        // discovery
-        listOllamaModels: listOllamaModels,
         // prompt construction
         buildMessages: buildMessages,
         buildChatMessages: buildChatMessages,

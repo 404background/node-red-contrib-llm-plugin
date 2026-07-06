@@ -2,7 +2,7 @@
 // Registers all HTTP admin endpoints used by the client sidebar.
 //
 // The LLM engine (settings, credentials, provider adapters, prompt building,
-// Ollama discovery, secret redaction, parse helpers) lives in `./llm_core.js`
+// secret redaction) lives in `./llm_core.js`
 // so the runtime nodes can share the exact same settings + credentials store.
 // This file keeps the HTTP admin layer plus chat-history / checkpoint
 // persistence, both of which are specific to the editor sidebar.
@@ -25,7 +25,6 @@ function createLLMPluginServer(RED) {
     const savePluginSettings = core.savePluginSettings;
     const generateWithProvider = core.generateWithProvider;
     const buildMessages = core.buildMessages;
-    const listOllamaModels = core.listOllamaModels;
     const maskApiKey = core.maskApiKey;
     const redactSecrets = core.redactSecrets;
 
@@ -271,18 +270,6 @@ function createLLMPluginServer(RED) {
             res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
-
-    // --- Model list ---
-    RED.httpAdmin.get('/llm-plugin/ollama/models', async function(req, res) {
-        try {
-            const models = await listOllamaModels();
-            res.json({ models });
-        } catch (error) {
-            console.error('[LLM Plugin] Error fetching Ollama models:', redactSecrets(error && error.message ? error.message : error));
-            res.status(500).json({ error: 'Failed to list Ollama models' });
-        }
-    });
-
 
     // --- Chat history endpoints ---
     RED.httpAdmin.get('/llm-plugin/chat-histories', function(req, res) {

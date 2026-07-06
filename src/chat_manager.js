@@ -221,6 +221,11 @@
     ChatManager.addMessage = function(content, isUser, metaOverwrite) {
         let chatId = ChatManager.getCurrentChatId();
         let chat = chatHistory[chatId];
+        // The async history reload can replace chatHistory and drop a chat
+        // created locally in the meantime; recreate rather than crash.
+        if (!chat) {
+            chat = chatHistory[chatId] = newChatObject(chatId);
+        }
 
         let message = {
             id: generateMessageId(),

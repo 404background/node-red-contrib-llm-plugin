@@ -71,7 +71,7 @@
             var ids = Array.isArray(payload.targetFlows) ? payload.targetFlows : [];
             var P = window.LLMPlugin;
             if (!P || !P.Importer || typeof P.Importer.importFlowFromMessage !== 'function') {
-                notify('LLM node: plugin not fully loaded yet — open the LLM Plugin sidebar once, then retry.', 'warning');
+                notify('LLM node: the LLM Plugin is still loading in this editor (or not installed) — wait a moment and retry.', 'warning');
                 return;
             }
             // A single target tab: focus it so the importer (which targets the
