@@ -248,13 +248,6 @@
         return (opts && typeof opts[key] === 'number') ? opts[key] : fallback;
     }
 
-    // Round a pixel coordinate to the nearest Node-RED grid line so node
-    // origins line up with the canvas grid (matches what manual drags do).
-    function snapToGrid(val, grid) {
-        if (!grid || grid <= 0) return Math.round(val);
-        return Math.round(val / grid) * grid;
-    }
-
     // True if the label contains any non-ASCII char (Japanese, Chinese,
     // accented Latin, etc.). Used to switch to a wider per-char estimate.
     function hasWideChar(label) {
@@ -651,7 +644,7 @@
 
         let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight);
 
-        // No snapToGrid on derived X/Y here: snapping the CENTRE distorts
+        // No grid snap on derived X/Y here: snapping the CENTRE distorts
         // visible alignment when nodes have widths whose halves don't
         // share a grid residue. We keep each leftEdge exactly and derive
         // the centre as `leftEdge + width/2`. A uniform `rowPitch` gives

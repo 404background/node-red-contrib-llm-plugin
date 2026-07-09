@@ -47,6 +47,10 @@ Restart Node-RED after install.
 It is highly recommended to add custom or non-core nodes to your flow before passing them to the LLM. Since the LLM does not inherently know the required properties of custom nodes, keeping a small sample flow in the active tab ensures it is sent as the *Current Open Flow*.
 The model will then follow real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
 
+A ready-made sample of this pattern ships as the `python-venv` example
+(**Menu → Import → Examples**): a minimal inject → venv → debug flow
+using the [python-venv](https://flows.nodered.org/node/@background404/node-red-contrib-python-venv) node, as shown in the demo video above.
+
 ## Features
 
 - **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.

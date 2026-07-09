@@ -1,5 +1,8 @@
 .logs/
-test/
+# Keep the regression tests (run by `npm test`) tracked; ignore any other
+# scratch files dropped into test/.
+test/*
+!test/*.test.js
 .claude/
 temp/
 *.pdf

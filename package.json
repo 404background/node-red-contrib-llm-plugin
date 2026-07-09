@@ -13,7 +13,7 @@
     "images/"
   ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test/canvas_layout_shift.test.js && node test/insertion_reflow.test.js && node test/flow_converter_core.test.js"
   },
   "node-red": {
     "version": ">=4.0.0",

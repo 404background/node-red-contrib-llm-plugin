@@ -299,16 +299,26 @@
                 if (nodeSpecs[refAlias]) return;           // already defined
                 if (!/^[a-z][a-z0-9_]*$/i.test(refAlias)) return; // not alias-shaped
 
-                // Strategy 1: key ends in "config"
+                // Strategy 1: key ends in "config" (same self-type guard
+                // as Strategy 2 below).
                 if (/config$/i.test(key)) {
                     let typeName = key.replace(/config$/i, '-config');
-                    nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, _autoStub: true, props: {} };
+                    if (typeName !== spec.type) {
+                        nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, _autoStub: true, props: {} };
+                    }
                     return;
                 }
 
-                // Strategy 2: well-known reference key
+                // Strategy 2: well-known reference key. Skipped when the
+                // mapped type equals the node's OWN type: an mqtt-broker
+                // config node's `broker` prop is its hostname (e.g.
+                // "localhost"), not a reference to another broker — without
+                // this guard the hostname would be replaced by the id of a
+                // spurious stub. Cross-type refs (ui-group's `tab` →
+                // ui-tab) still stub as intended.
                 let lowerKey = key.toLowerCase();
-                if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey]) {
+                if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey] &&
+                    CONFIG_REF_KEYS[lowerKey] !== spec.type) {
                     nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, _autoStub: true, props: {} };
                 }
             });

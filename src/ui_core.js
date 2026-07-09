@@ -549,15 +549,15 @@
             } catch (e) {}
         }
 
-          chatArea.appendChild(message);
-          chatArea.scrollTop = chatArea.scrollHeight;
-          return message;
-      };
+        chatArea.appendChild(message);
+        chatArea.scrollTop = chatArea.scrollHeight;
+        return message;
+    };
 
-      UI.formatMessage = formatMessage;
-      UI.focusCanvasNode = focusCanvasNode;
-      UI.annotateNodeReferences = annotateNodeReferences;
-      UI.reannotateAllAssistantMessages = reannotateAllAssistantMessages;
+    UI.formatMessage = formatMessage;
+    UI.focusCanvasNode = focusCanvasNode;
+    UI.annotateNodeReferences = annotateNodeReferences;
+    UI.reannotateAllAssistantMessages = reannotateAllAssistantMessages;
 
     UI.retryLastUserMessage = function(messageMeta) {
         try {

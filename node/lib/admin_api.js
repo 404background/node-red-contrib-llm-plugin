@@ -7,8 +7,8 @@
 // Base URL: opts.url if set (manual fallback); otherwise auto-detected from
 // the live runtime — port from RED.server.address() (correct even when
 // embedded in Express) → uiPort → 1880, root from settings.httpAdminRoot,
-// https if RED.server is an https.Server. Auth: none by default (plugin
-// assumes adminAuth off); opts.token adds a Bearer token.
+// https if RED.server is an https.Server. Auth: none (the plugin assumes
+// adminAuth is off for this local read).
 // Docs: https://nodered.org/docs/api/admin/methods/get/flows/
 const http = require('http');
 const https = require('https');
@@ -72,27 +72,19 @@ function createAdminApi(RED) {
         };
     }
 
-    // Promise-based JSON request against the resolved admin API.
-    function request(method, pathSuffix, extraHeaders, bodyObj, opts) {
+    // Promise-based JSON GET against the resolved admin API.
+    function request(pathSuffix, extraHeaders, opts) {
         opts = opts || {};
         return new Promise(function(resolve, reject) {
             let base;
             try { base = resolveBase(opts.url); } catch (e) { return reject(e); }
 
-            const body = bodyObj === undefined ? null : Buffer.from(JSON.stringify(bodyObj), 'utf8');
-            const headers = Object.assign({
-                'Accept': 'application/json',
-                'Content-Type': 'application/json; charset=utf-8'
-            }, extraHeaders || {});
-            if (body) headers['Content-Length'] = body.length;
-            if (opts.token) headers['Authorization'] = 'Bearer ' + opts.token;
-
             const options = {
                 host: base.host,
                 port: base.port,
-                method: method,
+                method: 'GET',
                 path: base.root + pathSuffix,
-                headers: headers,
+                headers: Object.assign({ 'Accept': 'application/json' }, extraHeaders || {}),
                 timeout: 30000
             };
             const mod = base.useHttps ? https : http;
@@ -103,10 +95,11 @@ function createAdminApi(RED) {
                     const text = Buffer.concat(chunks).toString('utf8');
                     const status = res.statusCode || 0;
                     if (status === 401) {
-                        return reject(new Error('Admin API returned 401 Unauthorized. Disable adminAuth or set a token.'));
+                        return reject(new Error('Admin API returned 401 Unauthorized (adminAuth is enabled). ' +
+                            'Flow context needs an unauthenticated admin API; clear the node\'s Flows selection or disable adminAuth.'));
                     }
                     if (status >= 400) {
-                        return reject(new Error('Admin API ' + method + ' ' + base.root + pathSuffix +
+                        return reject(new Error('Admin API GET ' + base.root + pathSuffix +
                             ' failed (' + status + '): ' + text.substring(0, 200)));
                     }
                     if (!text) return resolve({});
@@ -116,7 +109,6 @@ function createAdminApi(RED) {
             });
             req.on('error', reject);
             req.on('timeout', function() { req.destroy(); reject(new Error('Admin API request timed out')); });
-            if (body) req.write(body);
             req.end();
         });
     }
@@ -124,11 +116,10 @@ function createAdminApi(RED) {
     // GET the full flow configuration (all tabs + config nodes) plus its rev.
     // Used by the LLM node's Agent mode to give the model prompt context.
     function getFlows(opts) {
-        return request('GET', 'flows', { 'Node-RED-API-Version': 'v2' }, undefined, opts);
+        return request('flows', { 'Node-RED-API-Version': 'v2' }, opts);
     }
 
     return {
-        resolveBase: resolveBase,
         getFlows: getFlows
     };
 }

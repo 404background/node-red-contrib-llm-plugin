@@ -57,7 +57,7 @@ src/
   llm_core.js           Shared LLM engine (settings/creds/providers/prompts)
   server.js             HTTP endpoints + chat/checkpoint persistence
 node/                   Runtime workflow node (category: llm-plugin)
-  lib/admin_api.js      Local Node-RED Admin API client (GET/POST /flows)
+  lib/admin_api.js      Local Node-RED Admin API client (read-only GET /flows)
   llm-request/          "LLM" node — Ask / Agent against msg.payload
 ```
 
@@ -87,6 +87,7 @@ pattern and communicate via `window.LLMPlugin`.
 | POST | `/llm-plugin/checkpoint/save` | Save flow snapshot |
 | GET | `/llm-plugin/checkpoint/:id` | Load saved checkpoint |
 | POST | `/llm-plugin/client-log` | Write a structured client event to the server log |
+| GET | `/llm-plugin/vendor/marked.js` | Serve the bundled marked.js (offline Markdown rendering) |
 | GET | `/llm-plugin_styles.css` | Serve plugin stylesheet |
 | GET | `/llm-plugin/src/*` | Serve client JS modules |
 
@@ -280,7 +281,7 @@ sidebar — there is only one settings + credentials store.
 |---------|---------------|
 | Storage resolution | `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-CTR), legacy-key migration, `maskApiKey`, `redactSecrets` |
-| Prompt construction | `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`; `options.extraSystem` appends node-specific guidance), `buildChatMessages` (plain Ask-mode chat) |
+| Prompt construction | `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`), `buildChatMessages` (plain Ask-mode chat) |
 | LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
 
 ### `server.js`

@@ -365,12 +365,7 @@ function createLLMCore(RED) {
     // Build the system prompt.
     // Instructs the LLM to output Vibe Schema (intermediate JSON) instead of
     // raw Node-RED JSON, which avoids the need for random IDs and coordinates.
-    //
-    // `options.extraSystem` is appended after the built-in template — the
-    // runtime agent node uses it to add "only output NEW nodes" guidance
-    // without touching the shared template.
-    function buildMessages(userPrompt, flowContext, activeWorkspaceId, options) {
-        const opts = options || {};
+    function buildMessages(userPrompt, flowContext, activeWorkspaceId) {
         const settings = getPluginSettings();
         const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
             ? String(settings.systemPrompt).trim()
@@ -385,10 +380,6 @@ function createLLMCore(RED) {
         if (flowContext) {
             const ctx = buildFlowContextDescription(flowContext, activeWorkspaceId);
             system += '\n' + ctx.header + '\n' + ctx.body + '\n';
-        }
-
-        if (opts.extraSystem && String(opts.extraSystem).trim()) {
-            system += '\n' + String(opts.extraSystem).trim() + '\n';
         }
 
         return [

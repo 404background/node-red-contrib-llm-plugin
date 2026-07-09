@@ -31,7 +31,7 @@
             if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.showChatList();
         });
 
-        // Settings manager (accepts raw DOM element after settings.js refactor)
+        // Settings manager (dialog controller defined in client.js)
         let settingsManager = null;
         if (window.createLLMPluginSettings) {
             settingsManager = window.createLLMPluginSettings(settingsDialog);

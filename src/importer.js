@@ -1066,7 +1066,7 @@
         return '```json\n' + JSON.stringify(schema, null, 2) + '\n```';
     }
 
-    async function dispatchMultiFlowImport(messageContent, schema, flowGroups, options) {
+    async function dispatchMultiFlowImport(schema, flowGroups, options) {
         let results = [];
         let aggregatedAdded = 0;
         let aggregatedImported = 0;
@@ -1131,7 +1131,7 @@
                 let flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
                 let flowLabels = flowGroups ? Object.keys(flowGroups) : [];
                 if (flowLabels.length > 1) {
-                    return await dispatchMultiFlowImport(inferredContent, dispatchSchema, flowGroups, options);
+                    return await dispatchMultiFlowImport(dispatchSchema, flowGroups, options);
                 }
                 if (flowLabels.length === 1) {
                     let targetLabel = flowLabels[0];
