@@ -663,6 +663,20 @@
             }
         }
 
+        // Debug nodes: default to showing msg.payload. A debug spec without
+        // an explicit `complete` gets payload/msg — the full msg object is
+        // noisy in the sidebar. An explicit `complete` from the LLM (e.g. the
+        // user asked to see the whole message) is left untouched, and edits
+        // to existing debug nodes keep the user's setting via _llmSpecKeys.
+        function normalizeDebugNode(node) {
+            if (node.complete === undefined) {
+                node.complete = 'payload';
+                node.targetType = 'msg';
+            }
+            if (node.tosidebar === undefined) node.tosidebar = true;
+            if (node.active === undefined) node.active = true;
+        }
+
         // Switch node output count must match its branches.
         // If outputs stays at 1, Node-RED can collapse branch wires on import.
         function normalizeSwitchNode(node) {
@@ -858,6 +872,7 @@
             if (node.type === 'change' || node.type === 'switch') normalizeRuleNodes(node);
             if (node.type === 'switch') normalizeSwitchNode(node);
             if (node.type === 'template') normalizeTemplateNode(node);
+            if (node.type === 'debug') normalizeDebugNode(node);
 
             result.push(node);
         });

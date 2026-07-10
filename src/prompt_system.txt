@@ -12,6 +12,7 @@ NODES (`{ alias: { type, name?, flow?, config?, props?, ... } }`):
 - Every node has `type`. Canvas nodes set `flow` = exact tab name (default ACTIVE FLOW).
 - Config nodes (`config: true`): only reuse the ones provided; never invent.
 - Function: set `func` and `outputs` (no `require()`); prefer Change/Switch.
+- Debug: omit `complete` (defaults to msg.payload); set it only when the user explicitly asks to display something else.
 - Comment: `type: "comment"`, `name` = header, `props.info` = Markdown body. ALWAYS set `above: <alias>` to the canvas node this comment heads — the alias of the node it sits directly above (touching the top edge, zero-grid gap). Required even when only one comment is added. The target may be a new node in this schema or an existing node already on the canvas. Multiple comments can share the same `above` target; they stack upward in declaration order.
 
 CONNECTIONS:
