@@ -27,7 +27,8 @@
         minNodeWidth: 100,
         nodeHeight:    30,    // Node-RED's standard rendered node height
         gridSize:      20,
-        maxColumns:     5
+        maxColumns:     5,
+        topMargin:     20     // min clearance between canvas top (y=0) and the topmost node edge
     };
 
     // Default predicate when caller doesn't supply `options.isCanvasNode`.
@@ -257,16 +258,18 @@
         return false;
     }
 
-    // Approximate Node-RED's label-based width:
-    //   regular nodes: max(minW, chars*perChar + 64) -- 64 px of icon/
-    //     padding/port chrome (30 icon strip + 14 label padding + 14 px
-    //     port stub on each side).
-    //   comment nodes: max(minW, chars*perChar + 24) -- comments render
-    //     without port stubs and with only the small "//" comment icon,
-    //     so the chrome is closer to 24 px. Using the 64 px chrome here
-    //     overestimates wide-label comments by ~40 px and pushes the
-    //     comment's rendered left edge that far right of the target
-    //     node's left edge, breaking the comment's intended alignment.
+    // Approximate Node-RED's label-based width. The editor computes
+    //   w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
+    // (view.js redraw, verified against NR 4.1.7), i.e. measured label
+    // text + 50 px chrome (+7 px input-port stub), snapped UP to the
+    // 20 px grid. We mirror that formula with an estimated text width:
+    //   regular nodes: chars*perChar + 57 (chrome 50 + port stub 7 —
+    //     ≤7 px high for no-input types like inject; the grid snap
+    //     absorbs it).
+    //   comment nodes: chars*perChar + 24 — empirically matched to the
+    //     rendered comment (smaller icon, no port stubs); a larger
+    //     chrome pushes the comment's rendered left edge right of its
+    //     target node's left edge and breaks caption alignment.
     // ASCII glyphs render ~7.5 px in the default 14 px font; fullwidth
     // glyphs (Japanese / Chinese / Korean) render ~2x wider, so labels
     // containing any wide char need ~14 px/char or the layout under-
@@ -277,7 +280,7 @@
         if (!node || typeof node !== 'object') return minW;
         let label = (typeof node.name === 'string' && node.name.trim()) ? node.name : (node.type || '');
         let perChar = hasWideChar(label) ? 14 : 7.5;
-        let chrome = (node.type === 'comment') ? 24 : 64;
+        let chrome = (node.type === 'comment') ? 24 : 57;
         let w = Math.max(minW, label.length * perChar + chrome);
         return Math.ceil(w / grid) * grid;
     }
@@ -560,6 +563,35 @@
         }
     }
 
+    // Top-edge guard: comment stacks grow UPWARD from their target, so a
+    // caption added above a node near the canvas top can end up at y <= 0
+    // (squeezed against / past the workspace edge). When anything sits
+    // above `topMargin`, translate EVERY canvas node down by the same
+    // grid-snapped delta — relative geometry is preserved, the whole flow
+    // just slides down. Skipped for pinned component reflows
+    // (opts.skipTopMargin): those must stay exactly where the component
+    // was; the caller's own final guard covers the canvas as a whole.
+    function ensureTopMargin(canvasNodes, opts) {
+        if (opts && opts.skipTopMargin) return;
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let topMargin  = pickOption(opts, 'topMargin',  LAYOUT_DEFAULTS.topMargin);
+
+        let minTop = Infinity;
+        (canvasNodes || []).forEach(function(n) {
+            if (!n || typeof n.y !== 'number') return;
+            let top = n.y - nodeHeight / 2;
+            if (top < minTop) minTop = top;
+        });
+        if (!isFinite(minTop) || minTop >= topMargin) return;
+
+        let dy = topMargin - minTop;
+        if (gridSize > 0) dy = Math.ceil(dy / gridSize) * gridSize;
+        canvasNodes.forEach(function(n) {
+            if (n && typeof n.y === 'number') n.y += dy;
+        });
+    }
+
     // --- Canvas-level layout (./LAYOUT.md §§ 2 and 3) ---
 
     function reflowCanvasNodes(nodes, options) {
@@ -662,6 +694,7 @@
         resolveOverlaps(canvasNodes, opts);
         applyCommentAnchors(canvasNodes, commentAnchors);
         repositionCommentsByLlmOrder(canvasNodes, opts);
+        ensureTopMargin(canvasNodes, opts);
         return nodes;
     }
 
@@ -697,7 +730,8 @@
         let pinnedOpts = Object.assign({}, opts || {}, {
             startX: minLeft,
             startY: minTop,
-            maxColumns: Infinity
+            maxColumns: Infinity,
+            skipTopMargin: true
         });
         reflowCanvasNodes(componentNodes, pinnedOpts);
     }
@@ -1182,6 +1216,10 @@
             return !existingIdMap[c.id];
         });
 
+        // Top-edge guard: a new caption stacked above a target near the
+        // canvas top must slide the whole flow down, not sit at y <= 0.
+        ensureTopMargin(canvasNodes, opts);
+
         return nodes;
     }
 
@@ -1196,6 +1234,7 @@
         reflowCanvasNodes:            reflowCanvasNodes,
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,
-        applyCommentAnchors:          applyCommentAnchors
+        applyCommentAnchors:          applyCommentAnchors,
+        ensureTopMargin:              ensureTopMargin
     };
 });

@@ -145,15 +145,20 @@ describe('Step 3.5a sibling nudge', function() {
 });
 
 describe('Grid alignment', function() {
-    it('reflowCanvasNodes produces grid-aligned coords', function() {
+    it('reflowCanvasNodes produces grid-aligned left edges', function() {
         const nodes = [
             { id: 'a', type: 'inject', wires: [['b']] },
             { id: 'b', type: 'function', name: 'compute aggregated rolling average', wires: [['c']] },
             { id: 'c', type: 'debug', wires: [] }
         ];
         Layout.reflowCanvasNodes(nodes, OPTS);
-        nodes.forEach(n => assert(isGridAligned(n, 20),
-            n.id + ' not grid-aligned: ' + n.x + ',' + n.y));
+        // Left edges are the aligned quantity (see leftEdge above); centres
+        // are derived as leftEdge + width/2 and may sit at half-grid when a
+        // node's width is an odd grid multiple (e.g. the 100 px minimum).
+        nodes.forEach(n => assert(leftEdge(n) % 20 === 0,
+            n.id + ' left edge not grid-aligned: ' + leftEdge(n)));
+        nodes.forEach(n => assert(n.y % 20 === 0,
+            n.id + ' y not grid-aligned: ' + n.y));
     });
 
     it('placeAddedNodesNearNeighbors keeps left edges aligned', function() {

@@ -138,6 +138,16 @@ takes `options.isCanvasNode` for a custom canvas-node predicate
 (default keeps everything that is not a `tab` or `subflow:*`
 definition).
 
+Both entry points end with a **top-edge guard** (`ensureTopMargin`):
+comment stacks grow upward from their target, so a caption added above
+a node near the canvas top can land at `y <= 0`. When any canvas node's
+top edge ends up above `topMargin` (default 20), every canvas node is
+translated down by the same grid-snapped delta — relative geometry is
+preserved, the whole flow just slides down. Pinned component reflows
+(`reflowComponentInPlace`) skip the guard via `options.skipTopMargin`
+so the component stays where it was; the caller's own final guard
+covers the canvas as a whole.
+
 ## Width-aware spacing
 
 ```
@@ -146,18 +156,26 @@ distance(a, b) = (width(a) + width(b)) / 2 + edgeGap
 
 Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
 `estimateNodeWidth`). The hook lets callers feed in live measured widths
-(e.g. `RED.nodes.node(id).w` from the live editor); the fallback
-estimate approximates the editor's
-`max(MIN_NODE_WIDTH, labelWidth + chrome)` rule by summing per-character
-widths (Latin ~7.5 px, CJK / fullwidth ~14 px) plus a node-type-dependent
-chrome:
+(e.g. `RED.nodes.node(id).w` from the live editor) — with exact widths
+every adjacent pair ends up with exactly `edgeGap` (2 grid squares) of
+visible clearance regardless of label length. The fallback estimate
+mirrors the editor's own formula (view.js redraw, verified against
+NR 4.1.7):
 
-- **Regular nodes** (inject, function, debug, etc.): chrome = 64 px
-  (30 icon strip + 14 label padding + 14 px port stub on each side).
-- **Comment nodes** (`type === 'comment'`): chrome = 24 px — comments
-  render without port stubs and with only the small "//" icon, so
-  using the 64 px chrome here would overestimate wide captions by
-  ~40 px and visibly push them right of their target's left edge.
+```
+w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
+```
+
+using per-character text-width estimates (Latin ~7.5 px, CJK /
+fullwidth ~14 px) plus a node-type-dependent chrome:
+
+- **Regular nodes** (inject, function, debug, etc.): chrome = 57 px
+  (editor's 50 px chrome + 7 px input-port stub; ≤7 px high for
+  no-input types, absorbed by the grid snap).
+- **Comment nodes** (`type === 'comment'`): chrome = 24 px — matched
+  empirically to the rendered comment (smaller icon, no port stubs);
+  a larger chrome visibly pushes wide captions right of their
+  target's left edge.
 
 With the importer's default `edgeGap = 40` two default-named ~120 px
 nodes sit ~160 px centre-to-centre, leaving 2 grid squares of visible
