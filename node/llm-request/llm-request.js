@@ -69,7 +69,10 @@ module.exports = function(RED) {
         const mode = (config.mode === 'agent') ? 'agent' : 'ask';
         const providerOverride = config.provider || '';
         const configModel = config.model || '';
+        // API URL (admin API base). Literal string, or the name of a
+        // flow/global context variable holding it. Empty = auto-detect.
         const configEditorUrl = config.editorUrl || '';
+        const configEditorUrlType = config.editorUrlType || 'str';
         const configTimeoutSec = toTimeoutSec(config.timeout, DEFAULT_TIMEOUT_SEC);
         // Developer feature: the editor deploys right after applying (Agent).
         const autoDeploy = config.autoDeploy === true;
@@ -131,11 +134,26 @@ module.exports = function(RED) {
                 let context = null;
                 if (targetFlows.length > 0) {
                     try {
-                        const editorUrl = (typeof msg.editorUrl === 'string' && msg.editorUrl.trim())
-                            ? msg.editorUrl.trim()
-                            : configEditorUrl;
-                        const apiOpts = editorUrl ? { url: editorUrl } : undefined;
-                        const current = await adminApi.getFlows(apiOpts);
+                        let editorUrl = '';
+                        if (typeof msg.editorUrl === 'string' && msg.editorUrl.trim()) {
+                            editorUrl = msg.editorUrl.trim();
+                        } else if (configEditorUrlType === 'flow' || configEditorUrlType === 'global') {
+                            const v = node.context()[configEditorUrlType].get(configEditorUrl);
+                            if (typeof v === 'string') editorUrl = v.trim();
+                        } else {
+                            editorUrl = configEditorUrl.trim();
+                        }
+                        let current;
+                        try {
+                            current = await adminApi.getFlows(editorUrl ? { url: editorUrl } : undefined);
+                        } catch (e) {
+                            if (!editorUrl) throw e;
+                            // A configured URL that doesn't serve the admin API
+                            // (e.g. the httpNodeRoot base) — retry auto-detection.
+                            node.warn('[llm-request] Flow context fetch failed for "' + editorUrl + '" (' +
+                                (e && e.message ? e.message : e) + '); retrying with auto-detection.');
+                            current = await adminApi.getFlows();
+                        }
                         if (current && Array.isArray(current.flows)) {
                             context = flowContextFor(current.flows, targetFlows);
                         }

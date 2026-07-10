@@ -10,11 +10,11 @@ node; API keys and URLs are inherited from the **LLM Plugin sidebar** (Settings)
 |-------|-------|
 | Mode | **Ask** — reply on `msg.payload`. **Agent** — same, then applies the changes live in the open editor. |
 | Provider | Ollama / OpenAI / Custom. Keys & URLs come from the sidebar. |
-| Model | Free text (e.g. `llama3.1`, `gpt-4o-mini`). `msg.model` overrides per message. |
+| Model | Free text (e.g. `llama3.1`, `gpt-4o-mini`); **required**. `msg.model` overrides per message. |
 | Flows | Multi-select (none / one / many). Sent to the LLM as context in **both** modes; the list refreshes when the node is opened. |
-| Editor URL | Used to read flow context. Blank = auto-detect (works when embedded in Express on a non-1880 port). `msg.editorUrl` overrides. |
+| API URL | Admin API base used to read flow context — normally the URL the editor is served at (standalone `http://localhost:1880`; embedded: the `httpAdminRoot` base, e.g. `http://localhost:8000/red`). Accepts a string or a **flow/global** context variable. Blank = auto-detect (recommended; works when embedded on a non-1880 port). `msg.editorUrl` overrides; if the configured URL fails, the node falls back to auto-detection with a warning. |
 | Timeout | Seconds; default **3600** (1 h — local LLMs can be slow). `0` = no limit. `msg.timeout` overrides per message. |
-| Auto deploy | **Agent only, developer feature.** When checked, the editor deploys immediately after applying the changes (`RED.actions.invoke('core:deploy-flows')` — same as clicking Deploy, so the dirty state clears properly). The deploy is async: the editor's own deploy toast reports the outcome. No review step; keep a single editor open; prefer the Modified Nodes/Flows deploy type; use only on disposable dev instances. |
+| Auto deploy | **Agent only, developer feature.** When checked, the editor deploys immediately after applying the changes (`RED.actions.invoke('core:deploy-flows', true)` — the editor's own Deploy with validation skipped, so no confirmation dialog can stall an unattended loop and the dirty state clears properly). The deploy is async: the editor's own deploy toast reports the outcome. No review step; keep a single editor open; prefer the Modified Nodes/Flows deploy type; use only on disposable dev instances. |
 
 **Inputs:** `payload` (prompt; strings are newline-normalised, objects are
 JSON-stringified). **Outputs:** `payload` (text reply — do not `JSON.parse` it),
@@ -60,7 +60,11 @@ Import via **Menu → Import → Examples** (or the JSON files in `examples/`):
 - `llm-nodes` — Ask and Agent side by side.
 - `llm-self-feedback` — **developer sample**: Agent + Auto deploy self-feedback
   loop over HTTP in/request nodes, hard-capped at 5 iterations (each loop costs
-  one LLM request and one deploy — never remove the cap). The LLM's edit target
-  sits on a separate tab; select the **Modified Flows** deploy type before
-  running so the loop flow itself is never restarted mid-iteration. Non-default
-  host/port: set the `LLM_LOOP_BASE` env var.
+  one LLM request and one deploy — never remove the cap). Iteration 1 creates a
+  small demo flow on a separate target tab and later iterations each improve it,
+  until the LLM judges it complete and replies `END` (checked by the loop's
+  `next loop URL` function) or the cap is hit; select the
+  **Modified Flows** deploy type before running so the loop flow itself is never
+  restarted mid-iteration. The instance's HTTP API endpoint base is set once in
+  a change node (flow variable `apiBase`, default `http://127.0.0.1:1880`) —
+  edit it there for embedded instances (e.g. `http://127.0.0.1:8000/api`).

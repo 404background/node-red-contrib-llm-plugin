@@ -62,7 +62,7 @@ function createAdminApi(RED) {
 
         const root = RED.settings.httpAdminRoot;
         if (root === false) {
-            throw new Error('Node-RED admin API is disabled (httpAdminRoot=false); set an Editor URL on the node.');
+            throw new Error('Node-RED admin API is disabled (httpAdminRoot=false); set an API URL on the node.');
         }
         return {
             host: '127.0.0.1',

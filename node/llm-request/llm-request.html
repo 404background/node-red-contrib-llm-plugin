@@ -6,9 +6,12 @@
             name:        { value: '' },
             mode:        { value: 'ask' },
             provider:    { value: 'ollama' },
-            model:       { value: '', required: false },
+            model:       { value: '', required: true },
             targetFlows: { value: [] },
+            // Admin API base URL. Blank string = auto-detect from the running
+            // instance. Type str | flow | global (typedInput).
             editorUrl:   { value: '' },
+            editorUrlType: { value: 'str' },
             // Agent only: deploy right after the editor applies the changes.
             autoDeploy:  { value: false },
             // Seconds; deliberately long (1 h) because local LLMs can take
@@ -25,6 +28,13 @@
             return this.name || ('LLM (' + (this.mode === 'agent' ? 'agent' : 'ask') + ')');
         },
         oneditprepare: function() {
+            // API URL accepts a literal string or a flow/global context variable.
+            $('#node-input-editorUrl').typedInput({
+                default: 'str',
+                types: ['str', 'flow', 'global'],
+                typeField: '#node-input-editorUrlType'
+            });
+
             // Refresh the flow list every time the dialog opens.
             var sel = $('#node-input-targetFlows').empty();
             RED.nodes.eachWorkspace(function(ws) {
@@ -91,8 +101,14 @@
                             // Deploy action, so dirty state clears like a manual
                             // click. It runs ASYNC — the editor's own deploy
                             // toast reports the actual outcome.
+                            // The extra `true` is save()'s skipValidation flag
+                            // (RED.actions.invoke forwards args to the handler):
+                            // without it, any invalid/unknown node anywhere in
+                            // the workspace pops a modal "confirm deploy" dialog
+                            // that stalls unattended loops. Same path as the
+                            // dialog's own Confirm button (save(true)).
                             try {
-                                RED.actions.invoke('core:deploy-flows');
+                                RED.actions.invoke('core:deploy-flows', true);
                                 notify(applied + '. Deploy triggered (auto deploy) — watch the deploy result notification.', 'success');
                             } catch (e) {
                                 notify(applied + ', but auto deploy failed to start: ' + (e && e.message ? e.message : e), 'warning');
@@ -145,8 +161,9 @@
         <select id="node-input-targetFlows" multiple size="4" style="width:70%;"></select>
     </div>
     <div class="form-row">
-        <label for="node-input-editorUrl"><i class="fa fa-link"></i> Editor URL</label>
-        <input type="text" id="node-input-editorUrl" placeholder="http://localhost:1880/">
+        <label for="node-input-editorUrl"><i class="fa fa-link"></i> API URL</label>
+        <input type="text" id="node-input-editorUrl" style="width:70%;" placeholder="http://localhost:1880">
+        <input type="hidden" id="node-input-editorUrlType">
     </div>
     <div class="form-row">
         <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
@@ -158,13 +175,10 @@
         <span style="font-size:12px;">deploy right after applying</span>
     </div>
     <div class="form-tips">
-        <i class="fa fa-info-circle"></i> API keys & URLs are set in the LLM Plugin sidebar. Selected flows are sent to the LLM as context (none, one, or many). Editor URL: blank = auto-detect.
+        <i class="fa fa-info-circle"></i> API keys & provider URLs come from the LLM Plugin sidebar. Selected flows are sent as context. API URL: blank = auto-detect (recommended).
     </div>
     <div class="form-tips llm-request-agent-only" style="margin-top:6px;">
-        <i class="fa fa-exclamation-triangle"></i> Agent applies edits live in the open editor. Not saved to chat history; not rewindable (use editor undo). Review, then Deploy.
-    </div>
-    <div class="form-tips llm-request-agent-only" style="margin-top:6px;">
-        <i class="fa fa-exclamation-triangle"></i> <b>Auto deploy is a developer feature.</b> It deploys LLM edits immediately, with no review step — use it only in disposable development environments, never on a production instance. Keep exactly <b>one</b> editor open (every open editor deploys), and prefer the <b>Modified Nodes / Modified Flows</b> deploy type so unrelated flows are not restarted.
+        <i class="fa fa-exclamation-triangle"></i> Agent edits the open editor live (no chat history, no plugin undo). <b>Auto deploy</b> deploys immediately without confirmation — development only; keep one editor open, use the Modified Nodes/Flows deploy type.
     </div>
 </script>
 
@@ -188,7 +202,7 @@
     <dl class="message-properties">
         <dt>payload <span class="property-type">string | object</span></dt><dd>The prompt. Strings are newline-normalised; objects are JSON-stringified.</dd>
         <dt class="optional">model <span class="property-type">string</span></dt><dd>Overrides the configured model.</dd>
-        <dt class="optional">editorUrl <span class="property-type">string</span></dt><dd>Overrides the editor URL used to read flow context.</dd>
+        <dt class="optional">editorUrl <span class="property-type">string</span></dt><dd>Overrides the API URL used to read flow context.</dd>
         <dt class="optional">timeout <span class="property-type">number</span></dt><dd>Overrides the configured timeout, in seconds (0 = no limit).</dd>
     </dl>
 
@@ -207,12 +221,10 @@
 
     <h3>Notes</h3>
     <ul>
-        <li><b>Timeout</b> defaults to 3600&nbsp;seconds (1&nbsp;hour) because local LLMs can take a long time per reply on modest hardware. Set 0 to wait indefinitely, or override per message with <code>msg.timeout</code>.</li>
-        <li><b>Auto deploy (developer feature):</b> when checked, the editor deploys immediately after applying the Agent changes (same as clicking Deploy, using the editor's currently selected deploy type). There is no review step and no plugin-side rewind — intended for automated development loops on disposable instances, not production. Requires an open editor, like Agent mode itself. The deploy runs <b>asynchronously</b>: the node's notification only confirms it was triggered; the editor's own deploy notification reports success or failure. With multiple editors open, <b>each</b> one auto-deploys and they will conflict — keep a single editor open. Prefer the <b>Modified Nodes / Modified Flows</b> deploy type: a Full deploy restarts every flow, including whatever flow is driving this node (in-flight messages in that flow are lost).</li>
-        <li><b>Agent needs an open editor:</b> a runtime node can't edit the canvas directly, so it sends the reply over comms and the editor (with the LLM Plugin loaded) applies it. Headless runs have no canvas to update.</li>
-        <li><b>No chat history / no Restore Checkpoint:</b> node interactions are not recorded in the chat history and cannot be rewound by the plugin. Review before deploying; use the editor's undo if needed.</li>
-        <li><b>Editor URL</b> is auto-detected from the running instance (works when embedded in Express on a non-1880 port). Set it only if auto-detection fails, e.g. <code>http://localhost:8000/red/</code>.</li>
-        <li><b>One editor at a time:</b> Agent results are broadcast to every open editor, and each applies them to its own (local, undeployed) canvas. With two editor windows open, whichever deploys first wins and the other will report conflicts — keep a single editor open when using Agent mode.</li>
-        <li><b>Mind the trigger rate:</b> every incoming message costs one LLM request, and in Agent mode one canvas edit. Avoid wiring Agent mode to high-frequency sources (e.g. a repeating inject).</li>
+        <li><b>Timeout</b> defaults to 3600&nbsp;seconds (local LLMs can be slow). 0 = no limit; <code>msg.timeout</code> overrides.</li>
+        <li><b>Auto deploy (developer feature):</b> deploys right after applying, asynchronously and <b>without any confirmation dialog</b> (node-validation warnings are skipped). Development only. Keep one editor open (every open editor deploys) and prefer the Modified Nodes/Flows deploy type — a Full deploy restarts the flow driving this node.</li>
+        <li><b>Agent needs an open editor</b> with the LLM Plugin loaded; the reply is applied there via comms. Not recorded in chat history and not rewindable by the plugin — use the editor's undo.</li>
+        <li><b>API URL</b> is the Node-RED admin API base — normally the same URL the editor is served at (standalone: <code>http://localhost:1880</code>; embedded: the <code>httpAdminRoot</code> base, e.g. <code>http://localhost:8000/red</code>). Blank = auto-detect from the running instance (recommended). Accepts a string or a flow/global context variable; <code>msg.editorUrl</code> overrides. If the configured URL fails, the node falls back to auto-detection with a warning.</li>
+        <li><b>Mind the trigger rate:</b> every message costs one LLM request (and one canvas edit in Agent mode).</li>
     </ul>
 </script>

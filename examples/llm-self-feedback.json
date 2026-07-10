@@ -4,24 +4,72 @@
         "type": "tab",
         "label": "LLM self-feedback (5 loops)",
         "disabled": false,
-        "info": "DEVELOPER SAMPLE: an Agent-mode self-feedback loop with Auto deploy enabled.\n\nEach iteration = one LLM request + one live canvas edit + one automatic Deploy, so the loop is HARD-CAPPED AT 5 ITERATIONS via the ?loop= query parameter. Do not remove the guard — an unbounded loop would keep consuming your LLM API and keep deploying.\n\nSETUP (all three steps matter):\n1. Set a model on the 'LLM (agent, auto deploy)' node (or configure one in the sidebar).\n2. In the editor's Deploy button dropdown, select 'Modified Flows' (or 'Modified Nodes') BEFORE running. A 'Full' deploy restarts EVERY flow — including this loop flow — which discards the message waiting in the 5 s delay and kills the loop after one iteration. That is also why the LLM's edit target (the 'feedback_log' comment) lives on the separate 'LLM feedback target' tab: with Modified Flows, only that tab restarts and this loop keeps running.\n3. Keep exactly ONE editor window open. Every open editor applies and auto-deploys, and multiple editors will conflict.\n\nHOW IT WORKS:\n- Click the inject button. It calls GET /llm-loop?loop=1 on this instance.\n- The 'http in' endpoint acknowledges immediately, then asks the LLM (Agent mode) to update ONLY the 'feedback_log' comment on the 'LLM feedback target' tab.\n- The open editor applies the change and auto-deploys (developer feature).\n- After a 5 s settle delay, the flow calls /llm-loop?loop=N+1 — until loop 5.\n- Any error (missing model, unreachable URL, LLM failure) is surfaced by the 'loop errors' catch node instead of dying silently.\n\nThe loop URL defaults to http://127.0.0.1:1880. If your Node-RED listens elsewhere (e.g. embedded at :8000/red), set the environment variable LLM_LOOP_BASE (e.g. http://127.0.0.1:8000/red) — it is read in the single 'next loop URL' function node."
+        "info": "DEVELOPER SAMPLE: an Agent-mode self-feedback loop with Auto deploy enabled.\n\nEach iteration = one LLM request + one live canvas edit + one automatic Deploy, so the loop is HARD-CAPPED AT 5 ITERATIONS via the ?loop= query parameter. Do not remove the guard — an unbounded loop would keep consuming your LLM API and keep deploying.\n\nSETUP (all three steps matter):\n1. Set a model on the 'LLM (agent, auto deploy)' node (or configure one in the sidebar).\n2. In the editor's Deploy button dropdown, select 'Modified Flows' (or 'Modified Nodes') BEFORE running. A 'Full' deploy restarts EVERY flow — including this loop flow — which discards the message waiting in the 5 s delay and kills the loop after one iteration. That is also why the LLM's edit target (the demo flow) lives on the separate 'LLM feedback target' tab: with Modified Flows, only that tab restarts and this loop keeps running.\n3. Keep exactly ONE editor window open. Every open editor applies and auto-deploys, and multiple editors will conflict.\n\nHOW IT WORKS:\n- Click the inject button. It calls GET /llm-loop?loop=1 on this instance.\n- The 'http in' endpoint acknowledges immediately, then asks the LLM (Agent mode) to work on the 'LLM feedback target' tab: iteration 1 CREATES a small demo flow (inject every 5 s → function labelling a random number high/low → debug); later iterations review the current flow and make ONE small improvement each.\n- The open editor applies the change and auto-deploys (developer feature; the deploy runs without any confirmation dialog — node-validation warnings are skipped).\n- After a 5 s settle delay, the 'next loop URL' function checks the LLM's reply: if it is END (the LLM judged the flow complete) the loop stops; otherwise it calls /llm-loop?loop=N+1 — hard cap 5 loops either way.\n- Any error (missing model, unreachable URL, LLM failure) is surfaced by the 'loop errors' catch node instead of dying silently.\n\nWHERE TO SEE THE RESULT:\nWatch the 'LLM feedback target' tab — the demo flow appears on iteration 1 and evolves each iteration. Since every iteration is deployed, the demo flow starts running immediately: its output shows up in the debug sidebar every 5 s. The 'loop finished' debug reports how the loop ended (END or the 5-loop cap). Delete the target tab (or its inject) when you are done.\n\nAPI ENDPOINT:\nThe loop calls itself over HTTP, so it must know this instance's HTTP API endpoint base. See the 'CHECK FIRST' comment at the top of this tab: the change node below it stores it ONCE in the flow variable apiBase (default http://127.0.0.1:1880), and every node that needs the URL reuses that variable. If your Node-RED listens elsewhere — e.g. embedded with httpNodeRoot '/api' on port 8000 — edit that change node's value to http://127.0.0.1:8000/api and deploy. ECONNREFUSED from the 'trigger next iteration' node means this value does not match where Node-RED is actually listening."
     },
     {
         "id": "llm_feedback_target",
         "type": "tab",
         "label": "LLM feedback target",
         "disabled": false,
-        "info": "The LLM's edit target for the self-feedback sample. Kept on its own tab so a 'Modified Flows' deploy restarts only this tab and never the loop that drives it."
+        "info": "The LLM's edit target for the self-feedback sample: iteration 1 creates a small demo flow here and later iterations each improve it, until the LLM replies END (or the 5-loop cap is reached).\n\nThe demo flow runs as soon as it is deployed (inject every 5 s → debug). Delete this tab when you are done with the sample.\n\nKept on its own tab so a 'Modified Flows' deploy restarts only this tab and never the loop that drives it."
     },
     {
         "id": "fb_comment_log",
         "type": "comment",
         "z": "llm_feedback_target",
-        "name": "feedback_log",
-        "info": "Iteration log (the LLM updates this comment each loop):\n- (empty)",
-        "x": 200,
+        "name": "LLM builds and improves a demo flow below (one change per iteration)",
+        "info": "Each loop iteration the LLM works on this tab:\n- Iteration 1 CREATES a small demo flow (inject every 5 s → function that labels a random number high/low → debug).\n- Later iterations review the current flow and make ONE small improvement each.\n- When the LLM judges the flow complete it replies END and the loop stops early (hard cap: 5 iterations). The 'loop finished' debug on the loop tab shows which way it ended.\n\nBecause each iteration is auto-deployed, the demo flow starts RUNNING as soon as it exists — watch the debug sidebar for its output. Delete this tab (or the inject node) when you are done with the sample.\n\nIf nothing appears after starting the loop, check the 'loop errors' / 'loop ack' debug output on the loop tab.",
+        "x": 300,
         "y": 80,
         "wires": []
+    },
+    {
+        "id": "fb_comment_base_url",
+        "type": "comment",
+        "z": "llm_feedback_tab",
+        "name": "CHECK FIRST: set the API endpoint in the change node below",
+        "info": "The change node below stores this instance's HTTP API endpoint base in the flow variable `apiBase` (it fires once automatically on every deploy). Set it in this ONE place and reuse it from any node: function nodes read it with `flow.get('apiBase')` (see 'next loop URL'), typed input fields can reference `flow.apiBase` — the sample's LLM node's API URL is already set to `flow.apiBase`. (If your admin API lives under a different root than this endpoint base — e.g. editor at /red but httpNodeRoot /api — the LLM node logs a warning and falls back to auto-detection; that is expected.)\n\nEDIT ITS VALUE TO MATCH YOUR NODE-RED INSTANCE, then deploy:\n- Standalone Node-RED (default): http://127.0.0.1:1880\n- Embedded in another app: scheme://host:port + your settings' `httpNodeRoot` — e.g. httpNodeRoot \"/api\" on port 8000 → http://127.0.0.1:8000/api\n\nNotes:\n- This is the base where `http in` endpoints live (e.g. <apiBase>/llm-loop). It is NOT the editor URL: the editor and admin API are under `httpAdminRoot` (e.g. /red).\n- Do NOT include a trailing /llm-loop — the 'next loop URL' function appends it.\n- A wrong value shows up as ECONNREFUSED (nothing listening there) or 404 (wrong root path) in the 'loop errors' debug.",
+        "x": 310,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "fb_inject_set_base",
+        "type": "inject",
+        "z": "llm_feedback_tab",
+        "name": "on deploy",
+        "props": [],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.1,
+        "topic": "",
+        "x": 150,
+        "y": 120,
+        "wires": [["fb_change_set_base"]]
+    },
+    {
+        "id": "fb_change_set_base",
+        "type": "change",
+        "z": "llm_feedback_tab",
+        "name": "set API endpoint → flow.apiBase",
+        "rules": [
+            {
+                "t": "set",
+                "p": "apiBase",
+                "pt": "flow",
+                "to": "http://127.0.0.1:1880",
+                "tot": "str"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 410,
+        "y": 120,
+        "wires": [[]]
     },
     {
         "id": "fb_inject_start",
@@ -54,7 +102,7 @@
         "type": "function",
         "z": "llm_feedback_tab",
         "name": "loop guard (max 5)",
-        "func": "// Hard cap: refuse anything past iteration 5 so an Agent+auto-deploy\n// loop can never run (and bill) unbounded.\nconst loop = parseInt(msg.req && msg.req.query && msg.req.query.loop, 10) || 1;\nif (loop > 5) {\n    msg.payload = 'Loop limit (5) reached - stopped.';\n    return [msg, null];\n}\nconst ack = RED.util.cloneMessage(msg);\nack.payload = 'Accepted iteration ' + loop + ' of 5.';\nmsg.loop = loop;\nmsg.payload = 'Self-feedback iteration ' + loop + ' of 5: in the flow \"LLM feedback target\", update ONLY the comment node named \"feedback_log\" so its text records this iteration number and ONE short improvement idea for the self-feedback flow. Do not add, remove, rewire, or modify any other node.';\nreturn [ack, msg];",
+        "func": "// Hard cap: refuse anything past iteration 5 so an Agent+auto-deploy\n// loop can never run (and bill) unbounded.\nconst loop = parseInt(msg.req && msg.req.query && msg.req.query.loop, 10) || 1;\nif (loop > 5) {\n    msg.payload = 'Loop limit (5) reached - stopped.';\n    return [msg, null];\n}\nconst ack = RED.util.cloneMessage(msg);\nack.payload = 'Accepted iteration ' + loop + ' of 5.';\nmsg.loop = loop;\nmsg.payload = 'Self-feedback iteration ' + loop + ' of 5. Work ONLY in the flow \"LLM feedback target\".\\n' +\n    'Goal flow: an inject node that fires every 5 seconds -> a function node that picks a random integer 0-100 and sets msg.payload to \"high: <n>\" if n >= 50, else \"low: <n>\" -> a debug node.\\n' +\n    'If this demo flow does not exist yet, CREATE it. Otherwise review the current nodes and make ONE small concrete improvement to it (fix a bug, improve the function logic, clearer node names). Do not delete existing nodes, and do not add comment nodes.\\n' +\n    'If the flow already fulfils the goal and needs no further improvement, reply with exactly END - plain text only, no JSON block, and make no changes.';\nreturn [ack, msg];",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -85,7 +133,8 @@
         "provider": "ollama",
         "model": "",
         "targetFlows": ["llm_feedback_target"],
-        "editorUrl": "",
+        "editorUrl": "apiBase",
+        "editorUrlType": "flow",
         "timeout": 3600,
         "autoDeploy": true,
         "x": 650,
@@ -117,7 +166,7 @@
         "type": "function",
         "z": "llm_feedback_tab",
         "name": "next loop URL",
-        "func": "// Single source of the loop URL. Override the base with the\n// LLM_LOOP_BASE env var when Node-RED is not on 127.0.0.1:1880.\nconst next = (msg.loop || 0) + 1;\nif (next > 5) {\n    msg.payload = 'Completed 5 iterations - loop finished.';\n    return [null, msg];\n}\nconst base = env.get('LLM_LOOP_BASE') || 'http://127.0.0.1:1880';\nmsg.url = base + '/llm-loop?loop=' + next;\nmsg.method = 'GET';\nmsg.payload = '';\nreturn [msg, null];",
+        "func": "// Single source of the loop URL. The base comes from flow.apiBase,\n// set once by the 'set API endpoint' change node at the top of this tab.\n// msg.payload here is the LLM's text reply: when the LLM judges the demo\n// flow complete it replies END (per the prompt) and the loop stops early.\nconst reply = (typeof msg.payload === 'string') ? msg.payload.trim() : '';\nif (/^END\\b/i.test(reply)) {\n    msg.payload = 'LLM signalled END after iteration ' + (msg.loop || '?') + ' - loop finished.';\n    return [null, msg];\n}\nconst next = (msg.loop || 0) + 1;\nif (next > 5) {\n    msg.payload = 'Completed 5 iterations - loop finished.';\n    return [null, msg];\n}\nconst base = (flow.get('apiBase') || 'http://127.0.0.1:1880').replace(/\\/+$/, '');\nmsg.url = base + '/llm-loop?loop=' + next;\nmsg.method = 'GET';\nmsg.payload = '';\nreturn [msg, null];",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -161,7 +210,7 @@
         "id": "fb_debug_done",
         "type": "debug",
         "z": "llm_feedback_tab",
-        "name": "done (5 loops)",
+        "name": "loop finished",
         "active": true,
         "tosidebar": true,
         "complete": "payload",
