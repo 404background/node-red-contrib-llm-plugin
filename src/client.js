@@ -115,8 +115,7 @@
                     systemPrompt: systemPromptInput ? systemPromptInput.value : '',
                     maxPromptLength: maxPromptLenInput ? maxPromptLenInput.value : 10000
                 };
-            },
-            updateVisibility: updateVisibleSettings
+            }
         };
     }
 

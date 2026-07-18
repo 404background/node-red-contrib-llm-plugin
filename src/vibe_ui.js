@@ -48,7 +48,7 @@
 
     /**
      * Wire up all interactive behaviour once the DOM is in place.
-     * @param {Object|null} settingsManager  load/save/updateVisibility
+     * @param {Object|null} settingsManager  load/save
      */
     function initializeClientApp(settingsManager) {
         let generateBtn       = document.getElementById('llm-plugin-generate');
@@ -607,15 +607,7 @@
                 let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
                 let msgEl = null;
                 let usedModel = (data && data.model) ? data.model : model;
-                let targetFlowName = null;
-                if (flowIdsToSend && flowIdsToSend.length > 0 && window.RED && RED.nodes && typeof RED.nodes.workspace === 'function') {
-                    try {
-                        targetFlowName = flowIdsToSend.map(function(id) {
-                            let ws = RED.nodes.workspace(id);
-                            return (ws && ws.label) ? ws.label : id;
-                        }).join(', ');
-                    } catch (e) { targetFlowName = null; }
-                }
+                let targetFlowName = Common.flowLabels(flowIdsToSend);
                 let metaOpts = {
                     mode: mode,
                     elapsedMs: totalElapsed,

@@ -182,7 +182,7 @@ function createLLMPluginServer(RED) {
         }
         const provider = settings.provider || 'ollama';
 
-        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId);
+        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId, settings);
         const genStart = Date.now();
 
         try {

@@ -319,17 +319,15 @@ function createLLMCore(RED) {
         // Multi-flow case: ONE flat Vibe Schema; every canvas node carries a
         // `flow` field (tab label). A single toIntermediate pass keeps
         // aliases globally unique (no cross-flow collisions). Config nodes
-        // get no `flow` field — they live outside canvases.
+        // get no `flow` field — they live outside canvases. Canvas nodes are
+        // grouped tab-by-tab (NOT raw input order): alias numbering follows
+        // this order, and the client's alias resolution mirrors it.
         const allCanvas = [];
-        const neededConfigs = {};
         for (const z of tabIds) {
             const flowNodes = byTab[z] || [];
             for (const n of flowNodes) allCanvas.push(n);
         }
-        for (const cn of Object.values(configById)) {
-            if (cn && cn.id) neededConfigs[cn.id] = cn;
-        }
-        const allNodes = allCanvas.concat(Object.values(neededConfigs));
+        const allNodes = allCanvas.concat(Object.values(configById));
         const inter = Configurator.toIntermediate(allNodes, { includeIdMap: true });
         const idToAlias = (inter._meta && inter._meta.idToAlias) || {};
         delete inter._meta;
@@ -362,14 +360,23 @@ function createLLMCore(RED) {
         };
     }
 
+    // The user's custom system prompt from plugin settings (trimmed; '' when
+    // unset). Single definition so buildMessages and buildChatMessages can
+    // never drift apart on how the setting is read.
+    function getUserSystemPrompt(settings) {
+        const s = settings || getPluginSettings();
+        return (s.systemPrompt !== undefined && s.systemPrompt !== null)
+            ? String(s.systemPrompt).trim()
+            : '';
+    }
+
     // Build the system prompt.
     // Instructs the LLM to output Vibe Schema (intermediate JSON) instead of
     // raw Node-RED JSON, which avoids the need for random IDs and coordinates.
-    function buildMessages(userPrompt, flowContext, activeWorkspaceId) {
-        const settings = getPluginSettings();
-        const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
-            ? String(settings.systemPrompt).trim()
-            : '';
+    // `settings` is optional — pass an already-resolved settings object to
+    // avoid a second settings/credentials read per generation.
+    function buildMessages(userPrompt, flowContext, activeWorkspaceId, settings) {
+        const userSystemPrompt = getUserSystemPrompt(settings);
 
         let system = '';
         if (userSystemPrompt) {
@@ -391,11 +398,8 @@ function createLLMCore(RED) {
     // Plain chat messages (no flow context, no Vibe Schema instructions) for
     // the runtime node's "Ask" mode: just pass the payload through, honoring
     // the user's custom system prompt from settings if one is configured.
-    function buildChatMessages(userPrompt) {
-        const settings = getPluginSettings();
-        const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
-            ? String(settings.systemPrompt).trim()
-            : '';
+    function buildChatMessages(userPrompt, settings) {
+        const userSystemPrompt = getUserSystemPrompt(settings);
         const messages = [];
         if (userSystemPrompt) {
             messages.push({ role: 'system', content: userSystemPrompt });

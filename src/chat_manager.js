@@ -100,7 +100,14 @@
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (!data || !data.chatHistories) return;
-                chatHistory = data.chatHistories;
+                // Merge: server wins for chats it knows, but keep chats
+                // created locally in the meantime (still unsaved server-side)
+                // — replacing wholesale would drop them mid-conversation.
+                let merged = data.chatHistories;
+                Object.keys(chatHistory).forEach(function(id) {
+                    if (!merged[id]) merged[id] = chatHistory[id];
+                });
+                chatHistory = merged;
                 // Auto-load the most recent chat if nothing is currently open.
                 if (currentChatId) return;
                 let chatsArray = Object.values(chatHistory);

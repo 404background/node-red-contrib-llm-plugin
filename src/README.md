@@ -100,14 +100,14 @@ All routes register on `RED.httpAdmin`, picking up Node-RED's own
 
 Sequential script loader, plus the settings dialog controller
 (`window.createLLMPluginSettings`): binds to the form template in
-`llm_plugin.html`, returns `{ load, save, updateVisibility }` (provider
+`llm_plugin.html`, returns `{ load, save }` (provider
 toggle, masked API-key placeholders, max prompt length 100–100 000).
 
 ### `common.js`
 
 Shared helpers on `LLMPlugin.Common`: `escapeHtml`, `escapeRegExp`,
 `notify` (RED.notify with guard), `el` (createElement shorthand),
-`randomId`.
+`randomId`, `flowLabels` (workspace ids → tab labels).
 
 ### `core/flow_converter_core.js` — Vibe Schema converter
 

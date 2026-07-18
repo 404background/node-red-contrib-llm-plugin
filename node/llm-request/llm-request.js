@@ -163,20 +163,13 @@ module.exports = function(RED) {
                     }
                 }
 
-                let response;
-                if (context) {
-                    response = await core.generateWithProvider(provider, settings, model,
-                        core.buildMessages(prompt, context, targetFlows[0]), genOptions);
-                } else if (mode === 'agent') {
-                    // No context selected: still use the flow-building prompt so
-                    // the model can propose a new flow from scratch.
-                    response = await core.generateWithProvider(provider, settings, model,
-                        core.buildMessages(prompt, null, null), genOptions);
-                } else {
-                    // Ask with no flows selected: plain chat.
-                    response = await core.generateWithProvider(provider, settings, model,
-                        core.buildChatMessages(prompt), genOptions);
-                }
+                // Agent always gets the flow-building prompt (even without
+                // context, so the model can propose a flow from scratch);
+                // Ask without selected flows is plain chat.
+                const messages = (context || mode === 'agent')
+                    ? core.buildMessages(prompt, context, targetFlows[0] || null, settings)
+                    : core.buildChatMessages(prompt, settings);
+                const response = await core.generateWithProvider(provider, settings, model, messages, genOptions);
                 stopStatusTicker();
 
                 msg.payload = response;

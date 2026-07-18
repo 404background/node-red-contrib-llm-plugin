@@ -293,33 +293,34 @@
         Object.keys(nodeSpecs).forEach(function(alias) {
             let spec = nodeSpecs[alias];
             if (!spec || !spec.props) return;
+
+            // Shared invariant for every stub strategy: never stub a ref
+            // whose mapped type equals the owning spec's OWN type. An
+            // mqtt-broker config node's `broker` prop is its hostname
+            // (e.g. "localhost"), not a reference to another broker —
+            // stubbing would replace the hostname with a spurious stub id.
+            // Cross-type refs (ui-group's `tab` → ui-tab) still stub.
+            function stubIfCrossType(refAlias, mappedType) {
+                if (!mappedType || mappedType === spec.type) return;
+                nodeSpecs[refAlias] = { type: mappedType, name: refAlias, config: true, _autoStub: true, props: {} };
+            }
+
             Object.keys(spec.props).forEach(function(key) {
                 let refAlias = spec.props[key];
                 if (typeof refAlias !== 'string') return;
                 if (nodeSpecs[refAlias]) return;           // already defined
                 if (!/^[a-z][a-z0-9_]*$/i.test(refAlias)) return; // not alias-shaped
 
-                // Strategy 1: key ends in "config" (same self-type guard
-                // as Strategy 2 below).
+                // Strategy 1: key ends in "config"
                 if (/config$/i.test(key)) {
-                    let typeName = key.replace(/config$/i, '-config');
-                    if (typeName !== spec.type) {
-                        nodeSpecs[refAlias] = { type: typeName, name: refAlias, config: true, _autoStub: true, props: {} };
-                    }
+                    stubIfCrossType(refAlias, key.replace(/config$/i, '-config'));
                     return;
                 }
 
-                // Strategy 2: well-known reference key. Skipped when the
-                // mapped type equals the node's OWN type: an mqtt-broker
-                // config node's `broker` prop is its hostname (e.g.
-                // "localhost"), not a reference to another broker — without
-                // this guard the hostname would be replaced by the id of a
-                // spurious stub. Cross-type refs (ui-group's `tab` →
-                // ui-tab) still stub as intended.
+                // Strategy 2: well-known reference key
                 let lowerKey = key.toLowerCase();
-                if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey) && CONFIG_REF_KEYS[lowerKey] &&
-                    CONFIG_REF_KEYS[lowerKey] !== spec.type) {
-                    nodeSpecs[refAlias] = { type: CONFIG_REF_KEYS[lowerKey], name: refAlias, config: true, _autoStub: true, props: {} };
+                if (CONFIG_REF_KEYS.hasOwnProperty(lowerKey)) {
+                    stubIfCrossType(refAlias, CONFIG_REF_KEYS[lowerKey]);
                 }
             });
         });

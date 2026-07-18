@@ -35,6 +35,21 @@
         return (prefix || '') + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     };
 
+    // Workspace ids → comma-joined tab labels (id kept when the tab is
+    // gone / unnamed). Null when nothing usable so callers can fall back.
+    Common.flowLabels = function(ids) {
+        if (!Array.isArray(ids) || ids.length === 0) return null;
+        if (!window.RED || !RED.nodes || typeof RED.nodes.workspace !== 'function') return ids.join(', ');
+        try {
+            return ids.map(function(id) {
+                let ws = RED.nodes.workspace(id);
+                return (ws && ws.label) ? ws.label : id;
+            }).join(', ');
+        } catch (e) {
+            return null;
+        }
+    };
+
     window.LLMPlugin = window.LLMPlugin || {};
     window.LLMPlugin.Common = Common;
 })();
