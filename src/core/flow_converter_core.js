@@ -681,7 +681,6 @@
         // Switch node output count must match its branches.
         // If outputs stays at 1, Node-RED can collapse branch wires on import.
         function normalizeSwitchNode(node) {
-            if (node.type !== 'switch') return;
             let rulesLen = Array.isArray(node.rules) ? node.rules.length : 0;
             let wiresLen = Array.isArray(node.wires) ? node.wires.length : 0;
             let current = (typeof node.outputs === 'number' && node.outputs > 0) ? node.outputs : 0;
@@ -710,6 +709,20 @@
             if (node.fieldType === undefined) node.fieldType = 'msg';
             if (node.field === undefined) node.field = 'payload';
         }
+
+        // Type-specific normalisers, applied by node type. Core types only;
+        // any other type (custom / contrib nodes) passes through untouched —
+        // its props were already flattened verbatim above. Add an entry here
+        // to teach the converter a new type's defaults; the dispatch below
+        // stays generic. A type may list several normalisers, run in order.
+        const NODE_NORMALIZERS = {
+            inject:   [normalizeInjectNode],
+            function: [normalizeFunctionNode],
+            change:   [normalizeRuleNodes],
+            switch:   [normalizeRuleNodes, normalizeSwitchNode],
+            template: [normalizeTemplateNode],
+            debug:    [normalizeDebugNode]
+        };
 
         // Stack disconnected components vertically using the shared helper
         // (also used by reflowCanvasNodes / placeAddedNodesNearNeighbors).
@@ -867,13 +880,8 @@
                 node.wires = wiresMap[alias] || [];
             }
 
-            // Apply type-specific normalisers
-            if (node.type === 'inject') normalizeInjectNode(node);
-            if (node.type === 'function') normalizeFunctionNode(node);
-            if (node.type === 'change' || node.type === 'switch') normalizeRuleNodes(node);
-            if (node.type === 'switch') normalizeSwitchNode(node);
-            if (node.type === 'template') normalizeTemplateNode(node);
-            if (node.type === 'debug') normalizeDebugNode(node);
+            // Apply type-specific normalisers (no-op for custom/contrib types).
+            (NODE_NORMALIZERS[node.type] || []).forEach(function(fn) { fn(node); });
 
             result.push(node);
         });
