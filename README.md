@@ -47,9 +47,9 @@ Restart Node-RED after install.
 It is highly recommended to add custom or non-core nodes to your flow before passing them to the LLM. Since the LLM does not inherently know the required properties of custom nodes, keeping a small sample flow in the active tab ensures it is sent as the *Current Open Flow*.
 The model will then follow real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
 
-A ready-made sample of this pattern ships as the `python-venv` example
-(**Menu → Import → Examples**): a minimal inject → venv → debug flow
-using the [python-venv](https://flows.nodered.org/node/@background404/node-red-contrib-python-venv) node, as shown in the demo video above.
+The demo video above shows this pattern with the
+[python-venv](https://flows.nodered.org/node/@background404/node-red-contrib-python-venv)
+node: a minimal inject → venv → debug flow kept in the active tab.
 
 ## Features
 
@@ -84,8 +84,9 @@ Agent mode can optionally **Auto deploy** right after applying (a developer
 feature — no review step; intended for automated dev loops, not production).
 
 To try it, import an example via **Menu → Import → Examples**:
-`llm-request-simple` (minimal inject → LLM → debug), `llm-nodes` (Ask + Agent
-demo), or `llm-self-feedback` (Agent + Auto deploy loop, capped at 5 iterations).
+`llm-nodes` (Ask + Agent demo — Agent edits appear live in the editor and you
+review and Deploy manually) or `llm-self-feedback` (a self-improvement loop:
+Agent + Auto deploy, hard-capped at 5 iterations).
 
 See **[node/README.md](node/README.md)** for full details.
 

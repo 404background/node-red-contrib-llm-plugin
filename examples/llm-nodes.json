@@ -4,7 +4,7 @@
         "type": "tab",
         "label": "LLM nodes demo",
         "disabled": false,
-        "info": "Demonstrates the llm-request node. Configure the LLM Plugin settings (provider / model / API key) in the editor sidebar first."
+        "info": "Demonstrates the llm-request node: the Ask row (top) is a plain LLM conversation, the Agent row (bottom) lets the LLM edit this flow.\n\nSETUP:\n1. Configure the LLM Plugin in the editor sidebar first (provider, API key if needed).\n2. Set a model on both LLM nodes (or pass msg.model).\n3. Deploy, then click an inject button and watch the debug sidebar.\n\nASK ROW: sends msg.payload as the prompt and outputs the model's reply on msg.payload (plain text - do not JSON.parse it). No flows are selected, so it is a plain chat request; select flows on the node to send them as context.\n\nAGENT ROW: asks the LLM to add a small inject -> debug pair to this tab. The change is applied LIVE in the open editor via the plugin's importer (an editor must be open), but NOTHING IS DEPLOYED automatically - review the canvas and click Deploy yourself, or undo with Ctrl+Z. For a fully automated Agent + Auto deploy loop, see the llm-self-feedback example instead.\n\nSTATUS: while a request runs the node shows a blue dot with the elapsed seconds, then green on success (done / sent to editor) or red on error or timeout. The timeout defaults to 3600 seconds (1 hour) because local LLMs can be slow; lower it on the node or via msg.timeout to fail fast.\n\nEverything here (and everything the Agent prompt asks for) uses core nodes only, so the demo works on any Node-RED instance."
     },
     {
         "id": "demo_inject_ask",

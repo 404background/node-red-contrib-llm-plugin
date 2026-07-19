@@ -56,8 +56,9 @@ lives in [`../src/llm_core.js`](../src/llm_core.js) and is reused by the sidebar
 
 Import via **Menu → Import → Examples** (or the JSON files in `examples/`):
 
-- `llm-request-simple` — minimal inject → LLM (Ask) → debug.
-- `llm-nodes` — Ask and Agent side by side.
+- `llm-nodes` — Ask and Agent side by side (core nodes only). The Agent row's
+  edit is applied live in the open editor; you review and Deploy manually —
+  nothing deploys automatically.
 - `llm-self-feedback` — **developer sample**: Agent + Auto deploy self-feedback
   loop over HTTP in/request nodes, hard-capped at 5 iterations (each loop costs
   one LLM request and one deploy — never remove the cap). Iteration 1 creates a
