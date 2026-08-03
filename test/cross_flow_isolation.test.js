@@ -1,0 +1,299 @@
+// Regression test for the flow-isolation guarantee: an LLM edit may only
+// modify the flow(s) that were sent to the model as context. Aliases are
+// unique only WITHIN a flow, so any workspace resolution that scans every
+// tab can land an edit on a flow the conversation never saw — and the
+// rebuild clears its target's canvas before re-importing, so a misroute is
+// destructive, not additive.
+//
+// Loads the real client modules in a mocked RED sandbox and drives
+// Importer.importFlowFromMessage end to end with `allowedWorkspaceIds`
+// (the scope the sidebar passes from the message's targetFlowIds).
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const ROOT = path.resolve(__dirname, '..');
+const files = [
+  'src/common.js',
+  'src/core/canvas_layout.js',
+  'src/core/flow_converter_core.js',
+  'src/core/llm_json_parser.js',
+  'src/ui_core.js',
+  'src/importer.js',
+];
+
+let assertions = 0, failures = 0;
+function ok(cond, msg) {
+  assertions++;
+  if (cond) { console.log('  ok  ' + msg); }
+  else { failures++; console.log('  FAIL ' + msg); }
+}
+
+const clone = (x) => JSON.parse(JSON.stringify(x));
+
+// Two-tab editor. `filterNodes` mirrors the real registry (regular nodes
+// only, filtered by z); every workspace is visible to eachWorkspace, which
+// is exactly what makes an unscoped scan dangerous.
+function buildRED(tabs, nodesArr, activeId) {
+  const regularById = {};
+  nodesArr.forEach((n) => { regularById[n.id] = n; });
+  const captured = { imports: [], removedFrom: [] };
+
+  const RED = {
+    notify: function () {},
+    nodes: {
+      filterNodes: (f) => Object.values(regularById).filter((n) => n.z === f.z),
+      junctions: () => [],
+      groups: () => [],
+      workspace: (id) => tabs.find((t) => t.id === id) || null,
+      eachWorkspace: (cb) => tabs.forEach(cb),
+      eachNode: (cb) => Object.values(regularById).forEach(cb),
+      eachConfig: () => {},
+      node: (id) => regularById[id] || null,
+      getType: () => undefined,
+      createExportableNodeSet: (set) => set.filter(Boolean).map(clone),
+      import: function (nodes) {
+        captured.imports.push(clone(nodes));
+        clone(nodes).forEach((n) => { if (n && n.id) regularById[n.id] = n; });
+        return { nodes: nodes };
+      },
+      remove: function (id) {
+        if (regularById[id]) captured.removedFrom.push(regularById[id].z);
+        delete regularById[id];
+      },
+      removeJunction: () => {},
+      removeGroup: () => {},
+      dirty: () => {},
+    },
+    view: { redraw: () => {} },
+    actions: { invoke: () => {} },
+    workspaces: { active: () => activeId, refresh: () => {}, show: () => {} },
+  };
+  return { RED, captured };
+}
+
+// Fresh sandbox + module load per scenario (modules hold singletons).
+async function runImport(tabs, nodesArr, activeId, message, importOpts) {
+  const { RED, captured } = buildRED(tabs, nodesArr, activeId);
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout,
+    requestAnimationFrame: (cb) => cb(),
+    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+    document: {
+      getElementById: () => null,
+      querySelectorAll: () => [],
+      createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {} }),
+    },
+    RED,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  for (const rel of files) {
+    vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
+  }
+  const Importer = sandbox.window.LLMPlugin.Importer;
+  const res = await Importer.importFlowFromMessage(message, Object.assign({ mode: 'agent' }, importOpts));
+  const imported = [].concat(...captured.imports);
+  // Post-run editor state, so a scenario can assert what a specific node
+  // looks like after the import rather than inferring it from the payload.
+  const after = {};
+  ['tabA', 'tabB'].forEach((z) => {
+    RED.nodes.filterNodes({ z: z }).forEach((n) => { after[n.id] = n; });
+  });
+  return { res, imported, captured, after };
+}
+
+function fence(obj) { return '```json\n' + JSON.stringify(obj) + '\n```'; }
+
+// Which workspaces did the import actually write to / clear?
+function writtenWorkspaces(imported, captured) {
+  const zs = {};
+  imported.forEach((n) => { if (n && n.z) zs[n.z] = true; });
+  (captured.removedFrom || []).forEach((z) => { if (z) zs[z] = true; });
+  return Object.keys(zs);
+}
+
+const TABS = [
+  { id: 'tabA', type: 'tab', label: 'Alpha' },   // NOT in the conversation
+  { id: 'tabB', type: 'tab', label: 'Beta' },    // the context flow
+];
+
+async function scenarioAliasCollision() {
+  console.log('Scenario 1: a colliding alias must not divert the edit to an unrelated flow');
+  // Both flows own a node whose auto-alias is `inject`. Alpha sits first in
+  // the tab bar, so a first-wins global alias map would pick it.
+  const nodes = [
+    { id: 'a1', type: 'inject', z: 'tabA', name: '', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: '', x: 100, y: 100, wires: [[]] },
+  ];
+  const msg = 'Adding a debug.\n' + fence({
+    nodes: { debug_1: { type: 'debug' } },
+    connections: [{ from: 'inject', to: 'debug_1' }],
+  });
+  const { res, imported, captured } = await runImport(TABS, nodes, 'tabB', msg, {
+    allowedWorkspaceIds: ['tabB'],
+  });
+  const written = writtenWorkspaces(imported, captured);
+  ok(res && res.ok, 'import returned ok');
+  ok(written.indexOf('tabA') === -1, 'unrelated flow Alpha was never written to or cleared');
+  ok(written.indexOf('tabB') !== -1, 'context flow Beta was the one rebuilt');
+  const debug = imported.find((n) => n.type === 'debug');
+  ok(!!debug && debug.z === 'tabB', 'new debug node landed on Beta');
+  const injB = imported.find((n) => n.id === 'b1');
+  ok(!!injB && !!debug && injB.wires[0].indexOf(debug.id) !== -1, "Beta's inject is the node that got wired");
+}
+
+async function scenarioTabSwitchedBeforeImport() {
+  console.log('\nScenario 2: switching the canvas tab before Import must not move the target');
+  // Context was Beta; the user is looking at Alpha when pressing Import. The
+  // schema is all-new nodes, so nothing resolves against any canvas and the
+  // old code fell straight through to the active tab.
+  const nodes = [
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: 'sensor', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: 'tick', x: 100, y: 100, wires: [[]] },
+  ];
+  const msg = 'Here is a new pipeline.\n' + fence({
+    nodes: { http_in_1: { type: 'http in' }, func_1: { type: 'function' } },
+    connections: [{ from: 'http_in_1', to: 'func_1' }],
+  });
+  const { res, imported, captured } = await runImport(TABS, nodes, 'tabA', msg, {
+    allowedWorkspaceIds: ['tabB'],
+  });
+  const written = writtenWorkspaces(imported, captured);
+  ok(res && res.ok, 'import returned ok');
+  ok(written.indexOf('tabA') === -1, 'the active-but-unrelated flow Alpha was left alone');
+  ok(written.indexOf('tabB') !== -1, 'the edit went to the context flow Beta');
+  const fn = imported.find((n) => n.type === 'function');
+  ok(!!fn && fn.z === 'tabB', 'new nodes carry the context flow as their z');
+}
+
+async function scenarioMultiFlowFanOut() {
+  console.log('\nScenario 3: a fan-out must not reach a flow outside the context');
+  // The schema names a node that only exists on Alpha. Beta alone is in
+  // scope, so Alpha's half must be skipped, not applied.
+  const nodes = [
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: 'sensor', topic: 'original', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: 'tick', x: 100, y: 100, wires: [[]] },
+  ];
+  const msg = 'Tidying up.\n' + fence({
+    nodes: {
+      debug_1: { type: 'debug' },
+      mqtt_in_sensor: { type: 'mqtt in', name: 'sensor', props: { topic: 'changed/by/llm' } },
+    },
+    connections: [{ from: 'inject_tick', to: 'debug_1' }],
+  });
+  const { res, imported, captured, after } = await runImport(TABS, nodes, 'tabB', msg, {
+    allowedWorkspaceIds: ['tabB'],
+  });
+  const written = writtenWorkspaces(imported, captured);
+  ok(written.indexOf('tabA') === -1, 'Alpha was not rebuilt by the fan-out');
+  ok(after['a1'] && after['a1'].topic === 'original', "Alpha's mqtt node kept its original topic");
+  ok(after['a1'] && after['a1'].z === 'tabA', "Alpha's mqtt node stayed on Alpha");
+  // The out-of-scope alias no longer resolves, so it degrades to "add as a
+  // new node" on the flow in scope — visible and undoable via the
+  // checkpoint, unlike a silent overwrite on another tab.
+  ok(imported.every((n) => n.z !== 'tabA'), 'nothing was written with Alpha as its workspace');
+  ok(written.indexOf('tabB') !== -1, 'Beta still received its part of the edit');
+  ok(res && res.ok, 'import returned ok');
+}
+
+async function scenarioExplicitOutOfScopeFlowTag() {
+  console.log('\nScenario 4: an explicit `flow` tag naming an out-of-scope tab is refused');
+  const nodes = [
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: 'sensor', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: 'tick', x: 100, y: 100, wires: [[]] },
+  ];
+  // The model insists the node belongs on Alpha, which this chat never saw.
+  const msg = 'Putting it on Alpha.\n' + fence({
+    nodes: { debug_1: { type: 'debug', flow: 'Alpha' } },
+  });
+  const { imported, captured } = await runImport(TABS, nodes, 'tabB', msg, {
+    allowedWorkspaceIds: ['tabB'],
+  });
+  const written = writtenWorkspaces(imported, captured);
+  ok(written.indexOf('tabA') === -1, 'Alpha was not touched despite the explicit flow tag');
+  const debug = imported.find((n) => n.type === 'debug');
+  ok(!debug || debug.z === 'tabB', 'the node fell back to the context flow instead');
+}
+
+async function scenarioUnscopedStillUsesActiveTab() {
+  console.log('\nScenario 5: with no flow context selected, the active tab still works');
+  const nodes = [
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: 'sensor', x: 100, y: 100, wires: [[]] },
+  ];
+  const msg = 'Adding a debug.\n' + fence({ nodes: { debug_1: { type: 'debug' } } });
+  // allowedWorkspaceIds omitted entirely — legacy/unrestricted behaviour.
+  const { res, imported } = await runImport(TABS, nodes, 'tabA', msg, {});
+  ok(res && res.ok, 'import returned ok');
+  const debug = imported.find((n) => n.type === 'debug');
+  ok(!!debug && debug.z === 'tabA', 'unrestricted import still targets the active workspace');
+}
+
+async function scenarioMultiFlowContextStillFansOut() {
+  console.log('\nScenario 6: both flows in scope -> the fan-out is still allowed');
+  const nodes = [
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: 'sensor', topic: 'original', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: 'tick', x: 100, y: 100, wires: [[]] },
+  ];
+  const msg = 'Updating both flows.\n' + fence({
+    nodes: {
+      debug_1: { type: 'debug', flow: 'Beta' },
+      mqtt_in_sensor: { type: 'mqtt in', name: 'sensor', flow: 'Alpha', props: { topic: 'changed/by/llm' } },
+    },
+    connections: [{ from: 'inject_tick', to: 'debug_1' }],
+  });
+  const { res, imported, captured } = await runImport(TABS, nodes, 'tabB', msg, {
+    allowedWorkspaceIds: ['tabA', 'tabB'],
+  });
+  const written = writtenWorkspaces(imported, captured);
+  ok(res && res.ok, 'import returned ok');
+  ok(written.indexOf('tabA') !== -1 && written.indexOf('tabB') !== -1,
+     'both in-scope flows were updated');
+  const mqtt = imported.find((n) => n.type === 'mqtt in');
+  ok(!!mqtt && mqtt.topic === 'changed/by/llm', 'the in-scope Alpha edit was applied');
+}
+
+async function scenarioUntaggedNodesFollowTheContextFlow() {
+  console.log('\nScenario 7: untagged nodes follow the context flow, not the active tab');
+  // Mixed schema: one node tagged `Beta`, one untagged. The active tab is
+  // the out-of-scope Alpha, so grouping untagged nodes under the ACTIVE
+  // label would put them in a group the dispatch may not write to — and
+  // they would vanish as "unknown flow" instead of being applied.
+  const nodes = [
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: 'sensor', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: 'tick', x: 100, y: 100, wires: [[]] },
+  ];
+  const msg = 'Extending the pipeline.\n' + fence({
+    nodes: {
+      debug_1: { type: 'debug', flow: 'Beta' },
+      func_1: { type: 'function' },
+    },
+    connections: [{ from: 'inject_tick', to: 'func_1' }, { from: 'func_1', to: 'debug_1' }],
+  });
+  const { res, imported, captured } = await runImport(TABS, nodes, 'tabA', msg, {
+    allowedWorkspaceIds: ['tabB'],
+  });
+  const written = writtenWorkspaces(imported, captured);
+  ok(res && res.ok, 'import returned ok');
+  ok(written.indexOf('tabA') === -1, 'the out-of-scope active tab was not written to');
+  const fn = imported.find((n) => n.type === 'function');
+  const dbg = imported.find((n) => n.type === 'debug');
+  ok(!!fn && fn.z === 'tabB', 'the untagged node was applied to the context flow');
+  ok(!!dbg && dbg.z === 'tabB', 'the explicitly tagged node landed on the context flow too');
+}
+
+async function run() {
+  await scenarioAliasCollision();
+  await scenarioTabSwitchedBeforeImport();
+  await scenarioMultiFlowFanOut();
+  await scenarioExplicitOutOfScopeFlowTag();
+  await scenarioUnscopedStillUsesActiveTab();
+  await scenarioMultiFlowContextStillFansOut();
+  await scenarioUntaggedNodesFollowTheContextFlow();
+  console.log('\n' + (assertions - failures) + ' passed, ' + failures + ' failed');
+  process.exit(failures ? 1 : 0);
+}
+
+run().catch((e) => { console.error(e); process.exit(1); });

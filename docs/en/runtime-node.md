@@ -50,7 +50,7 @@ node/
 ```
 
 The shared LLM engine (settings, credentials, provider adapters, prompt build)
-lives in [`../src/llm_core.js`](../src/llm_core.js) and is reused by the sidebar.
+lives in [`../../src/llm_core.js`](../../src/llm_core.js) and is reused by the sidebar.
 
 ## Examples
 

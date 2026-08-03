@@ -29,7 +29,7 @@ function byType(flow, type) {
     return flow.filter(function(n) { return n.type === type; });
 }
 
-// --- VIBE_SCHEMA.md Example 1: broker hostname must survive intact ---
+// --- vibe-schema.md Example 1: broker hostname must survive intact ---
 it('config node own props are not mistaken for config references', function() {
     const flow = Cfg.toNodeRed({
         nodes: {
@@ -116,8 +116,8 @@ it('non-alias-shaped values (URLs, paths, numbers) never stub', function() {
     assert.strictEqual(byType(flow, 'mqtt-broker')[0].broker, '192.168.0.10');
 });
 
-// --- Full VIBE_SCHEMA.md Example 1 sanity: node count + wiring ---
-it('VIBE_SCHEMA.md Example 1 produces exactly its 5 declared nodes', function() {
+// --- Full vibe-schema.md Example 1 sanity: node count + wiring ---
+it('vibe-schema.md Example 1 produces exactly its 5 declared nodes', function() {
     const flow = Cfg.toNodeRed({
         description: 'Tick → format → publish',
         nodes: {

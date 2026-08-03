@@ -496,7 +496,12 @@
                         checkpointPromise.then(function(checkpointId) {
                             return LLMPlugin.Importer.importFlowFromMessage(content, {
                                 chatId: chatId,
-                                mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask'
+                                mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
+                                // Confine every write to the flows this turn
+                                // was given as context — the same set the
+                                // checkpoint above covers, so Restore can
+                                // always undo whatever the import did.
+                                allowedWorkspaceIds: targetFlowIds
                             }).then(function(result) {
                                 return { result: result, checkpointId: checkpointId };
                             });
@@ -598,7 +603,7 @@
         }
     };
 
-    UI.getFlowsByIds = function(flowIds) {
+    UI.getFlowsByIds = function(flowIds, opts) {
         try {
             if (!window.RED || !RED.nodes) return null;
             let ids = Array.isArray(flowIds) ? flowIds.filter(Boolean) : [];
@@ -625,6 +630,27 @@
                     }
                 });
             });
+
+            // Junctions and groups live in separate editor registries that
+            // filterNodes never returns. Callers that will REBUILD the flow
+            // (import, checkpoint snapshot) must opt in to include them, or
+            // the remove-then-reimport cycle silently deletes them and severs
+            // every wire that targets a junction. The LLM-context path leaves
+            // them out (default) so the alias numbering the model sees is
+            // unchanged.
+            if (opts && opts.includeCanvasExtras) {
+                ids.forEach(function(zid) {
+                    let extras = [];
+                    if (typeof RED.nodes.junctions === 'function') extras = extras.concat(RED.nodes.junctions(zid) || []);
+                    if (typeof RED.nodes.groups === 'function')    extras = extras.concat(RED.nodes.groups(zid) || []);
+                    extras.forEach(function(node) {
+                        if (node && node.id && !seenIds[node.id]) {
+                            seenIds[node.id] = true;
+                            nodes.push(node);
+                        }
+                    });
+                });
+            }
             if (nodes.length === 0) return null;
 
             let configNodes = collectReferencedConfigs(nodes, seenIds);
@@ -690,7 +716,7 @@
      * Gets the full JSON configuration for the specified tab workspaces (or the active tab if omitted),
      * including nodes, subflows, and config nodes that are referenced by nodes on these tabs.
      */
-    UI.getCurrentFlow = function(flowIds) {
+    UI.getCurrentFlow = function(flowIds, opts) {
         let active = UI.getActiveWorkspaceId();
         let targetIds = [];
         if (flowIds && Array.isArray(flowIds) && flowIds.length > 0) {
@@ -700,7 +726,7 @@
         } else if (active) {
             targetIds = [active];
         }
-        return targetIds.length > 0 ? UI.getFlowsByIds(targetIds) : null;
+        return targetIds.length > 0 ? UI.getFlowsByIds(targetIds, opts) : null;
     };
 
     UI.createRestoreCheckpointButton = createRestoreCheckpointButton;

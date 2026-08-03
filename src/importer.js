@@ -12,7 +12,7 @@
     // Plugin-specific overrides passed to CanvasLayout. All gap values are
     // EDGE-TO-EDGE clearances (the visible whitespace), not centre-to-
     // centre distances — CanvasLayout adds the rendered node size
-    // internally. See core/LAYOUT.md for the full spacing rule.
+    // internally. See docs/*/layout.md for the full spacing rule.
     let LAYOUT = {
         startX:       200,   // canvas origin X (px) - left edge of first column
         startY:       200,   // canvas origin Y (px) - top edge of first row
@@ -45,17 +45,60 @@
 
     function safeGetCurrentFlow(workspaceId) {
         if (!window.LLMPlugin || !LLMPlugin.UI) return null;
+        // includeCanvasExtras: the rebuild base must carry the workspace's
+        // junctions and groups so they survive the remove/reimport cycle and
+        // wires that target a junction are not pruned as dangling.
+        let opts = { includeCanvasExtras: true };
         if (workspaceId && LLMPlugin.UI.getFlowsByIds) {
-            return LLMPlugin.UI.getFlowsByIds([workspaceId]);
+            return LLMPlugin.UI.getFlowsByIds([workspaceId], opts);
         }
-        return LLMPlugin.UI.getCurrentFlow ? LLMPlugin.UI.getCurrentFlow() : null;
+        return LLMPlugin.UI.getCurrentFlow ? LLMPlugin.UI.getCurrentFlow(undefined, opts) : null;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Workspace Scope                                                    //
+    // ------------------------------------------------------------------ //
+    // Every workspace-resolution step below must be confined to the flows
+    // that were actually sent to the LLM as context. Scanning ALL
+    // workspaces is unsafe: auto-generated aliases (`inject`, `debug_1`,
+    // `function_2`, …) are only unique WITHIN a flow, so a global scan lets
+    // an alias collision resolve an edit onto a flow the conversation never
+    // saw — and `replaceWorkspaceFlow` rebuilds its target destructively.
+    // A null set means "unrestricted" (no flow context was selected).
+
+    function buildAllowedWorkspaceSet(ids) {
+        if (!Array.isArray(ids) || ids.length === 0) return null;
+        let set = {};
+        let any = false;
+        ids.forEach(function(id) {
+            if (typeof id === 'string' && id) { set[id] = true; any = true; }
+        });
+        return any ? set : null;
+    }
+
+    function isWorkspaceAllowed(allowedSet, wsId) {
+        return !allowedSet || (!!wsId && !!allowedSet[wsId]);
+    }
+
+    // Default target when the schema carries no usable `flow` tag: the
+    // active tab, but only when it is in scope. Otherwise the first context
+    // flow — the user may have switched tabs between Send and Import, and
+    // the edit still belongs to the flow the LLM actually saw.
+    function pickDefaultWorkspace(allowedSet) {
+        let active = getActiveWorkspaceId();
+        if (!allowedSet) return active;
+        if (active && allowedSet[active]) return active;
+        let ids = Object.keys(allowedSet);
+        return ids.length > 0 ? ids[0] : null;
     }
 
     /**
      * Scan RED workspaces for a tab matching the given label (or ID).
      * Returns the workspace ID or null if no unique match exists.
+     * `allowedSet` (optional) restricts the scan to the context flows, so a
+     * label can never resolve onto an unrelated workspace.
      */
-    function resolveFlowLabelToWorkspace(label) {
+    function resolveFlowLabelToWorkspace(label, allowedSet) {
         if (!label || typeof label !== 'string') return null;
         if (!window.RED || !RED.nodes) return null;
         let target = label.trim();
@@ -73,6 +116,7 @@
 
         RED.nodes.eachWorkspace(function(ws) {
             if (!ws || !ws.id || ws.type !== 'tab') return;
+            if (!isWorkspaceAllowed(allowedSet, ws.id)) return;
             if (ws.id === target) byId = ws.id;
             let lbl = String(ws.label || '').trim();
             if (lbl === target) {
@@ -322,6 +366,15 @@
         return !isConfigNodeObj(node);
     }
 
+    // Groups are canvas entities for z-assignment and re-import, but the
+    // layout must never treat them as positionable nodes: a group's bounding
+    // box always encloses its members, so feeding it to the collision passes
+    // would make it fight its own contents. Junctions stay in — they are real
+    // routing points with wires and belong in the adjacency graph.
+    function isLayoutNode(node) {
+        return isCanvasNode(node) && !(node && node.type === 'group');
+    }
+
     // Collect canvas-level entities of a workspace, separated by type
     // because Node-RED's remove API is type-specific:
     //   nodes      -> RED.nodes.remove(id)
@@ -464,7 +517,7 @@
         // Restore every existing-node property the LLM did not explicitly
         // touch. "Explicitly touched" = key listed in n._llmSpecKeys (Vibe
         // Schema path), or key has a defined value on n (raw JSON path).
-        // See src/README.md "importFlowFromMessage" for the rationale.
+        // See docs/*/architecture.md "importer.js" for the rationale.
         function preserveUnmentionedProperties(n, existing) {
             if (!existing) return;
             let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : null;
@@ -588,14 +641,17 @@
             });
         })();
 
-        // _llmOrder is stripped after layout — the layout passes consume it.
+        // Metadata sweep #1. Every `_`-prefixed property is plugin-internal
+        // (see FlowConverterCore.isMetaProp) and must never reach the canvas.
+        // `_llmOrder` / `_llmAboveId` are still consumed by the layout passes
+        // below, so they are the only survivors; sweep #2 drops them once
+        // layout is done.
+        let LAYOUT_META_KEYS = { _llmOrder: 1, _llmAboveId: 1 };
         rebuilt.forEach(function(n) {
             if (!n) return;
-            delete n._llmAlias;
-            delete n._autoStub;
-            delete n._llmFlow;
-            delete n._llmSpecKeys;
-            delete n._llmAbove;
+            Object.keys(n).forEach(function(k) {
+                if (k.charAt(0) === '_' && !LAYOUT_META_KEYS[k]) delete n[k];
+            });
         });
 
         pruneInvalidInputWires(rebuilt);
@@ -629,7 +685,7 @@
                 componentGap: LAYOUT.componentGap,
                 bandGap: LAYOUT.componentGap,
                 maxColumns: LAYOUT.maxColumns,
-                isCanvasNode: isCanvasNode,
+                isCanvasNode: isLayoutNode,
                 getNodeWidth: liveNodeWidth
             };
             if (Object.keys(baseIds).length === 0) {
@@ -650,7 +706,12 @@
             }
         }
 
-        rebuilt.forEach(function(n) { if (n) delete n._llmOrder; });
+        // Metadata sweep #2: the layout passes have consumed what they needed,
+        // so drop the remainder. After this point no node carries a `_` key.
+        rebuilt.forEach(function(n) {
+            if (!n) return;
+            Object.keys(n).forEach(function(k) { if (k.charAt(0) === '_') delete n[k]; });
+        });
 
         return rebuilt;
     }
@@ -678,7 +739,7 @@
             let id = lookup.resolve(a, { exactOnly: true }) || lookup.resolve(a);
             if (!id) return;
             let n = lookup.byId[id];
-            if (n && isCanvasNode(n)) subsetIdSet[id] = true;
+            if (n && isLayoutNode(n)) subsetIdSet[id] = true;
         });
 
         let subsetNodes = allNodes.filter(function(n) {
@@ -713,7 +774,7 @@
             startX: LAYOUT.startX,
             startY: LAYOUT.startY,
             maxColumns: Infinity,
-            isCanvasNode: isCanvasNode
+            isCanvasNode: isLayoutNode
         });
         layout.reflowCanvasNodes(clones, opts);
 
@@ -843,8 +904,13 @@
     //  Multi-flow Dispatch Helpers                                        //
     // ================================================================== //
 
-    function getActiveWorkspaceLabel() {
-        let id = getActiveWorkspaceId();
+    // Label of the flow untagged nodes belong to: the active tab, or — when
+    // that tab is outside the conversation's scope — the context flow the
+    // import will actually target. Returning the active label here would
+    // route untagged nodes to a workspace the dispatch is not allowed to
+    // write to, and they would be silently dropped as "unknown flow".
+    function getDefaultWorkspaceLabel(allowedSet) {
+        let id = pickDefaultWorkspace(allowedSet);
         if (!id || !window.RED || !RED.nodes) return null;
         let ws = RED.nodes.workspace(id);
         if (ws && ws.label) return ws.label;
@@ -853,8 +919,8 @@
 
     // Group canvas nodes by their Vibe Schema `flow` label so each group
     // can target its own workspace. Untagged canvas nodes fall into the
-    // active flow when any other node is tagged.
-    function collectFlowGroupsFromSchema(schema) {
+    // default (in-scope) flow when any other node is tagged.
+    function collectFlowGroupsFromSchema(schema, allowedSet) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return null;
         let groups = {};
         let untagged = [];
@@ -870,10 +936,10 @@
             groups[flow].push(alias);
         });
         if (untagged.length > 0 && Object.keys(groups).length > 0) {
-            let activeLabel = getActiveWorkspaceLabel();
-            if (activeLabel) {
-                if (!groups[activeLabel]) groups[activeLabel] = [];
-                untagged.forEach(function(a) { groups[activeLabel].push(a); });
+            let defaultLabel = getDefaultWorkspaceLabel(allowedSet);
+            if (defaultLabel) {
+                if (!groups[defaultLabel]) groups[defaultLabel] = [];
+                untagged.forEach(function(a) { groups[defaultLabel].push(a); });
             }
         }
         return groups;
@@ -960,12 +1026,18 @@
     // cross the active workspace boundary fail to resolve — exactly the
     // "nothing connects to mqtt_out" symptom users report.
     //
-    // This helper scans EVERY workspace, builds a global
+    // This helper scans the CONTEXT workspaces (`allowedSet`; every
+    // workspace only when no context was selected), builds an
     // `alias → workspace label` map, seeds it onto schema nodes whose
-    // alias already exists on some canvas, and propagates labels through
-    // `connections` so brand-new nodes inherit the flow of their
+    // alias already exists on one of those canvases, and propagates labels
+    // through `connections` so brand-new nodes inherit the flow of their
     // existing-node neighbors. The schema is cloned, never mutated.
-    function inferImplicitFlowTagging(schema) {
+    //
+    // Scoping is load-bearing, not an optimisation: aliases are unique only
+    // within a flow, and this map is first-workspace-wins, so a global scan
+    // would tag `inject` with an unrelated tab that merely happens to sit
+    // earlier in the tab bar and send the whole edit there.
+    function inferImplicitFlowTagging(schema, allowedSet) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return schema;
         let cfg = getConfigurator();
         if (typeof RED === 'undefined' || !RED.nodes || !cfg || typeof cfg.toIntermediate !== 'function') return schema;
@@ -975,6 +1047,7 @@
         try {
             RED.nodes.eachWorkspace(function(ws) {
                 if (!ws || ws.type !== 'tab' || !ws.id) return;
+                if (!isWorkspaceAllowed(allowedSet, ws.id)) return;
                 let label = (typeof ws.label === 'string' && ws.label.trim()) ? ws.label : ws.id;
                 let nodes = RED.nodes.filterNodes({ z: ws.id }) || [];
                 if (nodes.length === 0) return;
@@ -1066,7 +1139,7 @@
         return '```json\n' + JSON.stringify(schema, null, 2) + '\n```';
     }
 
-    async function dispatchMultiFlowImport(schema, flowGroups, options) {
+    async function dispatchMultiFlowImport(schema, flowGroups, options, allowedSet) {
         let results = [];
         let aggregatedAdded = 0;
         let aggregatedImported = 0;
@@ -1075,7 +1148,10 @@
 
         for (let li = 0; li < flowLabels.length; li++) {
             let label = flowLabels[li];
-            let wsId = resolveFlowLabelToWorkspace(label);
+            // Out-of-scope labels resolve to null and are reported as
+            // skipped — a fan-out must never reach a flow outside the
+            // conversation's context.
+            let wsId = resolveFlowLabelToWorkspace(label, allowedSet);
             if (!wsId) { unresolved.push(label); continue; }
 
             let subSchema = buildSubSchemaForFlow(schema, flowGroups[label]);
@@ -1116,6 +1192,13 @@
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
         try {
+            // Workspace scope for this import: the flows that were sent to
+            // the LLM as context (`allowedWorkspaceIds`, supplied by the
+            // caller). Null = unrestricted, i.e. no flow context was
+            // selected, in which case the active tab is the only sensible
+            // target anyway.
+            let allowedSet = buildAllowedWorkspaceSet(options.allowedWorkspaceIds);
+
             // Multi-flow dispatch: when the schema tags nodes with `flow`,
             // split the proposal per workspace before importing. If the
             // LLM omitted `flow` tags but the schema's nodes / connections
@@ -1124,18 +1207,18 @@
             // this dispatch still fires.
             if (!options._isSubImport) {
                 let rawSchema = extractLastVibeSchema(messageContent);
-                let dispatchSchema = inferImplicitFlowTagging(rawSchema);
+                let dispatchSchema = inferImplicitFlowTagging(rawSchema, allowedSet);
                 let inferredContent = (dispatchSchema && dispatchSchema !== rawSchema)
                     ? serializeSchemaAsMessage(dispatchSchema)
                     : messageContent;
-                let flowGroups = collectFlowGroupsFromSchema(dispatchSchema);
+                let flowGroups = collectFlowGroupsFromSchema(dispatchSchema, allowedSet);
                 let flowLabels = flowGroups ? Object.keys(flowGroups) : [];
                 if (flowLabels.length > 1) {
-                    return await dispatchMultiFlowImport(dispatchSchema, flowGroups, options);
+                    return await dispatchMultiFlowImport(dispatchSchema, flowGroups, options, allowedSet);
                 }
                 if (flowLabels.length === 1) {
                     let targetLabel = flowLabels[0];
-                    let onlyWs = resolveFlowLabelToWorkspace(targetLabel);
+                    let onlyWs = resolveFlowLabelToWorkspace(targetLabel, allowedSet);
                     if (onlyWs) {
                         options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
                         // Use the inferred-tagged message so downstream
@@ -1145,7 +1228,7 @@
                             messageContent = inferredContent;
                         }
                     } else {
-                        notify('Target flow "' + targetLabel + '" not found. Using current workspace instead.', 'warning');
+                        notify('Target flow "' + targetLabel + '" is not one of the flows this chat is working on. Using the context flow instead.', 'warning');
                     }
                 }
             }
@@ -1153,7 +1236,16 @@
             let targetWs = (options.targetWorkspaceId && typeof options.targetWorkspaceId === 'string')
                 ? options.targetWorkspaceId
                 : null;
-            let beforeFlow = safeGetCurrentFlow(targetWs);
+            // A target that escaped the scope (e.g. a sub-import handed a
+            // stale id) is discarded rather than honoured.
+            if (targetWs && !isWorkspaceAllowed(allowedSet, targetWs)) targetWs = null;
+
+            // Resolve the destination BEFORE snapshotting: `beforeFlow` is the
+            // rebuild base and must come from the very workspace the result is
+            // written back to, or the merge would splice one flow's nodes into
+            // another.
+            let currentWorkspace = targetWs || pickDefaultWorkspace(allowedSet);
+            let beforeFlow = safeGetCurrentFlow(currentWorkspace);
 
             let hasExistingFlow = Array.isArray(beforeFlow) && beforeFlow.length > 0;
             let parsedSchema = extractLastVibeSchema(messageContent);
@@ -1201,8 +1293,6 @@
                     return { ok: false, error: 'No JSON flow found in message' };
                 }
             }
-
-            let currentWorkspace = targetWs || getActiveWorkspaceId();
 
             // Build unified lookup from current flow
             let cfg = getConfigurator();
@@ -1408,6 +1498,20 @@
                 notify('Import aborted: invalid node shape', 'error');
                 console.warn('[LLM Plugin] bad node', bad);
                 return { ok: false, error: 'Invalid node shape' };
+            }
+
+            // Last line of defence before the destructive rebuild: whatever
+            // path decided `currentWorkspace`, it must be a flow this chat
+            // was actually given. replaceWorkspaceFlow clears its target's
+            // canvas, so an out-of-scope id here would destroy an unrelated
+            // flow — abort instead.
+            if (!isWorkspaceAllowed(allowedSet, currentWorkspace)) {
+                let scopeErr = 'Import aborted: target flow is outside this chat\'s flow context';
+                notify(scopeErr, 'error');
+                postTerminalLog('warn', 'import-scope-violation',
+                    'Refused to write outside the conversation flow context',
+                    { target: currentWorkspace || null, allowed: Object.keys(allowedSet || {}) });
+                return { ok: false, error: scopeErr };
             }
 
             let rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives);

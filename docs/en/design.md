@@ -1,0 +1,234 @@
+# Design Notes — Processing Flow, Rules, Priorities, and Their Rationale
+
+This document describes, for "user instruction → LLM response → applying it to the
+flow", **in what order, by what rules, and with what priorities** the LLM Plugin
+operates — and **why it is implemented that way**. It is meant as the shared basis
+for discussing the implementation.
+
+- Module-by-module "what does what" reference → [architecture.md](./architecture.md)
+- The intermediate format (Vibe Schema) spec → [vibe-schema.md](./vibe-schema.md)
+- Layout engine details → [layout.md](./layout.md)
+
+This note does not duplicate those; it focuses on the **"why" behind the design
+decisions and priorities**.
+
+---
+
+## 0. Design pillars (why this shape)
+
+| Decision | Reason |
+|----------|--------|
+| **Deterministic work in code, meaning in the LLM** | This split is the premise every other pillar rests on. **Anything with exactly one right answer** — generating and de-colliding node IDs, coordinates, assembling `wires` arrays, alias numbering, preserving junctions/groups — is always the code's job: `flow_converter_core.js` / `canvas_layout.js` / `importer.js`. **The LLM is trusted with exactly two things: the logical connections between nodes, and the settings inside a node.** Give deterministic work to a probabilistic output and it fails as duplicate IDs, broken coordinates, and mis-targeted wires — failures that are also hard to verify. Conversely, "make this inject fire every 5 minutes and feed the debug" is a meaning the code cannot decide. |
+| **Interpose an intermediate "Vibe Schema"** | The boundary that enforces the split structurally. Raw Node-RED JSON carries random IDs, coordinates, and type-specific internal arrays that an LLM cannot meaningfully generate/edit. Abstracting to human-readable `{type}_{name}` aliases without coordinates means the LLM *cannot* invent IDs and has no positions to worry about. `flow_converter_core.js` handles raw JSON ↔ Vibe Schema. |
+| **`_`-prefixed properties are metadata, never shown to the LLM** | Code-side hand-offs — aliases, declaration order, a comment's anchor target — ride on nodes as `_llmAlias` / `_llmOrder` / `_llmAboveId` and friends. Both directions of the boundary hang off that naming convention (§0.1). |
+| **Applying is always a "merge"** | The LLM does not return the whole flow every time (partial edits are the norm). Fixing the rule to "only add/update what is listed, delete what maps to `null`, leave the unmentioned as-is" keeps an incomplete LLM response from breaking the existing flow. There is no branch that lets the model choose how to apply — a misfire there falls on the side of destroying the existing flow. |
+| **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser (both sidebar and Agent node). |
+| **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
+| **The snapshot must be the "complete flow"** | Applying is a "clear the target workspace and rebuild it" approach, so any canvas entity not in the snapshot disappears. → junctions / groups must be included (§7). |
+
+### 0.1 The metadata boundary (`_`-prefixed properties)
+
+The test lives in exactly one place — `FlowConverterCore.isMetaProp(key)` (= `key` starts
+with `_`) — and it constrains **both directions** of the boundary.
+
+| Direction | Rule | Where |
+|-----------|------|-------|
+| **Outbound (to the LLM)** | `toIntermediate` never emits a `_`-prefixed key. IDs, `z`, `x`/`y`, `wires`, `g` are dropped the same way (`META_KEYS`). What the model receives is **aliases, `type`, `name`, type-specific properties, and connections — nothing else**. | `flow_converter_core.js` `toIntermediate` |
+| **Inbound (from the LLM)** | `toNodeRed` **ignores** `_`-prefixed keys coming from the schema (both at the spec root and inside `props`). Only this module authors metadata; the model cannot forge it. Even the auto-created config stub is tracked in a local `autoStubAliases` map rather than as a flag on the spec. | `flow_converter_core.js` `toNodeRed` |
+| **To the canvas** | The importer strips metadata in two sweeps: the first (after the merge) removes everything except `_llmOrder` / `_llmAboveId`, which the layout passes still need; the second (after layout) removes the rest. **By the time nodes reach `RED.nodes.import`, zero `_`-prefixed keys remain.** | `importer.js` `rebuildWorkspaceFromSnapshot` |
+
+- **Reason**: Deleting metadata key by key means every new metadata key is a fresh chance to
+  forget one — `_llmAboveId` did exactly that, riding into the canvas after the layout pass
+  consumed it. Making it a naming convention lets the boundary hold automatically as new
+  metadata is added.
+- **"The model cannot forge it" is part of the rule**: if a schema could set `_llmSpecKeys`
+  (which decides property preservation, §4.2) or `_autoStub` (which feeds config protection,
+  §5), the LLM's output could bend the merge rules themselves.
+- Regression test: `test/metadata_props.test.js` (registered in `npm test`).
+
+---
+
+## 1. Data flow (overview)
+
+```
+User input
+   │  (mode = Ask / Agent, target flow selection)
+   ▼
+vibe_ui.js  ──POST /llm-plugin/generate──►  server.js ─► llm_core.js ─► Ollama / OpenAI / Custom
+   │                                                          │
+   │   ┌── LLM context: getCurrentFlow(targets) → toIntermediate(Vibe Schema)
+   │   │   (junction/group NOT included = the alias numbering the model sees is unchanged)
+   ▼   ▼
+Response text (explanation + optionally a ```json``` Vibe Schema block)
+   │
+   ├─ Ask  : applied when the user clicks the "Import" button
+   └─ Agent: applied automatically once the response arrives
+   │
+   ▼
+Importer.importFlowFromMessage(response, {mode})   ← the heart of applying
+   │
+   ├─ 0) Save checkpoint (ChatManager.saveImportCheckpoint, run by the UI on button click)
+   ├─ 1) Multi-flow decision / implicit flow tagging (§6)
+   ├─ 2) Parse the response (extractFlowNodes / connectionHints / flowDirectives)
+   ├─ 3) Take the snapshot (safeGetCurrentFlow, includeCanvasExtras)
+   ├─ 4) rebuildWorkspaceFromSnapshot (3 phases: delete → add → connect, §3)
+   └─ 5) replaceWorkspaceFlow (clear the target workspace and import, §7)
+```
+
+The Agent node (`node/llm-request`) also publishes the response to the editor via
+`RED.comms.publish`, and an editor-side subscriber calls the same
+`Importer.importFlowFromMessage`. **The apply logic is fully shared with the sidebar.**
+
+---
+
+## 2. Ask / Agent difference and rationale
+
+| | Ask | Agent |
+|--|-----|-------|
+| Apply trigger | User presses Import | Automatic once the response arrives |
+| Use case | Want to review before applying | Iteration / automation |
+| In common | Apply logic, checkpoints, merge rules are all identical | same |
+
+- **The mode is only a difference of "when to apply".** Branching the apply body
+  would be a source of bugs that break one side only, so `importFlowFromMessage`
+  barely looks at mode (it only passes `mode==='agent'` to the parser's merge behavior).
+
+---
+
+## 3. The three apply phases (delete → add → connect) and why that order
+
+`rebuildWorkspaceFromSnapshot()` always processes in the following order. **The order
+itself is a rule**, designed so a single schema cannot break even if it contradicts itself.
+
+### Phase 1: Delete
+- Remove nodes named by `removeTokens` (= alias→`null`) from the snapshot.
+- Record removed IDs in `removedIdSet` so **Phase 2 is forbidden from reintroducing the same alias**.
+- **Reason**: For "delete and recreate" style responses, even if a new node shares a name with a deletion target, the deletion intent can take priority.
+
+### Phase 2: Add / Update
+- Turn the remaining snapshot into `byId` and merge in the proposed nodes.
+- **Config Node Protection**: do not add config nodes that don't already exist (§5).
+- **Additive wire merge**: when matched to an existing node, union the existing wires with the proposed wires per port. **Connections are only cut by an explicit `remove`** (§4).
+- **Property preservation**: keys the LLM did not touch are restored from the existing value (§4).
+
+### Phase 3: Connect
+- Build a **unified alias map** (the reason matters):
+  - existing nodes' auto aliases ∪ new nodes' `_llmAlias` ∪ name ∪ ID
+  - Without this, `{from: "inject_existing", to: "function_new"}` resolves the source (existing) but not the target (new). A new node auto-numbers to just `function`, which doesn't match the LLM-chosen `function_new`.
+- Prune wires pointing at non-existent IDs → apply `removeConnections` → add the schema's `connections`.
+- **Why connect last**: both endpoints of a connection must be resolved against the *final* node set (after delete and add). Fixing connections before delete/add would point at removed or not-yet-added nodes.
+
+---
+
+## 4. Merge rules (priorities for not breaking the existing flow)
+
+### 4.1 Wires: default is "add", cut only when explicit
+- existing wires ∪ proposed wires (deduped per port).
+- Cut only when the LLM explicitly states `connections: [{ remove: { from, to } }]`.
+- **Reason**: The LLM tends to omit the wires of the node it is editing. Interpreting omission as "cut" would silently drop unrelated existing connections. This default prevents the user complaint "connections get cut on their own."
+
+### 4.2 Properties: "keys not mentioned keep the existing value"
+- The set of keys the LLM explicitly set:
+  - Vibe Schema path → `_llmSpecKeys` (recorded at conversion time)
+  - raw JSON path → keys whose value is not `undefined`
+- All other keys are restored from the existing node (`preserveUnmentionedProperties`).
+- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/g/dirty/…) and `_`-prefixed metadata (§0.1) are excluded (identity, coordinates, editor state, and metadata are not carried over).
+- **Reason**: Even when a normaliser fills in a default value (e.g. debug's `complete`), it must not overwrite a value the user set earlier. Guarantees "settings you didn't touch are preserved."
+
+### 4.3 Node matching: exact-alias only, no fuzzy
+- When assigning a proposed node to an existing node, decide by **exact alias only** (`exactOnly: true`).
+- **Reason**: The LLM is given every existing alias in the prompt. A non-matching alias means "new". Allowing fuzzy here would let a new `inject_py_1` prefix-match an existing `inject` and silently overwrite an unrelated node. **"Add as new" is safer than "overwrite the wrong one".**
+
+---
+
+## 5. Config Node Protection
+
+- The LLM can **neither create nor delete** config nodes (broker, venv-config, etc.). It may only reference existing ones by alias. Enforced both in the prompt (`prompt_system.txt`) and on the apply side (`applyNodeDeletions` / Phase 2).
+- A singleton config reuses the single existing match by type (prevents duplicate creation).
+- **Reason**: Config nodes are shared resources (credentials, endpoints) whose breakage has wide impact. Preventing the LLM from creating/deleting them avoids accidents that drag in other flows. All configs are put into the context as "free to reference, cannot create/delete".
+
+---
+
+## 6. Multi-flow / implicit flow tagging
+
+- If schema nodes carry `flow: "<tab name>"`, apply per workspace (`dispatchMultiFlowImport`).
+- **Implicit tagging** (`inferImplicitFlowTagging`): even if the LLM forgets the tags, when the schema's aliases/connections resolve against existing nodes across multiple workspaces, infer alias→tab name, and follow connections so new nodes inherit the tab of their existing neighbors.
+- **Reason**: For instructions spanning multiple tabs like "MCU side / Server side", the LLM tends to drop the `flow` tag. Without tags, connections cannot cross the active-tab boundary, producing the "nothing connects to mqtt_out" symptom. Inference fills the gap.
+
+### The scan is confined to the context flows (mandatory)
+
+Inference, label resolution, and dispatch all scan **only the flows sent to the LLM as context** (`options.allowedWorkspaceIds` ← the message's `targetFlowIds`). Never every workspace.
+
+- **Reason**: auto-generated aliases (`inject`, `debug_1`, `function_2`, …) are unique only *within* a flow and collide freely across tabs. The alias→tab map is first-wins, so a global scan lets an unrelated flow that merely sits earlier in the tab bar claim `inject` and take the whole edit with it. And `replaceWorkspaceFlow` **clears** its target's canvas before re-importing, so a misroute is destructive rather than additive. The checkpoint only covers the context flows, so Restore cannot undo it either.
+- Scoping makes "flows written ⊆ flows checkpointed" hold, which is what keeps Restore meaningful.
+- When the active tab is out of scope (the user switched tabs after Send), the target is a context flow, not the active tab. Only an empty scope (no flow selected) keeps the legacy active-tab behaviour.
+- A final check right before `replaceWorkspaceFlow` **aborts** the import if the target escaped the scope.
+- Regression test: `test/cross_flow_isolation.test.js` (alias collision / tab switch / fan-out / out-of-scope `flow` tag / unscoped backwards compatibility).
+
+---
+
+## 7. Snapshot completeness — junction / group
+
+### Premises (Node-RED editor internals)
+- `RED.nodes.filterNodes({z})` **returns regular nodes only**. In the editor, junctions live in `junctionsByZ` and groups in `groupsByZ`, **separate registries**, reachable only via `RED.nodes.junctions(z)` / `RED.nodes.groups(z)` (verified in the Node-RED 4.1.7 editor-client).
+- `replaceWorkspaceFlow` (apply) and `restoreMultiFlowCheckpoint` (restore) **remove all** junctions / groups of the target workspace before re-importing, so anything missing from the snapshot is gone. On top of that, Phase 3's wire prune drops wires "targeting an ID not in rebuilt", so a missing junction also gets its `node→junction` wires cut as dangling.
+
+### Design (opt-in inclusion)
+- Added **`opts.includeCanvasExtras`** to `getFlowsByIds(flowIds, opts)` / `getCurrentFlow(flowIds, opts)`. Only when enabled, junctions / groups are included in the snapshot (`createExportableNodeSet` emits junctions correctly, with their wires).
+- **Only the two callers that rebuild the flow opt in**:
+  - `importer.safeGetCurrentFlow` (the rebuild base for apply)
+  - `chat_manager.snapshotCurrentFlow` (checkpoint save)
+- **The LLM-context path (`vibe_ui.js`) and the annotation path (`ui_core.js`) do NOT opt in.**
+  - **Reason**: These share `toIntermediate`'s alias numbering. Mixing junctions/groups in would change the order of aliases the model sees, altering generation behavior. Using the complete flow only on the apply side while keeping the generation side unchanged isolates the bug fix from generation quality.
+
+### Excluding groups from layout
+- A junction has x/y/wires, so `isCanvasNode` is true. It is a real routing point and may stay in the layout adjacency graph (its position is preserved from `basePositions` on the incremental path).
+- A group also has x/y, so `isCanvasNode` is true too, but **a group's bounding box encloses its own members**. Feeding it to the collision-resolution passes makes it "collide with its own contents" and break.
+- → Added `isLayoutNode()` (= `isCanvasNode && type!=='group'`), applied to all layout calls. **Groups are excluded from layout** (their positions are kept as-is).
+- Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive.
+
+---
+
+## 8. Layout priorities (details in layout.md)
+
+- **When an existing flow is present, incremental** (`placeAddedNodesNearNeighbors`): restore existing node coordinates from `basePositions` and place only the new nodes to the right/left of neighbors. maxColumns disabled (preserve the existing shape).
+- **Only for a brand-new flow, reflow** (`reflowCanvasNodes`): fold long chains via maxColumns.
+- **Gaps are "edge-to-edge clearance"** (visible whitespace), not center-to-center distance. Node width uses the editor's measured value (`RED.nodes.node(id).w`) when possible, falling back to an estimate on rename.
+- The `reposition` directive relayouts only the named subset and translates it back to its previous top-left so nothing else moves (re-arrange without changing IDs; avoids delete→recreate which changes IDs).
+
+---
+
+## 9. Checkpoint (rewind) semantics
+
+- **Immediately before** applying, save a snapshot of the target flow (`saveImportCheckpoint`). Bind the ID to the message; the Restore button next to the message rewinds.
+- Restore (`restoreMultiFlowCheckpoint`) removes all non-tab entities of the target workspace (regular nodes + subflow instances + junctions + groups) via type-specific APIs, then re-imports the snapshot.
+- That the snapshot includes junctions/groups (§7) is the prerequisite for them not vanishing on restore.
+- Restore marks the workspace dirty so it can be Deployed to commit.
+
+---
+
+## 10. Security / boundary defaults (assumptions)
+
+- All HTTP endpoints are on `RED.httpAdmin`. **adminAuth is assumed off** (the user's environment). If turned on, the endpoints being reachable unauthenticated is a known unaddressed item (would need token-bearing fetches).
+- API keys are encrypted (`credentials.json`, AES-256-CTR). Logs, errors, and client logs are masked via `redactSecrets`. Credentials are also stripped from the flow context sent to the LLM.
+
+---
+
+## 11. Points to discuss / known trade-offs
+
+Main points to discuss on top of this document:
+
+1. **Group type classification**: In `isConfigNode`'s structural fallback, a group is treated as config before export and as canvas after export (with x/y). Currently reconciled by "excluding it from layout only" — should `type==='group'`/`'junction'` be made explicit in the type check?
+2. **Whether to show junctions to the LLM context**: Currently not shown (§7 reason). Are there future cases where "the LLM should be aware of junction routing"? If shown, how to keep alias numbering consistent?
+3. **Misfire risk of implicit flow tagging**: When the same alias exists on multiple tabs, inference adopts the first tab hit. Should ambiguous cases be handled more strictly?
+4. **Fuzzy matching scope**: Node matching is exact-only, while prose annotation and hint resolution use fuzzy (minLen 8). Is this boundary (how much approximate matching to allow) appropriate?
+5. **adminAuth support**: Should authenticated environments be brought into the supported scope?
+6. **Raw IDs still left inside props**: `toIntermediate`'s ID→alias substitution only inspects **top-level string values** of props. IDs nested in arrays or objects (e.g. a link in/out node's `links: [id, …]`) pass through to the model verbatim, which breaks the §0 premise that the LLM never sees IDs. Substituting recursively would require making `toNodeRed`'s alias→ID restoration symmetric to the same depth — miss that and the links break.
+
+### Reference: alias resolution priority (`buildFlowLookup().resolve`)
+```
+exact ID → exact alias → normalized alias → node name
+   → [exactOnly stops here]
+   → loose alias → fuzzy approximate (minLen default 8, only when unique)
+```
+- `exactOnly` is used in node matching (§4.3) and hint/directive pre-resolution to prevent a weak match from stealing another node's ID.

@@ -199,7 +199,7 @@ Target selection per comment:
    the alias to a real node id and stores it on `node._llmAboveId`;
    `repositionCommentsByLlmOrder` uses it directly. The target may be a
    new node in this schema or an existing node on the live canvas.
-2. **Fallback (legacy)** — for comments without `above`, the layout
+2. **Fallback** — for comments without `above`, the layout
    uses `node._llmOrder` (set by `FlowConverterCore.toNodeRed`) to find
    the next canvas node in declaration order.
 
@@ -242,8 +242,8 @@ in the `nodes` map.
      of each flow lines up at the canvas's left margin.
    - Branch siblings that share a predecessor share that predecessor's
      `rightEdge + edgeGap`, so they line up too.
-   - Downstream nodes in a chain advance by THIS chain's widths only — a
-     wide label in a parallel flow no longer drags this chain right.
+   - Downstream nodes in a chain advance by THIS chain's widths only, so
+     a wide label in a parallel flow does not drag this chain right.
 5. `computeComponentYOffsets` stacks components with `componentGap` of
    edge-to-edge clearance (component step = `nodeHeight + componentGap`).
 6. `node.x = leftEdge + width(node) / 2`,
@@ -284,9 +284,19 @@ Flow B's top (295) is exactly `componentGap = 80` px.
 | 3.6 | **Insertion reflow** — for every component containing a node from `newlyPlaced` (i.e. a NEW node that `tryPlace` successfully wired to a positioned neighbour), call `reflowComponentInPlace`: `reflowCanvasNodes` pinned to the component's current top-left, with `maxColumns: Infinity` to avoid surprise column folding. The pre-existing user-placed nodes in that component move too, which is the only way to give the inserted node a uniform width-aware cadence. Orphan-band new nodes (no positioned neighbour) are excluded — they get a fresh layout from Step 4 and have no chain to honour. The "always reflow on connection" trigger is the user-specified contract; the cheaper directional pushes in 3.4 / 3.5a still run first so 3.6 always operates on a sane starting point. |
 | 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)` (bboxes use edges, so `bandGap` is delivered exactly edge-to-edge) and shift every collected `O` by that same `dy`. **Comments are never moved by this pass** — they ride along with their target via the comment-anchor mechanism, or stay put if they are standalone. Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
 | 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes. The first orphan row's centre is `maxBottomEdge + bandGap + nodeHeight/2`, so there is exactly `bandGap` of edge-to-edge clearance between the previous flow's bottom and the orphan's top — matching the formula Step 3.5b uses. Horizontally, orphan column 0 starts at the **leftmost left edge** of the positioned set (not the leftmost centre). **Comments are always excluded** from the orphan band — captions keep whatever x/y they came in with, or are placed onto their schema-named target by the final comment pass. |
-| 5 | `resolveOverlaps` (safety net): scan all canvas-node pairs and push the lower one further down whenever their boxes overlap. Comments are skipped here too. |
+| 5 | `resolveOverlaps` (safety net): scan all canvas-node pairs and push the lower one further down whenever their boxes overlap. **Component-rigid** — it is given the connected-component map, so a residual overlap between two flows is cleared by translating the WHOLE lower component down; it never shears individual nodes out of a flow the user did not edit, and same-component pairs are left alone. Comments are skipped here too. |
 | 6 | `applyCommentAnchors`: re-glue each comment that was *directly touching* a canvas node (or another comment in such a stack) to that node's new position, preserving the original offset. Standalone comments — anything beyond `stackStep + gridSize` below the nearest target, or outside its rendered bbox + one grid square — are NOT anchored and stay where the user put them. |
 | 7 | Final `repositionCommentsByLlmOrder`: position newly-added schema comments above their resolved target (now that all targets, including orphan-band ones, have final coordinates). |
+
+#### Guarantee: unmodified flows translate only
+
+A connected component that contains **no** added node (and no Step 3.4
+horizontally-shifted node) is never reflowed and never sheared — it can only
+be **translated as a rigid whole**. Only the edited component is reflowed
+(Step 3.6); every other flow is moved down as a unit by the cross-component
+push (Step 3.5b) or, for any residual overlap, by the component-rigid safety
+net (Step 5). This keeps a user's carefully arranged flow intact when an edit
+to a neighbouring flow happens to overlap it — the neighbour just slides down.
 
 #### `maxColumns` in incremental layout
 

@@ -27,7 +27,10 @@
 
     function snapshotCurrentFlow(targetFlowIds) {
         if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) return null;
-        let flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
+        // includeCanvasExtras: checkpoints must record junctions and groups
+        // too, else Restore removes them from the workspace and re-imports a
+        // snapshot that never had them — deleting them for good.
+        let flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds, { includeCanvasExtras: true });
         return (Array.isArray(flow) && flow.length > 0) ? flow : null;
     }
 

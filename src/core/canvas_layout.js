@@ -1,6 +1,6 @@
 // Canvas Layout - standalone layout engine for Node-RED node arrays.
 // Public API: layoutNodes, reflowCanvasNodes, placeAddedNodesNearNeighbors,
-// estimateNodeWidth, getNodeWidth, pairSpacing. See ./LAYOUT.md.
+// estimateNodeWidth, getNodeWidth, pairSpacing. See docs/*/layout.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -11,7 +11,7 @@
 })(function() {
     'use strict';
 
-    // See ./LAYOUT.md for the meaning of each constant and the width-aware
+    // See docs/*/layout.md for the meaning of each constant and the width-aware
     // spacing rule (`distance = (widthA + widthB)/2 + edgeGap`).
     //
     // `spacingY`, `componentGap`, `edgeGap` all represent EDGE-TO-EDGE
@@ -40,7 +40,7 @@
         return true;
     }
 
-    // --- Pure topological layout (./LAYOUT.md §1) ---
+    // --- Pure topological layout (docs/*/layout.md §1) ---
     function layoutNodes(aliases, outgoing, incoming, maxColumns) {
         if (!maxColumns || maxColumns < 2) maxColumns = 5;
         let positions = {};
@@ -296,7 +296,7 @@
     function nodeRightEdge(node, opts) { return (node.x || 0) + getNodeWidth(node, opts) / 2; }
     function nodeLeftEdge (node, opts) { return (node.x || 0) - getNodeWidth(node, opts) / 2; }
 
-    // Width-aware centre-to-centre distance (./LAYOUT.md §"Width-aware…").
+    // Width-aware centre-to-centre distance (docs/*/layout.md §"Width-aware…").
     function pairSpacing(a, b, opts) {
         let gap = pickOption(opts, 'edgeGap', LAYOUT_DEFAULTS.edgeGap);
         return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
@@ -524,7 +524,17 @@
     // whose `liveNodeWidth` hook turned out optimistic). Comments are
     // skipped here -- they are re-aligned to their target by the
     // comment pass that runs after.
-    function resolveOverlaps(canvasNodes, opts) {
+    // Safety-net overlap resolver. When `compOf` (nodeId → connected-
+    // component id) is supplied, each component is treated as a RIGID BODY:
+    // a residual overlap between two different flows is cleared by
+    // translating the WHOLE lower component down, never by shearing
+    // individual nodes out of it. This is what guarantees that a flow the
+    // user did not edit keeps its internal shape and only ever moves as a
+    // unit (see docs/*/layout.md — "unmodified components translate only").
+    // Same-component pairs are skipped: the component's own layout pass
+    // (reflow, or the preserved user layout) already leaves no internal
+    // overlap. Without `compOf` the old per-node behaviour is used.
+    function resolveOverlaps(canvasNodes, opts, compOf) {
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
@@ -534,11 +544,23 @@
         });
         if (nodes.length < 2) return;
 
+        // Group non-comment nodes by component so a push can move the whole
+        // body at once (rigid). Only built when compOf is provided.
+        let members = null;
+        if (compOf) {
+            members = {};
+            nodes.forEach(function(n) {
+                let c = compOf[n.id];
+                if (c === undefined) return;
+                (members[c] = members[c] || []).push(n);
+            });
+        }
+
         // spacingY is edge-to-edge; the actual row pitch (centre delta) is
         // nodeHeight + spacingY. Floor stepY at a single grid square so
         // tightly-packed nodes always advance at least one snap unit.
         let stepY = nodeHeight + Math.max(spacingY, gridSize);
-        let maxPasses = nodes.length + 5;
+        let maxPasses = nodes.length * 2 + 5;
         let changed = true;
         while (changed && maxPasses-- > 0) {
             changed = false;
@@ -552,10 +574,21 @@
                     let b = nodes[j];
                     let bw = getNodeWidth(b, opts);
                     if (Math.abs(a.x - b.x) < (aw + bw) / 2 && (b.y - a.y) < nodeHeight) {
+                        let ca = compOf ? compOf[a.id] : undefined;
+                        let cb = compOf ? compOf[b.id] : undefined;
+                        // Leave a component's own internal layout alone.
+                        if (compOf && ca !== undefined && ca === cb) continue;
                         // Push by exact `stepY` (= nodeHeight + max(spacingY,
                         // gridSize)); snapping would break the consistent
                         // per-row pitch that the rest of the layout enforces.
-                        b.y = a.y + stepY;
+                        let delta = (a.y + stepY) - b.y;
+                        if (delta <= 0) continue;
+                        if (members && cb !== undefined) {
+                            // Rigid: translate b's whole flow down together.
+                            members[cb].forEach(function(n) { n.y = n.y + delta; });
+                        } else {
+                            b.y = a.y + stepY;
+                        }
                         changed = true;
                     }
                 }
@@ -592,7 +625,7 @@
         });
     }
 
-    // --- Canvas-level layout (./LAYOUT.md §§ 2 and 3) ---
+    // --- Canvas-level layout (docs/*/layout.md §§ 2 and 3) ---
 
     function reflowCanvasNodes(nodes, options) {
         let opts = options || {};
@@ -828,7 +861,7 @@
             remaining = next;
         }
 
-        // Step 3.4 (./LAYOUT.md): shift downstream chains to clear inserted nodes.
+        // Step 3.4 (docs/*/layout.md): shift downstream chains to clear inserted nodes.
         let shiftedIds = {};
         let seedDeltas = {};
         canvasNodes.forEach(function(n) {
@@ -1200,8 +1233,9 @@
         // Safety net: resolve any residual node-on-node overlap that the
         // directional pushes above couldn't reach. Must run before the
         // final comment pass so comments re-align to targets at their
-        // final Y.
-        resolveOverlaps(canvasNodes, opts);
+        // final Y. Passing `compOf` makes it component-rigid: an untouched
+        // flow can only be translated as a whole here, never sheared.
+        resolveOverlaps(canvasNodes, opts, compOf);
 
         // Carry existing comments along with their (possibly moved)
         // anchor target. Runs before the new-comment pass so that pass

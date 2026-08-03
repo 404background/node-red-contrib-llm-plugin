@@ -98,7 +98,7 @@ value props on a config node are never mistaken for config references.
 The comment's coordinates here are its raw layout slot; its final
 position (touching `inject_tick`'s top edge, left edges aligned) is
 applied by the importer's layout pass, which resolves `above` to the
-real node id first. See [LAYOUT.md](./LAYOUT.md#comment-placement).
+real node id first. See [layout.md](./layout.md#comment-placement).
 
 ### 3. Round-trip code
 
@@ -124,6 +124,7 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 | `isCanvasNode(node)` | `!tab && !subflow: && !isConfigNode`. |
 | `isNoInputType(type)` | True for source-only nodes (`inject`, `catch`, `comment`, …). |
 | `isNoOutputType(type)` | True for `comment` (and any other zero-output type via runtime def). |
+| `isMetaProp(key)` | True when `key` starts with `_` — the metadata convention both conversions enforce. |
 | `setRuntimeGetType(fn)` | Inject `RED.nodes.getType` so the helpers see community nodes. |
 
 `window.LLMPlugin.Configurator` is an alias for `FlowConverterCore` kept
@@ -145,12 +146,23 @@ NodeEntry = {
   config?    : true                     // mark for config nodes
   above?     : alias                    // comment-only: target node to sit above
   props?     : object                   // type-specific fields
-  // any other root-level key is folded into props on conversion
+  // any other root-level key is folded into props on conversion,
+  // EXCEPT `_`-prefixed keys — those are metadata and are ignored
 }
 
 ConnEntry   = { from: alias, to: alias, fromPort?: number }
 RemoveEntry = { remove: { from: alias, to: alias } }
 ```
+
+### Metadata keys (`_`-prefixed)
+
+`isMetaProp(key)` (= `key` starts with `_`) marks a property as plugin
+bookkeeping rather than node configuration, and the converter enforces it
+in both directions: `toIntermediate` emits no `_` key, so the LLM never
+sees one, and `toNodeRed` ignores every `_` key a schema supplies, so the
+LLM cannot author one either. Metadata is written solely by `toNodeRed`
+for the importer to consume, and the importer strips all of it before the
+nodes reach the canvas. See [design.md](./design.md) §0.1.
 
 ### Aliases
 
@@ -173,8 +185,8 @@ and deletions in any order.
 { "connections": [ { "remove": { "from": "a", "to": "b" } } ] }     // edge delete
 ```
 
-Connections are otherwise additive — see `src/README.md` "importer.js"
-for the full merge contract.
+Connections are otherwise additive — see [architecture.md](./architecture.md)
+"importer.js" for the full merge contract.
 
 ### Reposition directive
 
@@ -216,12 +228,12 @@ live canvas (the importer resolves the alias either way). Multiple
 comments sharing the same `above` target stack upward in declaration
 order.
 
-If `above` is omitted (legacy schemas), the layout falls back to "the
+If a schema omits `above` anyway, the layout falls back to "the
 next canvas node in declaration order" and trailing comments (no canvas
 node after them and no `above`) are silently dropped. Comments WITH
 `above` are always kept regardless of where they sit in the `nodes`
 list — declaration order doesn't matter once the anchor is named. See
-[LAYOUT.md](./LAYOUT.md#comment-placement) for the placement geometry.
+[layout.md](./layout.md#comment-placement) for the placement geometry.
 
 ### Detection helpers
 
@@ -239,8 +251,8 @@ list — declaration order doesn't matter once the anchor is named. See
 
 1. Drop `tab` and `subflow:*` definitions.
 2. Generate aliases via `generateAlias`.
-3. For each remaining node, collect non-META keys (skip ones starting
-   with `_`) into `props`. Resolve string props matching another node
+3. For each remaining node, collect non-META, non-metadata keys (see
+   `isMetaProp`) into `props`. Resolve string props matching another node
    ID to that node's alias so the schema is portable.
 4. Walk each node's `wires[port][i]` and emit a `{ from, to, fromPort? }`
    entry per target.
@@ -250,9 +262,10 @@ list — declaration order doesn't matter once the anchor is named. See
 ### `toNodeRed(intermediate, options?)`
 
 1. **Auto-stub missing config refs** — alias-shaped string props with no
-   matching node entry get a stub `{ type: '<key>-config', config: true,
-   _autoStub: true }` (or a mapping from `CONFIG_REF_KEYS` like
-   `broker → mqtt-broker`). Skipped when the mapped type equals the
+   matching node entry get a stub `{ type: '<key>-config', config: true }`
+   (or a mapping from `CONFIG_REF_KEYS` like
+   `broker → mqtt-broker`), recorded internally so the assembled node
+   carries `_autoStub`. Skipped when the mapped type equals the
    node's own type: an `mqtt-broker`'s `broker` prop is its hostname,
    not a reference. Cross-type refs (a `ui_group`'s `tab → ui-tab`)
    still stub.
@@ -266,11 +279,13 @@ list — declaration order doesn't matter once the anchor is named. See
 5. **Build adjacency from connections**, dropping edges where source is a
    no-output type or target is a no-input type.
 6. **Layout** — `CanvasLayout.layoutNodes` for logical positions, then
-   width-aware column placement; see [LAYOUT.md](./LAYOUT.md).
+   width-aware column placement; see [layout.md](./layout.md).
 7. **Build per-port wires** with the same source/target filtering.
-8. **Assemble nodes**: carry `id`, `type`, `name`, optional `_llmAlias`
-   (when `preserveAlias: true`), `_llmFlow` (from `spec.flow`),
-   `_llmOrder` (declaration index for layout); set `z` to the workspace
+8. **Assemble nodes**: carry `id`, `type`, `name`, and the metadata the
+   importer needs — `_llmAlias` (when `preserveAlias: true`), `_llmFlow`
+   (from `spec.flow`), `_llmAbove` (comment anchor), `_llmSpecKeys` (the
+   keys the schema actually set), `_llmOrder` (declaration index for
+   layout), `_autoStub`; set `z` to the workspace
    for canvas nodes; flatten `props` + root-level keys; resolve alias
    references in flattened props to real IDs; set `wires`.
 9. **Type-specific normalisers**: `inject` (regenerate `props` rules),

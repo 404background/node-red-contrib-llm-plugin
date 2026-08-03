@@ -1,7 +1,11 @@
-# LLM Plugin — Source Implementation Guide
+# Architecture — Source Implementation Guide
 
 Technical reference for the client and server modules behind the LLM
 Plugin sidebar.
+
+> **The design rationale — processing flow, rules, priorities and *why* they
+> are the way they are — lives in [design.md](./design.md).** This document is
+> the "what each module does" catalog; design.md covers "why this order / rule".
 
 ## Big picture
 
@@ -23,8 +27,8 @@ layout backbone:
 
 | Module | Owns | Reference |
 |--------|------|-----------|
-| `flow_converter_core.js` | Vibe Schema ↔ Node-RED JSON + type detection helpers | [core/VIBE_SCHEMA.md](./core/VIBE_SCHEMA.md) |
-| `canvas_layout.js` | Topological layout, width-aware spacing, comment placement | [core/LAYOUT.md](./core/LAYOUT.md) |
+| `flow_converter_core.js` | Vibe Schema ↔ Node-RED JSON + type detection helpers | [vibe-schema.md](./vibe-schema.md) |
+| `canvas_layout.js` | Topological layout, width-aware spacing, comment placement | [layout.md](./layout.md) |
 | `llm_json_parser.js` | JSON repair, fuzzy alias matching, schema extraction | (inline JSDoc) |
 
 The rest of `src/` is plugin-specific glue: `importer.js` orchestrates
@@ -40,16 +44,15 @@ with the sidebar.
 llm_plugin.js           Node-RED plugin entry point — loads server.js
 llm_plugin.html         Sidebar + settings HTML templates, marked.js include
 llm-plugin_styles.css   All plugin CSS
+docs/                   All developer docs (this folder) — en/ + jp/
 src/
   client.js             Script loader (browser entry) + settings dialog controller
   common.js             Shared helpers (escapeHtml, notify, el, randomId, …)
   prompt_system.txt     System prompt template (server-side)
   core/
-    canvas_layout.js    Layout engine (UMD)             ← core/LAYOUT.md
-    flow_converter_core.js  Vibe Schema converter (UMD) ← core/VIBE_SCHEMA.md
+    canvas_layout.js    Layout engine (UMD)             ← docs/*/layout.md
+    flow_converter_core.js  Vibe Schema converter (UMD) ← docs/*/vibe-schema.md
     llm_json_parser.js  LLM JSON parsing (UMD)
-    LAYOUT.md
-    VIBE_SCHEMA.md
   chat_manager.js       Chat session CRUD + checkpoint persistence
   importer.js           Extract LLM output, rebuild & import into editor
   ui_core.js            Message rendering, flow export
@@ -114,12 +117,14 @@ Shared helpers on `LLMPlugin.Common`: `escapeHtml`, `escapeRegExp`,
 UMD (`window.LLMPlugin.FlowConverterCore`, alias `Configurator`).
 Bi-directional converter plus type-detection helpers (`isConfigNode`,
 `isCanvasNode`, `isNoInputType`, `isNoOutputType`, `setRuntimeGetType`).
-See [core/VIBE_SCHEMA.md](./core/VIBE_SCHEMA.md).
+Also owns the metadata convention (`isMetaProp`): `_`-prefixed properties
+are never emitted to the LLM and never accepted from it.
+See [vibe-schema.md](./vibe-schema.md).
 
 ### `core/canvas_layout.js` — layout engine
 
 UMD (`window.LLMPlugin.CanvasLayout`). Standalone — no plugin
-dependencies. See [core/LAYOUT.md](./core/LAYOUT.md).
+dependencies. See [layout.md](./layout.md).
 
 ### `core/llm_json_parser.js` — LLM output parser
 
@@ -149,7 +154,7 @@ Chat session lifecycle.
 | `loadChatHistoriesFromServer()` | `GET /chat-histories`. Auto-loads the most recent if none open. |
 | `loadChat(chatId)` | Replay messages into the chat area. |
 | `showChatList()` / `deleteChat(chatId, cb)` | Chat-list modal. |
-| `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. |
+| `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. The snapshot opts into `includeCanvasExtras` so junctions/groups are recorded (see [design.md](./design.md#7-snapshot-completeness--junction--group)). |
 | `updateMessageMeta(messageId, patch)` | Patch stored message metadata. |
 
 ### `importer.js`
@@ -173,19 +178,35 @@ Full import workflow with these guarantees:
 
 1. **Merge semantics** — every import adds/updates listed nodes,
    deletes aliases mapped to `null`, and leaves everything not mentioned
-   alone. There is no `applyMode` field; one schema can freely combine
-   adds, updates, and deletions.
-2. **Implicit flow inference** — when the schema omits `flow` tags but
+   alone. Merge is the only apply mode — the schema has no field that
+   selects a different one — so one schema can freely combine adds,
+   updates, and deletions.
+2. **Workspace scope** — `options.allowedWorkspaceIds` (the sidebar
+   passes the message's `targetFlowIds`, i.e. the flows that were sent
+   to the model as context) confines every workspace decision to those
+   flows. `resolveFlowLabelToWorkspace`, `inferImplicitFlowTagging` and
+   `dispatchMultiFlowImport` all skip out-of-scope tabs, the default
+   target falls back to a context flow when the active tab is not one,
+   and a final check before `replaceWorkspaceFlow` aborts the import
+   rather than writing outside the scope. This is a correctness
+   requirement, not a nicety: auto-generated aliases (`inject`,
+   `debug_1`, …) are unique only *within* a flow, and the rebuild clears
+   its target's canvas before re-importing — so an unscoped resolution
+   can destructively rewrite a flow the conversation never saw. An empty
+   / absent scope means "no flow context was selected" and keeps the
+   legacy active-tab behaviour. Regression test:
+   `test/cross_flow_isolation.test.js`.
+3. **Implicit flow inference** — when the schema omits `flow` tags but
    its nodes / connections reference existing aliases on multiple
-   workspaces (a common LLM mistake when the conversation spans MCU /
-   Server style splits), `inferImplicitFlowTagging` scans every
-   workspace, seeds the tag for any schema alias that matches an
-   existing canvas node, then propagates the tag through `connections`
-   so brand-new nodes inherit the flow of their existing-node
-   neighbors. The inferred-tagged schema is then handed to
+   context workspaces (a common LLM mistake when the conversation spans
+   MCU / Server style splits), `inferImplicitFlowTagging` scans the
+   in-scope workspaces, seeds the tag for any schema alias that matches
+   an existing canvas node, then propagates the tag through
+   `connections` so brand-new nodes inherit the flow of their
+   existing-node neighbors. The inferred-tagged schema is then handed to
    `collectFlowGroupsFromSchema` so the multi-flow dispatch fires even
    without explicit `flow` markers.
-3. **Strict delete → add → connect ordering** —
+4. **Strict delete → add → connect ordering** —
    `rebuildWorkspaceFromSnapshot` runs three labeled phases so a single
    schema cannot contradict itself mid-merge:
    - *Phase 1 (Delete)* drops every node named in a delete directive
@@ -197,31 +218,40 @@ Full import workflow with these guarantees:
      dangling wires, applies `removeConnections`, then adds the
      schema's `connections` via the same lookup so new-node aliases
      resolve regardless of which mode (ask / agent) produced them.
-4. **Additive wire merge** — when a proposed node matches an existing
+5. **Additive wire merge** — when a proposed node matches an existing
    one, its `wires` are unioned with the existing wires (per port).
    Connections are only severed by explicit `remove` directives.
-5. **Property preservation** — properties the LLM did NOT mention are
+6. **Property preservation** — properties the LLM did NOT mention are
    restored from the existing node. Mentioned-key set comes from
    `_llmSpecKeys` (Vibe Schema path) or `n[key] !== undefined`
    (raw-JSON path), so normaliser-default values don't override user
    settings.
-6. **Comment placement** — every comment names its target canvas node
+7. **Comment placement** — every comment names its target canvas node
    via `above: <alias>` and lands directly atop that node with zero grid
    gap, **left edge aligned** with the target's left edge (not its
    centre). New comments stack above any existing comment touching the
    same target instead of overlapping. Comments with `above` are
    kept regardless of declaration order — only comments WITHOUT `above`
-   AND with no canvas node later in the list are dropped. Legacy
-   schemas without `above` fall back to "next canvas node in
-   declaration order". See [core/LAYOUT.md](./core/LAYOUT.md#comment-placement).
-7. **Config Node Protection** — the LLM cannot create or delete config
+   AND with no canvas node later in the list are dropped. A schema that
+   omits `above` anyway falls back to "next canvas node in declaration
+   order". See [layout.md](./layout.md#comment-placement).
+8. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
-8. **Reposition without ID churn** — a top-level `reposition: [alias…]`
-   directive (see [core/VIBE_SCHEMA.md](./core/VIBE_SCHEMA.md#reposition-directive))
+9. **Junction / group preservation** — the rebuild snapshot includes the
+   workspace's junctions and groups (`includeCanvasExtras`), so the
+   remove-then-reimport cycle never deletes them and wires that target a
+   junction are not pruned. See [design.md](./design.md#7-snapshot-completeness--junction--group).
+10. **Reposition without ID churn** — a top-level `reposition: [alias…]`
+   directive (see [vibe-schema.md](./vibe-schema.md#reposition-directive))
    reflows just the named canvas-node subset while keeping IDs, props,
    and wires. The subset is anchored to its previous top-left so the
    rest of the canvas doesn't visibly shift.
-9. Replace the active workspace atomically; layout is delegated to
+11. **Metadata sweep** — every `_`-prefixed property the converter added
+   is stripped before the nodes reach the canvas: once right after the
+   merge (keeping only `_llmOrder` / `_llmAboveId`, which the layout
+   passes still consume) and once after layout. Nothing metadata-shaped
+   is ever imported. See [design.md](./design.md) §0.1.
+12. Replace the target workspace atomically; layout is delegated to
    `CanvasLayout`.
 
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and
@@ -238,7 +268,7 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 | `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)` (with `RED.editor.edit(node)` as fallback). Notifies if the node has since been deleted. Exposed as `LLMPlugin.UI.focusCanvasNode`. |
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
-| `getFlowsByIds(flowIds)` / `getCurrentFlow(flowIds?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). |
+| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
@@ -298,7 +328,7 @@ Thin HTTP layer over `llm_core.js`, plus the sidebar-only persistence.
 ### `node/` — runtime workflow node
 
 The `llm-request` node (and its Admin-API helper) reuse this engine. It is
-documented separately in **[../node/README.md](../node/README.md)**. Note: the
+documented separately in **[runtime-node.md](./runtime-node.md)**. Note: the
 sidebar's chat history retains the target flow **name** (`ui_core.js` badge +
 `vibe_ui.js` `metaOpts.targetFlowName`).
 

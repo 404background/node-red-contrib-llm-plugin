@@ -1,5 +1,5 @@
 // Flow Converter Core: Node-RED JSON ↔ Vibe Schema converter + type
-// detection helpers. See ./VIBE_SCHEMA.md.
+// detection helpers. See docs/*/vibe-schema.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory(require('./canvas_layout.js'));
@@ -87,6 +87,22 @@
     // Runtime keys never treated as type-specific `props`.
     let META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
 
+    /**
+     * Metadata naming convention: any property whose name starts with `_` is
+     * plugin- or editor-internal bookkeeping, never part of a node's
+     * user-facing configuration. Two invariants follow, and both are enforced
+     * here so the rule lives in one place (see docs/{en,jp}/design.md §0):
+     *   - `toIntermediate` never emits a `_` key  → the LLM never sees
+     *     metadata, matching the split "deterministic bookkeeping is the
+     *     code's job, node semantics are the model's job".
+     *   - `toNodeRed` never accepts a `_` key from the schema → the LLM
+     *     cannot forge metadata; only this module writes it, and the
+     *     importer strips it again before the nodes reach the canvas.
+     */
+    function isMetaProp(key) {
+        return typeof key === 'string' && key.charAt(0) === '_';
+    }
+
     // ------------------------------------------------------------------ //
     //  Utilities                                                          //
     // ------------------------------------------------------------------ //
@@ -167,7 +183,7 @@
             let props = {};
             Object.keys(node).forEach(function(key) {
                 if (META_KEYS.indexOf(key) !== -1) return;
-                if (key.charAt(0) === '_') return;              // editor-internal
+                if (isMetaProp(key)) return;                    // metadata: not the LLM's business
                 props[key] = node[key];
             });
 
@@ -282,6 +298,10 @@
         // Detection strategies:
         //  1. Props keys ending in "config" (e.g. venvconfig → venv-config)
         //  2. Well-known reference keys that commonly point to config nodes
+        // Aliases of the stubs invented below. Tracked here rather than as a
+        // flag on the spec so the schema itself can never claim "I am an auto
+        // stub" — metadata is authored by this module only.
+        let autoStubAliases = {};
         let CONFIG_REF_KEYS = {
             'broker': 'mqtt-broker',
             'server': null,          // type varies — skip auto-create
@@ -302,7 +322,8 @@
             // Cross-type refs (ui-group's `tab` → ui-tab) still stub.
             function stubIfCrossType(refAlias, mappedType) {
                 if (!mappedType || mappedType === spec.type) return;
-                nodeSpecs[refAlias] = { type: mappedType, name: refAlias, config: true, _autoStub: true, props: {} };
+                nodeSpecs[refAlias] = { type: mappedType, name: refAlias, config: true, props: {} };
+                autoStubAliases[refAlias] = true;
             }
 
             Object.keys(spec.props).forEach(function(key) {
@@ -797,6 +818,10 @@
             // the LLM listed them next to.
             node._llmOrder = schemaIndex;
             if (preserveAlias) node._llmAlias = alias;
+            // Marks a config stub this module invented for a dangling props
+            // reference. The importer uses it to skip the stub when the real
+            // config node already exists (Config Node Protection).
+            if (autoStubAliases[alias]) node._autoStub = true;
             // Preserve the Vibe Schema `flow` field as `_llmFlow` so the
             // importer can route this node to the correct workspace in
             // multi-flow edits. The field is stripped before nodes reach
@@ -831,6 +856,7 @@
             let mergedProps = {};
             if (typeof spec.props === 'object' && spec.props !== null && !Array.isArray(spec.props)) {
                 Object.keys(spec.props).forEach(function(key) {
+                    if (isMetaProp(key)) return;   // schema-supplied metadata is ignored
                     mergedProps[key] = spec.props[key];
                 });
             } else if (Array.isArray(spec.props)) {
@@ -838,10 +864,12 @@
                 mergedProps.props = spec.props;
             }
 
-            // Flatten spec root keys into mergedProps, skipping META_KEYS
-            // and Vibe-Schema-only keys (props, _llmAlias, config, flow, above).
-            let SPEC_SKIP_KEYS = META_KEYS.concat(['props', '_llmAlias', 'config', 'flow', 'above']);
+            // Flatten spec root keys into mergedProps, skipping META_KEYS,
+            // the Vibe-Schema-only keys (props, config, flow, above), and any
+            // `_`-prefixed metadata (never a node property — see isMetaProp).
+            let SPEC_SKIP_KEYS = META_KEYS.concat(['props', 'config', 'flow', 'above']);
             Object.keys(spec).forEach(function(key) {
+                if (isMetaProp(key)) return;
                 if (SPEC_SKIP_KEYS.indexOf(key) === -1) {
                     mergedProps[key] = spec[key];
                 }
@@ -865,11 +893,11 @@
             // Resolve alias references in props → real IDs.
             // Only resolve type-specific properties (config-node references like
             // venvconfig: "my_venv" → "id_xxx"). Skip META_KEYS (id, type, name,
-            // z, x, y, wires, g) and _llmAlias to avoid corrupting node identity
+            // z, x, y, wires, g) and metadata to avoid corrupting node identity
             // when an alias happens to match a type or name (e.g. alias "inject"
             // colliding with type "inject").
             Object.keys(node).forEach(function(key) {
-                if (key.charAt(0) === '_') return;
+                if (isMetaProp(key)) return;
                 if (META_KEYS.indexOf(key) !== -1) return;
                 if (typeof node[key] === 'string' && aliasToId[node[key]]) {
                     node[key] = aliasToId[node[key]];
@@ -936,6 +964,7 @@
         isCanvasNode:        isCanvasNode,
         isNoInputType:       isNoInputType,
         isNoOutputType:      isNoOutputType,
+        isMetaProp:          isMetaProp,
         setRuntimeGetType:   setRuntimeGetType
     };
 });

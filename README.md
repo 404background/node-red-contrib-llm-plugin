@@ -88,12 +88,27 @@ To try it, import an example via **Menu → Import → Examples**:
 review and Deploy manually) or `llm-self-feedback` (a self-improvement loop:
 Agent + Auto deploy, hard-capped at 5 iterations).
 
-See **[node/README.md](node/README.md)** for full details.
+See **[docs/en/runtime-node.md](docs/en/runtime-node.md)** ([日本語](docs/jp/runtime-node.md)) for full details.
 
-## More Docs
+## Documentation
 
-- Workflow node: [node/README.md](node/README.md)
-- Implementation guide: [src/README.md](src/README.md)
+All developer documentation lives in **[`docs/`](docs/)**, with English (`docs/en/`)
+and Japanese (`docs/jp/`) versions of every page. Start from the
+[documentation hub](docs/README.md).
+
+> **AI agents / contributors:** when developing on this repository, read the
+> `docs/` folder first — especially [`design`](docs/en/design.md) (why the
+> processing flow, rules, and priorities are the way they are) and
+> [`architecture`](docs/en/architecture.md) (what each module does). Docs are
+> consolidated here rather than scattered across `src/`, `src/core/`, and `node/`.
+> Keep the `en/` and `jp/` versions in sync when you change either.
+
+- Documentation hub: [docs/README.md](docs/README.md)
+- Design notes (flow / rules / priorities & rationale): [en](docs/en/design.md) · [jp](docs/jp/design.md)
+- Architecture (implementation guide): [en](docs/en/architecture.md) · [jp](docs/jp/architecture.md)
+- Vibe Schema: [en](docs/en/vibe-schema.md) · [jp](docs/jp/vibe-schema.md)
+- Layout engine: [en](docs/en/layout.md) · [jp](docs/jp/layout.md)
+- Workflow node: [en](docs/en/runtime-node.md) · [jp](docs/jp/runtime-node.md)
 - Prompt template: [src/prompt_system.txt](src/prompt_system.txt)
 
 ## Security Notice
