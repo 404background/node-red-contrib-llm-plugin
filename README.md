@@ -113,7 +113,7 @@ cp llm-test-config.example.json llm-test-config.json
 | Field | Meaning |
 |-------|---------|
 | `ollamaUrl` | Endpoint to test against (default `http://localhost:11434`) |
-| `model` | Model name (default `gemma4:e2b`) |
+| `model` | Model name (default `gemma3:4b`) |
 | `timeoutMs` | Per-request timeout |
 | `attempts` | Retries allowed for a reply to contain a parseable schema — small models sometimes answer in prose first |
 | `showReplies` | Print the model's raw replies so you can see what it actually said |
@@ -121,7 +121,7 @@ cp llm-test-config.example.json llm-test-config.json
 `LLM_TEST_URL` / `LLM_TEST_MODEL` override the file for a single run:
 
 ```bash
-LLM_TEST_MODEL=gemma3:4b npm run test:llm
+LLM_TEST_MODEL=llama3.2 npm run test:llm
 ```
 
 Model output is not deterministic, so the flow assertions are structural (a

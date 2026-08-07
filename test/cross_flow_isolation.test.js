@@ -1,13 +1,20 @@
-// Regression test for the flow-isolation guarantee: an LLM edit may only
-// modify the flow(s) that were sent to the model as context. Aliases are
-// unique only WITHIN a flow, so any workspace resolution that scans every
-// tab can land an edit on a flow the conversation never saw — and the
-// rebuild clears its target's canvas before re-importing, so a misroute is
-// destructive, not additive.
+// Regression tests for the flow-isolation guarantee: the user's flow
+// selection is the boundary, in both directions.
 //
-// Loads the real client modules in a mocked RED sandbox and drives
+// INBOUND (scenarios 1-7): an LLM edit may only modify the flow(s) that were
+// sent to the model as context. Aliases are unique only WITHIN a flow, so any
+// workspace resolution that scans every tab can land an edit on a flow the
+// conversation never saw — and the rebuild clears its target's canvas before
+// re-importing, so a misroute is destructive, not additive. Loads the real
+// client modules in a mocked RED sandbox and drives
 // Importer.importFlowFromMessage end to end with `allowedWorkspaceIds`
 // (the scope the sidebar passes from the message's targetFlowIds).
+//
+// OUTBOUND (scenario 8): the same selection bounds what LEAVES the machine.
+// The runtime node used to attach every config node in the instance to the
+// prompt regardless of which flows were picked, so choosing one small flow
+// still shipped every broker, server and endpoint definition to the provider.
+// Config nodes must come in by reference only, transitively.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -284,6 +291,68 @@ async function scenarioUntaggedNodesFollowTheContextFlow() {
   ok(!!dbg && dbg.z === 'tabB', 'the explicitly tagged node landed on the context flow too');
 }
 
+// ------------------------------------------------------------------ //
+//  Outbound: what the runtime node sends to the provider              //
+// ------------------------------------------------------------------ //
+
+function scenarioProviderContextIsScoped() {
+  console.log('\nScenario 8: the flow context sent to the provider is scoped too');
+
+  // Load the node module and let it register, so the helper is attached.
+  const nodeModule = require(path.join(ROOT, 'node', 'llm-request', 'llm-request.js'));
+  nodeModule({
+    nodes: { createNode() {}, registerType() {} },
+    settings: { userDir: require('os').tmpdir(), get: () => undefined, set: () => {} },
+    log: { info() {}, warn() {}, error() {} },
+  });
+  const flowContextFor = nodeModule._flowContextFor;
+
+  // Alpha's mqtt node points at one broker, Beta's at another. `tls-shared`
+  // is referenced by Alpha's broker (a config node referencing another),
+  // `broker-orphan` by nobody.
+  const FLOWS = [
+    { id: 'alpha', type: 'tab', label: 'Alpha' },
+    { id: 'beta', type: 'tab', label: 'Beta' },
+    { id: 'a1', type: 'mqtt in', z: 'alpha', broker: 'broker-a', topic: 'a/#' },
+    { id: 'a2', type: 'debug', z: 'alpha' },
+    { id: 'b1', type: 'mqtt in', z: 'beta', broker: 'broker-b', topic: 'b/#' },
+    { id: 'broker-a', type: 'mqtt-broker', name: 'Alpha broker', host: 'alpha.local', tls: 'tls-shared' },
+    { id: 'broker-b', type: 'mqtt-broker', name: 'Beta broker', host: 'beta.local' },
+    { id: 'tls-shared', type: 'tls-config', name: 'shared TLS' },
+    { id: 'broker-orphan', type: 'mqtt-broker', name: 'Unused broker', host: 'orphan.local' },
+  ];
+  const idsOf = (ctx) => (ctx || []).map((n) => n.id);
+
+  const alpha = idsOf(flowContextFor(FLOWS, ['alpha']));
+  ok(alpha.includes('a1') && alpha.includes('a2') && alpha.includes('alpha'),
+    "Alpha's own nodes and tab are present");
+  ok(alpha.includes('broker-a'), 'a referenced config node is pulled in');
+  ok(alpha.includes('tls-shared'), 'a config referenced BY that config is pulled in (transitive)');
+  ok(!alpha.includes('broker-b'), "Beta's broker does not leak into Alpha's context");
+  ok(!alpha.includes('broker-orphan'), 'an unreferenced config node does not leak');
+  ok(!alpha.includes('b1') && !alpha.includes('beta'), 'Beta canvas nodes and tab do not leak');
+
+  const beta = idsOf(flowContextFor(FLOWS, ['beta']));
+  ok(beta.includes('broker-b') && !beta.includes('broker-a'),
+    'selecting Beta pulls in only Beta\'s broker');
+  ok(!beta.includes('tls-shared'), 'a config reachable only through Alpha does not leak');
+
+  const both = idsOf(flowContextFor(FLOWS, ['alpha', 'beta']));
+  ok(both.includes('broker-a') && both.includes('broker-b'),
+    'selecting both flows pulls in both referenced brokers');
+  ok(!both.includes('broker-orphan'), 'the unreferenced config still does not leak');
+
+  const withArray = idsOf(flowContextFor(
+    FLOWS.concat([{ id: 'g1', type: 'some-node', z: 'alpha', servers: ['broker-orphan'] }]),
+    ['alpha']));
+  ok(withArray.includes('broker-orphan'), 'a config named inside an array property is pulled in');
+
+  ok(flowContextFor(FLOWS, []) === null, 'no selection -> no flow context at all');
+  ok(flowContextFor(FLOWS, null) === null, 'null selection -> no flow context');
+  ok(flowContextFor(null, ['alpha']) === null, 'no flows -> no flow context');
+  ok(flowContextFor(FLOWS, ['nope']) === null, 'an unknown tab yields nothing, not a full dump');
+}
+
 async function run() {
   await scenarioAliasCollision();
   await scenarioTabSwitchedBeforeImport();
@@ -292,6 +361,7 @@ async function run() {
   await scenarioUnscopedStillUsesActiveTab();
   await scenarioMultiFlowContextStillFansOut();
   await scenarioUntaggedNodesFollowTheContextFlow();
+  scenarioProviderContextIsScoped();
   console.log('\n' + (assertions - failures) + ' passed, ' + failures + ' failed');
   process.exit(failures ? 1 : 0);
 }

@@ -43,7 +43,7 @@ const Parser = require(path.join(ROOT, 'src', 'core', 'llm_json_parser.js'));
 const DEFAULTS = {
     provider: 'ollama',
     ollamaUrl: 'http://localhost:11434',
-    model: 'gemma4:e2b',
+    model: 'gemma3:4b',
     timeoutMs: 180000,
     attempts: 2,
     showReplies: true
