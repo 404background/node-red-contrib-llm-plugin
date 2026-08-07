@@ -1,4 +1,8 @@
 .logs/
+
+# Live-LLM test settings (endpoint + model for `npm run test:llm`).
+# Machine-specific: keep the tracked example file, ignore the real one.
+llm-test-config.json
 # Keep the regression tests (run by `npm test`) tracked; ignore any other
 # scratch files dropped into test/.
 test/*

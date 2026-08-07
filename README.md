@@ -90,6 +90,46 @@ Agent + Auto deploy, hard-capped at 5 iterations).
 
 See **[docs/en/runtime-node.md](docs/en/runtime-node.md)** ([日本語](docs/jp/runtime-node.md)) for full details.
 
+## Tests
+
+```bash
+npm test          # offline regression suite (converter, layout, importer scoping)
+npm run test:llm  # live round-trip against a real LLM endpoint
+```
+
+`npm test` needs nothing but Node and always runs offline.
+
+`npm run test:llm` drives the same engine the sidebar and the LLM node use —
+prompt construction, a real HTTP call to the provider, Vibe Schema extraction
+from the reply, and conversion into an importable flow — so it catches
+breakage that only shows up against an actual model. Endpoint and model come
+from `llm-test-config.json` in the repo root; it is git-ignored, so copy the
+template to create it:
+
+```bash
+cp llm-test-config.example.json llm-test-config.json
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ollamaUrl` | Endpoint to test against (default `http://localhost:11434`) |
+| `model` | Model name (default `gemma4:e2b`) |
+| `timeoutMs` | Per-request timeout |
+| `attempts` | Retries allowed for a reply to contain a parseable schema — small models sometimes answer in prose first |
+| `showReplies` | Print the model's raw replies so you can see what it actually said |
+
+`LLM_TEST_URL` / `LLM_TEST_MODEL` override the file for a single run:
+
+```bash
+LLM_TEST_MODEL=gemma3:4b npm run test:llm
+```
+
+Model output is not deterministic, so the flow assertions are structural (a
+schema must be extractable; the flow it yields must be one `RED.nodes.import`
+would accept). Exit codes: `0` passed, `1` failed, `2` skipped — the endpoint
+was unreachable, the model was not installed, or the endpoint failed to serve
+the request.
+
 ## Documentation
 
 All developer documentation lives in **[`docs/`](docs/)**, with English (`docs/en/`)
