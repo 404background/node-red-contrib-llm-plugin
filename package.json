@@ -13,7 +13,7 @@
     "images/"
   ],
   "scripts": {
-    "test": "node test/canvas_layout_shift.test.js && node test/insertion_reflow.test.js && node test/flow_converter_core.test.js && node test/junction_preserve.test.js && node test/layout_rigid.test.js && node test/metadata_props.test.js && node test/cross_flow_isolation.test.js"
+    "test": "node test/canvas_layout_shift.test.js && node test/insertion_reflow.test.js && node test/flow_converter_core.test.js && node test/junction_preserve.test.js && node test/layout_rigid.test.js && node test/metadata_props.test.js && node test/cross_flow_isolation.test.js && node test/flow_context_scope.test.js"
   },
   "node-red": {
     "version": ">=4.0.0",

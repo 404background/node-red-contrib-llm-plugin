@@ -30,9 +30,43 @@
         return node;
     };
 
-    // Unique-enough id: <prefix><epoch>_<random>. Used for chat / message ids.
+    // Unique id: <prefix><epoch>_<random>. Used for chat / message ids.
+    // Uses the WebCrypto RNG so ids aren't predictable from a known epoch;
+    // Math.random is only a fallback for exotic/non-secure-context editors.
     Common.randomId = function(prefix) {
-        return (prefix || '') + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        let rand;
+        try {
+            let buf = new Uint8Array(6);
+            window.crypto.getRandomValues(buf);
+            rand = Array.prototype.map.call(buf, function(b) {
+                return b.toString(16).padStart(2, '0');
+            }).join('');
+        } catch (e) {
+            rand = Math.random().toString(36).substring(2, 11);
+        }
+        return (prefix || '') + Date.now() + '_' + rand;
+    };
+
+    // fetch() against the plugin's admin endpoints, carrying the editor's
+    // bearer token. Node-RED only auto-injects the Authorization header into
+    // jQuery ajax calls, so plain fetch() would 401 the moment `adminAuth`
+    // is enabled — every plugin endpoint that touches data or settings is
+    // behind RED.auth.needsPermission (see src/server.js).
+    // Static assets (marked.js, the stylesheet, src/*.js) stay unauthenticated
+    // because <script>/<link> tags cannot send headers.
+    Common.apiFetch = function(url, options) {
+        let opts = Object.assign({}, options || {});
+        let headers = Object.assign({}, opts.headers || {});
+        try {
+            let tokens = window.RED && RED.settings && typeof RED.settings.get === 'function'
+                ? RED.settings.get('auth-tokens')
+                : null;
+            if (tokens && tokens.access_token) {
+                headers['Authorization'] = 'Bearer ' + tokens.access_token;
+            }
+        } catch (e) { /* no adminAuth configured — no header needed */ }
+        opts.headers = headers;
+        return fetch(url, opts);
     };
 
     // Workspace ids → comma-joined tab labels (id kept when the tab is

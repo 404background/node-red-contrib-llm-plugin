@@ -209,8 +209,9 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 
 ## 10. Security / boundary defaults (assumptions)
 
-- All HTTP endpoints are on `RED.httpAdmin`. **adminAuth is assumed off** (the user's environment). If turned on, the endpoints being reachable unauthenticated is a known unaddressed item (would need token-bearing fetches).
-- API keys are encrypted (`credentials.json`, AES-256-CTR). Logs, errors, and client logs are masked via `redactSecrets`. Credentials are also stripped from the flow context sent to the LLM.
+- All HTTP endpoints are on `RED.httpAdmin`, and each data/action route carries `RED.auth.needsPermission` explicitly — Node-RED does not extend `adminAuth` to plugin-registered routes on its own. The client sends the editor bearer token via `Common.apiFetch`. Static asset routes are intentionally left open (tag-loaded, cannot send headers; plugin's own published code only).
+- API keys are encrypted (`credentials.json`, AES-256-GCM, legacy CTR still readable). Logs, errors, and client logs are masked via `redactSecrets`. Credentials are also stripped from the flow context sent to the LLM.
+- **Agent mode is an accepted-risk boundary**: the model's output is applied without confirmation and may contain `function` / `exec` nodes, so it is arbitrary code execution by design. No node-type allowlist — constraining it would defeat the mode. See architecture.md.
 
 ---
 

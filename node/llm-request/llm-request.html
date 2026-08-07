@@ -176,7 +176,7 @@
         <i class="fa fa-info-circle"></i> API keys & provider URLs come from the LLM Plugin sidebar. Selected flows are sent as context. API URL: blank = auto-detect (recommended).
     </div>
     <div class="form-tips llm-request-agent-only" style="margin-top:6px;">
-        <i class="fa fa-exclamation-triangle"></i> Agent edits the open editor live (no chat history, no plugin undo). <b>Auto deploy</b> deploys immediately without confirmation — development only; keep one editor open, use the Modified Nodes/Flows deploy type.
+        <i class="fa fa-exclamation-triangle"></i> Agent edits the open editor live (no chat history, no plugin undo). <b>Auto deploy</b> deploys immediately without confirmation — development only; keep one editor open, use the Modified Nodes/Flows deploy type. Generated flows may contain <code>function</code>/<code>exec</code> nodes, so never feed untrusted input into an Agent node.
     </div>
 </script>
 
@@ -221,6 +221,7 @@
     <ul>
         <li><b>Timeout</b> defaults to 3600&nbsp;seconds (local LLMs can be slow). 0 = no limit; <code>msg.timeout</code> overrides.</li>
         <li><b>Auto deploy (developer feature):</b> deploys right after applying, asynchronously and <b>without any confirmation dialog</b> (node-validation warnings are skipped). Development only. Keep one editor open (every open editor deploys) and prefer the Modified Nodes/Flows deploy type — a Full deploy restarts the flow driving this node.</li>
+        <li><b>Agent runs what the model writes:</b> the reply is applied with no review step and there is no node-type restriction, so a generated flow may contain <code>function</code> nodes (arbitrary JavaScript in this process) or <code>exec</code> nodes (arbitrary shell commands). Whoever controls the model output controls this host. Use a trusted endpoint, and do <b>not</b> wire untrusted text (<code>http in</code> payloads, inbound messages, scraped content) into an Agent node — with Auto deploy that is remote input straight to code execution.</li>
         <li><b>Agent needs an open editor</b> with the LLM Plugin loaded; the reply is applied there via comms. Not recorded in chat history and not rewindable by the plugin — use the editor's undo.</li>
         <li><b>API URL</b> is the Node-RED admin API base — normally the same URL the editor is served at (standalone: <code>http://localhost:1880</code>; embedded: the <code>httpAdminRoot</code> base, e.g. <code>http://localhost:8000/red</code>). Blank = auto-detect from the running instance (recommended). Accepts a string or a flow/global context variable; <code>msg.editorUrl</code> overrides. If the configured URL fails, the node falls back to auto-detection with a warning.</li>
         <li><b>Mind the trigger rate:</b> every message costs one LLM request (and one canvas edit in Agent mode).</li>

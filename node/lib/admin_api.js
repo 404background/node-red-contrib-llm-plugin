@@ -41,9 +41,23 @@ function createAdminApi(RED) {
 
     // Resolve { host, port, root, useHttps } from an optional explicit editor
     // URL, falling back to live auto-detection.
+    // The override URL can come from msg.editorUrl, i.e. from flow data,
+    // so it is not necessarily operator-authored. Restrict it to the schemes
+    // this client can actually speak; anything else would just be pointing
+    // the runtime at something it has no business opening.
+    const ALLOWED_PROTOCOLS = { 'http:': 1, 'https:': 1 };
+
     function resolveBase(overrideUrl) {
         if (overrideUrl && String(overrideUrl).trim()) {
-            const u = new URL(String(overrideUrl).trim());
+            let u;
+            try {
+                u = new URL(String(overrideUrl).trim());
+            } catch (e) {
+                throw new Error('API URL is not a valid URL: ' + String(overrideUrl).trim());
+            }
+            if (!ALLOWED_PROTOCOLS[u.protocol]) {
+                throw new Error('API URL must use http:// or https:// (got ' + u.protocol + ')');
+            }
             let p = u.pathname || '/';
             // Be forgiving if the user pasted a full endpoint URL (e.g.
             // ".../red/llm-plugin/generate") instead of just the editor root:

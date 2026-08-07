@@ -105,7 +105,7 @@
         // --- Settings helpers ---
         function fetchSettings(force) {
             if (!force && cachedSettings) return Promise.resolve(cachedSettings);
-            return fetch('llm-plugin/settings')
+            return Common.apiFetch('llm-plugin/settings')
                 .then(function(res) { return res.json(); })
                 .then(function(data) { cachedSettings = data || {}; return cachedSettings; })
                 .catch(function()    { cachedSettings = cachedSettings || {}; return cachedSettings; });
@@ -154,7 +154,7 @@
             settingsSaving = true;
             saveSettingsBtn.disabled = true;
             saveSettingsBtn.classList.add('saving');
-            fetch('llm-plugin/settings', {
+            Common.apiFetch('llm-plugin/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -579,7 +579,7 @@
             // identical; Agent only differs client-side (auto-import below).
             let fetchStart = Date.now();
 
-            fetch('llm-plugin/generate', {
+            Common.apiFetch('llm-plugin/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

@@ -151,7 +151,7 @@
     function postTerminalLog(level, event, message, meta) {
         try {
             if (typeof fetch !== 'function') return;
-            fetch('llm-plugin/client-log', {
+            Common.apiFetch('llm-plugin/client-log', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1637,7 +1637,7 @@
 
     Importer.restoreCheckpoint = function(checkpointId) {
         if (!checkpointId) return Promise.resolve({ ok: false, error: 'checkpointId is required' });
-        return fetch('llm-plugin/checkpoint/' + encodeURIComponent(checkpointId))
+        return Common.apiFetch('llm-plugin/checkpoint/' + encodeURIComponent(checkpointId))
             .then(function(res) {
                 if (!res.ok) {
                     return res.json().catch(function() { return { error: 'Checkpoint load failed' }; })

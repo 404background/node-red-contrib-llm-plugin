@@ -168,16 +168,23 @@
                     result.push(ch, text[i + 1]);
                     i += 2;
                 } else if (ch === '"') {
-                    let rest = text.substring(i + 1);
-                    let trimmed = rest.replace(/^\s+/, '');
+                    // Peek at the next non-whitespace character by advancing
+                    // an index, rather than materialising the rest of the
+                    // text per quote. The old substring form measured the
+                    // same (V8 makes substring O(1) via SlicedString and the
+                    // anchored ^\s+ stops at the first non-space), but that
+                    // is an engine detail this hot loop need not depend on.
+                    let k = i + 1;
+                    while (k < len && /\s/.test(text[k])) k++;
+                    let next = k < len ? text[k] : '';
                     let isEnd;
                     if (isValueString) {
-                        isEnd = trimmed.length === 0 ||
-                                trimmed[0] === ',' ||
-                                trimmed[0] === '}' ||
-                                trimmed[0] === ']';
+                        isEnd = next === '' ||
+                                next === ',' ||
+                                next === '}' ||
+                                next === ']';
                     } else {
-                        isEnd = trimmed.length === 0 || trimmed[0] === ':';
+                        isEnd = next === '' || next === ':';
                     }
                     if (isEnd) {
                         result.push('"');

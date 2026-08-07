@@ -128,14 +128,33 @@ function createLLMCore(RED) {
         return crypto.createHash('sha256').update(resolveCredentialSecret()).digest();
     }
 
+    // AES-256-GCM, written as `g1:<iv hex>:<tag hex>:<ciphertext b64>`.
+    // The previous format was raw AES-256-CTR (`<iv hex><ciphertext b64>`),
+    // which is unauthenticated: anyone able to touch credentials.json could
+    // flip plaintext bits undetectably, since CTR decryption never fails.
+    // GCM rejects a tampered file instead. Old blobs are still readable so
+    // existing installs keep working; the next save rewrites them as GCM.
+    const GCM_PREFIX = 'g1:';
+
     function encryptBlob(plain) {
-        const iv = crypto.randomBytes(16);
-        const cipher = crypto.createCipheriv('aes-256-ctr', deriveKey(), iv);
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', deriveKey(), iv);
         const encrypted = cipher.update(JSON.stringify(plain), 'utf8', 'base64') + cipher.final('base64');
-        return iv.toString('hex') + encrypted;
+        const tag = cipher.getAuthTag();
+        return GCM_PREFIX + iv.toString('hex') + ':' + tag.toString('hex') + ':' + encrypted;
     }
 
     function decryptBlob(blob) {
+        if (blob.startsWith(GCM_PREFIX)) {
+            const parts = blob.substring(GCM_PREFIX.length).split(':');
+            if (parts.length !== 3) throw new Error('Malformed credentials blob');
+            const decipher = crypto.createDecipheriv('aes-256-gcm', deriveKey(), Buffer.from(parts[0], 'hex'));
+            decipher.setAuthTag(Buffer.from(parts[1], 'hex'));
+            // final() throws if the tag does not verify.
+            const decrypted = decipher.update(parts[2], 'base64', 'utf8') + decipher.final('utf8');
+            return JSON.parse(decrypted);
+        }
+        // Legacy AES-256-CTR blob from before the GCM migration.
         const iv = Buffer.from(blob.substring(0, 32), 'hex');
         const ciphertext = blob.substring(32);
         const decipher = crypto.createDecipheriv('aes-256-ctr', deriveKey(), iv);

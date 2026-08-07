@@ -39,7 +39,7 @@
      * Resolves to the checkpoint ID on success, or null on any failure.
      */
     function postCheckpointSave(chatId, label, flow, source) {
-        return fetch('llm-plugin/checkpoint/save', {
+        return Common.apiFetch('llm-plugin/checkpoint/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -89,7 +89,7 @@
     ChatManager.saveChatToServer = function(chatId) {
         let chat = chatHistory[chatId];
         if (!chat) return;
-        fetch('llm-plugin/save-chat', {
+        Common.apiFetch('llm-plugin/save-chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chatId: chatId, chatData: chat })
@@ -99,7 +99,7 @@
     };
 
     ChatManager.loadChatHistoriesFromServer = function() {
-        return fetch('llm-plugin/chat-histories')
+        return Common.apiFetch('llm-plugin/chat-histories')
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (!data || !data.chatHistories) return;
@@ -217,7 +217,7 @@
         let chat = chatHistory[chatId] || {};
         let payload = chat.__file ? { filename: chat.__file } : { chatId: chatId };
 
-        fetch('llm-plugin/delete-chat', {
+        Common.apiFetch('llm-plugin/delete-chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)

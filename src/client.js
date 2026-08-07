@@ -68,6 +68,19 @@
             });
         }
 
+        // The server refuses to keep a stored key while the Base URL changes
+        // in the same save (that would send the key to a new endpoint without
+        // the user ever seeing it). Clear the sentinel as soon as the URL is
+        // edited so the requirement is visible in the form rather than
+        // arriving as a save error.
+        if (customBaseUrlInput && customApiKeyInput) {
+            customBaseUrlInput.addEventListener('input', function() {
+                if (customApiKeyInput.value !== '__EXISTING_KEY__') return;
+                customApiKeyInput.value = '';
+                customApiKeyInput.placeholder = 're-enter the key for the new Base URL';
+            });
+        }
+
         // Masked fields: saved URLs/keys are shown as placeholders only; the
         // '__EXISTING_KEY__' sentinel tells the server "keep the stored key".
         return {

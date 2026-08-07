@@ -14,8 +14,17 @@
     // full RED admin privileges.
     let SAFE_URL_SCHEMES = { 'http:': 1, 'https:': 1, 'mailto:': 1, 'tel:': 1 };
     function sanitizeRenderedHtml(html) {
-        let holder = document.createElement('div');
-        holder.innerHTML = html;
+        // Parse into an inert document rather than assigning innerHTML on a
+        // live-document element: the allowlist below runs BEFORE anything
+        // can be fetched, so a marked-emitted <img src> never fires a
+        // request on content that is about to be stripped.
+        let holder;
+        try {
+            holder = new DOMParser().parseFromString(html, 'text/html').body;
+        } catch (e) {
+            holder = document.createElement('div');
+            holder.innerHTML = html;
+        }
         // Anchors: keep the text, drop an unsafe href (relative/#/http(s)
         // resolve to http:/https: and are allowed).
         holder.querySelectorAll('a[href]').forEach(function(a) {

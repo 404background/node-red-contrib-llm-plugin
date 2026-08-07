@@ -8,6 +8,7 @@
 // persistence, both of which are specific to the editor sidebar.
 const fs = require('fs-extra');
 const path = require('path');
+const crypto = require('crypto');
 const createLLMCore = require('./llm_core');
 
 function createLLMPluginServer(RED) {
@@ -32,19 +33,122 @@ function createLLMPluginServer(RED) {
     let memChats = {};
     let memCheckpoints = {};
 
+    // ------------------------------------------------------------------ //
+    //  Resource limits                                                    //
+    // ------------------------------------------------------------------ //
+    //
+    // Every endpoint below writes to disk or spends money on the user's
+    // behalf, so each input that reaches storage or a provider is bounded.
+    // Node-RED's own `apiMaxLength` caps the raw request body, but that
+    // still permits unbounded *accumulation* across requests.
+
+    // The flow context is concatenated into the same system message as the
+    // prompt. Without its own bound, `maxPromptLength` is bypassable by
+    // moving the payload into `currentFlow`.
+    const MAX_FLOW_CONTEXT_CHARS = 1024 * 1024;
+    // Ceiling for anything persisted as a JSON file (chat, checkpoint).
+    const MAX_STORED_JSON_CHARS = 5 * 1024 * 1024;
+    // Client event log: per-field clip, and rotation of the whole file.
+    const MAX_CLIENT_LOG_BYTES = 5 * 1024 * 1024;
+    const MAX_EVENT_FIELD_CHARS = 4096;
+    // Checkpoints are pruned oldest-first past this count.
+    const MAX_CHECKPOINT_FILES = 200;
+
+    function clip(text, max) {
+        const s = String(text === undefined || text === null ? '' : text);
+        return s.length > max ? s.substring(0, max) + '[truncated]' : s;
+    }
+
+    function assertStorableSize(value, label) {
+        let text;
+        try {
+            text = JSON.stringify(value);
+        } catch (e) {
+            throw badRequest(label + ' is not serialisable');
+        }
+        if (text && text.length > MAX_STORED_JSON_CHARS) {
+            throw badRequest(label + ' exceeds the ' + MAX_STORED_JSON_CHARS + '-character storage limit');
+        }
+        return text;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Endpoint authorisation                                             //
+    // ------------------------------------------------------------------ //
+    //
+    // Node-RED does NOT apply `adminAuth` to routes that plugins/nodes add
+    // to RED.httpAdmin — the core Admin API guards its own routes with
+    // needsPermission individually, and anything registered afterwards is
+    // wide open unless it does the same. Without this, enabling adminAuth
+    // still left /llm-plugin/* reachable unauthenticated: chat history
+    // readable, settings rewritable (which can redirect a stored API key to
+    // an arbitrary endpoint), and generation billable by anyone who can
+    // reach the port.
+    //
+    // needsPermission is a no-op when adminAuth is not configured, so
+    // single-user installs are unaffected.
+    //
+    // `read`-scoped users get the read endpoints (Node-RED maps scope
+    // "read" onto any "*.read" permission); everything that writes,
+    // generates, or spends money requires full access.
+    const PERM_READ = 'llm-plugin.read';
+    const PERM_WRITE = 'llm-plugin.write';
+
+    function guard(permission) {
+        if (RED.auth && typeof RED.auth.needsPermission === 'function') {
+            return RED.auth.needsPermission(permission);
+        }
+        // Embedded/older runtimes without RED.auth: fail closed only if the
+        // host actually configured adminAuth, otherwise carry on.
+        return function(req, res, next) {
+            if (RED.settings && RED.settings.adminAuth) {
+                return res.status(401).json({ error: 'Authentication required' });
+            }
+            next();
+        };
+    }
+
+    // redactSecrets only ever substitutes quote-free placeholders, so a
+    // redacted JSON string stays parseable - which keeps the log valid
+    // JSON-lines while guaranteeing nothing unmasked reaches the file.
+    function redactJson(value) {
+        let text;
+        try {
+            text = JSON.stringify(value);
+        } catch (e) {
+            return '[unserialisable]';
+        }
+        if (!text) return {};
+        text = redactSecrets(clip(text, MAX_EVENT_FIELD_CHARS));
+        try { return JSON.parse(text); } catch (e) { return text; }
+    }
+
+    function rotateClientLogIfNeeded() {
+        try {
+            if (fs.statSync(clientEventsLog).size < MAX_CLIENT_LOG_BYTES) return;
+            // Single generation; rename replaces any previous .1 on both
+            // POSIX and Windows.
+            fs.renameSync(clientEventsLog, clientEventsLog + '.1');
+        } catch (e) { /* file absent on first write, or lost a rotate race */ }
+    }
+
     function writeClientEvent(level, event, message, meta) {
         const lv = String(level || 'info').toLowerCase();
         const safeLevel = (lv === 'error' || lv === 'warn' || lv === 'warning') ? lv : 'info';
+        // `meta` is redacted here, not only in the console preview: it used
+        // to reach the log file verbatim, and importer diagnostics put node
+        // contents in it.
         const payload = {
             ts: new Date().toISOString(),
             level: safeLevel,
-            event: String(event || 'client-event'),
-            message: redactSecrets(message || ''),
-            meta: meta && typeof meta === 'object' ? meta : {}
+            event: clip(event || 'client-event', 200),
+            message: redactSecrets(clip(message, MAX_EVENT_FIELD_CHARS)),
+            meta: redactJson(meta && typeof meta === 'object' ? meta : {})
         };
 
         if (persistenceEnabled && clientEventsLog) {
             try {
+                rotateClientLogIfNeeded();
                 fs.appendFile(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8', () => {});
             } catch (e) { /* logs are best-effort */ }
         }
@@ -52,7 +156,7 @@ function createLLMPluginServer(RED) {
         const metaPreview = (() => {
             try {
                 const text = JSON.stringify(payload.meta);
-                return text && text.length > 0 ? ' meta=' + redactSecrets(text) : '';
+                return text && text.length > 0 ? ' meta=' + text : '';
             } catch (e) {
                 return '';
             }
@@ -139,8 +243,27 @@ function createLLMPluginServer(RED) {
         }
     }
 
+    // Prune oldest-first so an automated Agent loop cannot grow the
+    // checkpoint directory without bound.
+    function pruneCheckpoints() {
+        try {
+            const entries = fs.readdirSync(checkpointsDir)
+                .map(f => /^cp_(\d+)_[a-z0-9]+\.json$/i.exec(f))
+                .filter(Boolean)
+                .map(m => ({ file: m[0], ts: parseInt(m[1], 10) }))
+                .sort((a, b) => a.ts - b.ts);
+            if (entries.length <= MAX_CHECKPOINT_FILES) return;
+            entries.slice(0, entries.length - MAX_CHECKPOINT_FILES).forEach(e => {
+                try { fs.unlinkSync(path.join(checkpointsDir, e.file)); } catch (err) { /* best effort */ }
+            });
+        } catch (e) { /* pruning must never block a save */ }
+    }
+
     function saveCheckpoint(chatId, label, flow, meta) {
-        const checkpointId = 'cp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+        // crypto RNG rather than Math.random: the id is the only handle on a
+        // checkpoint, and a Math.random suffix next to a known epoch is
+        // guessable.
+        const checkpointId = 'cp_' + Date.now() + '_' + crypto.randomBytes(6).toString('hex');
         const record = {
             id: checkpointId,
             chatId: chatId || null,
@@ -151,9 +274,17 @@ function createLLMPluginServer(RED) {
         };
         if (!persistenceEnabled) {
             memCheckpoints[checkpointId] = record;
+            // Same bound as the on-disk pruning, so the memory-only fallback
+            // cannot grow without limit either.
+            const ids = Object.keys(memCheckpoints);
+            if (ids.length > MAX_CHECKPOINT_FILES) {
+                ids.sort().slice(0, ids.length - MAX_CHECKPOINT_FILES)
+                   .forEach(k => { delete memCheckpoints[k]; });
+            }
             return record;
         }
         try {
+            pruneCheckpoints();
             writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
         } catch (e) {
             console.error('[LLM Plugin] Failed to save checkpoint:', e && e.message ? e.message : e);
@@ -169,7 +300,7 @@ function createLLMPluginServer(RED) {
     // Single generation endpoint for BOTH sidebar modes: Ask and Agent send
     // the identical request; what differs is purely client-side (Agent
     // auto-clicks the Import button on the reply).
-    RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/generate', guard(PERM_WRITE), async function(req, res) {
         const { model, prompt, currentFlow, activeWorkspaceId } = req.body;
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
@@ -179,6 +310,23 @@ function createLLMPluginServer(RED) {
         const maxLen = parseInt(settings.maxPromptLength, 10) || 10000;
         if (String(prompt).length > maxLen) {
             return res.status(400).json({ error: 'Prompt exceeds maximum length (' + maxLen + ' characters)' });
+        }
+        // maxPromptLength alone is not a limit: buildMessages concatenates the
+        // flow context into the same system message, so an unbounded
+        // currentFlow would carry any payload straight past the check above.
+        if (currentFlow !== undefined && currentFlow !== null) {
+            let flowChars;
+            try {
+                flowChars = JSON.stringify(currentFlow).length;
+            } catch (e) {
+                return res.status(400).json({ error: 'currentFlow is not serialisable' });
+            }
+            if (flowChars > MAX_FLOW_CONTEXT_CHARS) {
+                return res.status(413).json({
+                    error: 'Flow context is too large (' + flowChars + ' > ' +
+                        MAX_FLOW_CONTEXT_CHARS + ' characters). Select fewer flows.'
+                });
+            }
         }
         const provider = settings.provider || 'ollama';
 
@@ -210,7 +358,7 @@ function createLLMPluginServer(RED) {
     });
 
     // --- Settings endpoints ---
-    RED.httpAdmin.get('/llm-plugin/settings', function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/settings', guard(PERM_READ), function(req, res) {
         const settings = Object.assign({}, getPluginSettings());
         // Never expose the full API key to the client
         const hasKey = !!(settings.openaiApiKey && settings.openaiApiKey.length > 0);
@@ -239,7 +387,43 @@ function createLLMPluginServer(RED) {
         return (value && typeof value === 'string' && value.trim() !== '') ? value.trim() : '';
     }
 
-    RED.httpAdmin.post('/llm-plugin/settings', function(req, res) {
+    // Endpoint URLs must be http(s). Anything else (file:, gopher:, and the
+    // like) is either useless to an OpenAI-compatible client or a way to
+    // point the runtime at something it should not be opening.
+    const ALLOWED_URL_SCHEMES = { 'http:': 1, 'https:': 1 };
+    function badRequest(message) {
+        const e = new Error(message);
+        e.status = 400;
+        return e;
+    }
+    function assertHttpUrl(value, label) {
+        if (!value) return; // blank = unset / keep default
+        let parsed;
+        try {
+            parsed = new URL(String(value));
+        } catch (e) {
+            throw badRequest(label + ' must be a valid URL');
+        }
+        if (!ALLOWED_URL_SCHEMES[parsed.protocol]) {
+            throw badRequest(label + ' must use http:// or https://');
+        }
+    }
+
+    // '__EXISTING_KEY__' means "keep the key you already have". Honouring it
+    // while the endpoint URL is being changed in the SAME request turns the
+    // settings form into a key-exfiltration primitive: point customBaseUrl at
+    // an attacker host, keep the stored key, then hit /generate and the SDK
+    // sends `Authorization: Bearer <stored key>` straight there — defeating
+    // the masking that stops GET /settings from returning the key at all.
+    // Changing the URL therefore requires re-entering the key.
+    function rejectKeyReuseOnUrlChange(bodyKey, oldUrl, newUrl, label) {
+        if (bodyKey !== '__EXISTING_KEY__') return;
+        if ((oldUrl || '') === (newUrl || '')) return;
+        throw badRequest('Re-enter the ' + label + ' API key when changing its Base URL ' +
+            '(the stored key is never sent to a new endpoint without confirmation).');
+    }
+
+    RED.httpAdmin.post('/llm-plugin/settings', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
             // Whitelist: only persist known settings fields
@@ -249,6 +433,10 @@ function createLLMPluginServer(RED) {
             const existing = getPluginSettings();
             newSettings.ollamaUrl = urlOrExisting(body.ollamaUrl, existing.ollamaUrl || 'http://localhost:11434');
             newSettings.customBaseUrl = urlOrExisting(body.customBaseUrl, existing.customBaseUrl || '');
+            assertHttpUrl(newSettings.ollamaUrl, 'Ollama URL');
+            assertHttpUrl(newSettings.customBaseUrl, 'Custom endpoint Base URL');
+            rejectKeyReuseOnUrlChange(body.customApiKey, existing.customBaseUrl,
+                newSettings.customBaseUrl, 'custom endpoint');
             newSettings.openaiApiKey = keyOrExisting(body.openaiApiKey, existing.openaiApiKey);
             newSettings.customApiKey = keyOrExisting(body.customApiKey, existing.customApiKey);
             // System prompt (user-authored, always save as-is)
@@ -267,12 +455,13 @@ function createLLMPluginServer(RED) {
             savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
+            res.status(error && error.status === 400 ? 400 : 500)
+               .json({ error: redactSecrets(error.message) });
         }
     });
 
     // --- Chat history endpoints ---
-    RED.httpAdmin.get('/llm-plugin/chat-histories', function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/chat-histories', guard(PERM_READ), function(req, res) {
         try {
             const chatHistories = loadAllChatHistories();
             res.json({ chatHistories: chatHistories });
@@ -281,20 +470,22 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/save-chat', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/save-chat', guard(PERM_WRITE), function(req, res) {
         try {
             const { chatId, chatData } = req.body;
             if (!chatId || !chatData) {
                 return res.status(400).json({ error: 'Chat ID and data required' });
             }
+            assertStorableSize(chatData, 'Chat data');
             saveChatHistory(chatId, chatData);
             res.json({ success: true });
         } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
+            res.status(error && error.status === 400 ? 400 : 500)
+               .json({ error: redactSecrets(error.message) });
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/delete-chat', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/delete-chat', guard(PERM_WRITE), function(req, res) {
         try {
             const { chatId, filename } = req.body || {};
 
@@ -375,7 +566,7 @@ function createLLMPluginServer(RED) {
     });
 
     // --- Checkpoint endpoints ---
-    RED.httpAdmin.post('/llm-plugin/checkpoint/save', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/checkpoint/save', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
             const chatId = body.chatId || null;
@@ -386,14 +577,16 @@ function createLLMPluginServer(RED) {
             if (flow.length === 0) {
                 return res.status(400).json({ error: 'flow array is required' });
             }
-            const cp = saveCheckpoint(chatId, label, flow, meta);
+            assertStorableSize(flow, 'Checkpoint flow');
+            const cp = saveCheckpoint(chatId, clip(label, 200), flow, meta);
             return res.json({ checkpointId: cp.id, created: cp.created, label: cp.label });
         } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to save checkpoint') });
+            return res.status(error && error.status === 400 ? 400 : 500)
+                      .json({ error: redactSecrets(error.message || 'Failed to save checkpoint') });
         }
     });
 
-    RED.httpAdmin.get('/llm-plugin/checkpoint/:id', function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/checkpoint/:id', guard(PERM_READ), function(req, res) {
         try {
             const id = path.basename(String(req.params.id || ''));
             if (!id || !/^cp_\d+_[a-z0-9]+$/.test(id)) {
@@ -418,7 +611,7 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/client-log', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/client-log', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
             writeClientEvent(body.level, body.event, body.message, body.meta);
@@ -478,12 +671,21 @@ function createLLMPluginServer(RED) {
             if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
                 return res.status(400).send('Invalid file path');
             }
+            // Allowlist the client asset types rather than serving whatever
+            // happens to sit under src/. This route is deliberately
+            // unauthenticated (script tags cannot send an auth header) and
+            // only ever needs to hand out the browser modules.
+            const CLIENT_ASSET_TYPES = {
+                '.js': 'application/javascript; charset=utf-8',
+                '.css': 'text/css; charset=utf-8',
+                '.json': 'application/json; charset=utf-8'
+            };
+            const ext = path.extname(filePath).toLowerCase();
+            if (!CLIENT_ASSET_TYPES[ext]) {
+                return res.status(404).send('/* Not found */');
+            }
             if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-                const ext = path.extname(filePath).toLowerCase();
-                let contentType = 'application/octet-stream';
-                if (ext === '.js') contentType = 'application/javascript; charset=utf-8';
-                else if (ext === '.css') contentType = 'text/css; charset=utf-8';
-                else if (ext === '.json') contentType = 'application/json; charset=utf-8';
+                const contentType = CLIENT_ASSET_TYPES[ext];
                 res.setHeader('Content-Type', contentType);
                 const content = fs.readFileSync(filePath, 'utf8');
                 res.send(content);

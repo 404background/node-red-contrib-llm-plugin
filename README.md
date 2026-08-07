@@ -113,7 +113,21 @@ and Japanese (`docs/jp/`) versions of every page. Start from the
 
 ## Security Notice
 
-API keys (OpenAI and Custom-endpoint) are stored encrypted in `<userDir>/llm-plugin/credentials.json` using AES-256-CTR with your Node-RED `credentialSecret` (the same algorithm Node-RED uses for `flows_cred.json`). Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs.
+### Agent mode executes what the model writes
+
+Agent mode applies the model's reply to your canvas **without a confirmation step**, and **Auto deploy** deploys it immediately. Generated flows can contain `function` nodes (arbitrary JavaScript in the Node-RED process) and `exec` nodes (arbitrary shell commands), and there is deliberately no node-type restriction — limiting what the model may build would defeat the feature.
+
+So whoever controls the model's output controls the Node-RED host. Point Agent mode only at an LLM endpoint you trust, and **do not feed untrusted text into an Agent node** (an `http in` payload, an inbound MQTT message, scraped page content). With Auto deploy enabled that is a direct path from a remote string to code execution on your machine. Ask mode has no such property — it only returns text.
+
+### Credentials and endpoints
+
+API keys (OpenAI and Custom-endpoint) are stored encrypted in `<userDir>/llm-plugin/credentials.json` using AES-256-GCM with your Node-RED `credentialSecret`. Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs. Keys saved by earlier versions (AES-256-CTR) are read as-is and re-encrypted on the next save.
+
+A stored key is never carried over to a new endpoint behind your back: change the Custom endpoint Base URL and the plugin requires you to re-enter its API key.
+
+### Multi-user installs
+
+If you enable `adminAuth`, the plugin's endpoints require an authenticated editor session (`llm-plugin.read` / `llm-plugin.write` permissions). Note that Agent-mode results are broadcast to **every** open editor session, so in a shared instance one user's Agent node edits everyone's canvas.
 
 The encrypted file is only as safe as your `credentialSecret`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `credentials.json`, `flows_cred.json`, `.config.*.json`, and your `settings.js` out of the share — and never publish your `credentialSecret`. Older installs that stored the key in plaintext are migrated to the encrypted file automatically on first boot.
 

@@ -31,12 +31,8 @@ layout backbone:
 | `canvas_layout.js` | Topological layout, width-aware spacing, comment placement | [layout.md](./layout.md) |
 | `llm_json_parser.js` | JSON repair, fuzzy alias matching, schema extraction | (inline JSDoc) |
 
-The rest of `src/` is plugin-specific glue: `importer.js` orchestrates
-the import; `chat_manager.js` handles session persistence; `ui_core.js`
-+ `vibe_ui.js` build the sidebar; `llm_core.js` is the shared LLM engine;
-`server.js` exposes HTTP endpoints. The runtime workflow nodes under
-`node/` reuse `llm_core.js` so they share one settings + credentials store
-with the sidebar.
+Everything else is plugin-specific glue — see the file map below, then
+the module reference for each file.
 
 ## File map
 
@@ -50,8 +46,8 @@ src/
   common.js             Shared helpers (escapeHtml, notify, el, randomId, …)
   prompt_system.txt     System prompt template (server-side)
   core/
-    canvas_layout.js    Layout engine (UMD)             ← docs/*/layout.md
-    flow_converter_core.js  Vibe Schema converter (UMD) ← docs/*/vibe-schema.md
+    canvas_layout.js    Layout engine (UMD)
+    flow_converter_core.js  Vibe Schema converter (UMD)
     llm_json_parser.js  LLM JSON parsing (UMD)
   chat_manager.js       Chat session CRUD + checkpoint persistence
   importer.js           Extract LLM output, rebuild & import into editor
@@ -94,8 +90,8 @@ pattern and communicate via `window.LLMPlugin`.
 | GET | `/llm-plugin_styles.css` | Serve plugin stylesheet |
 | GET | `/llm-plugin/src/*` | Serve client JS modules |
 
-All routes register on `RED.httpAdmin`, picking up Node-RED's own
-`adminAuth` middleware automatically.
+All routes register on `RED.httpAdmin` — see
+[Security measures](#security-measures).
 
 ## Module reference
 
@@ -348,24 +344,74 @@ No chat history is sent — each request is stateless to the LLM.
 
 #### Security measures
 
-- All endpoints sit on `RED.httpAdmin` (picks up `adminAuth` when
-  configured).
+- **Authentication.** Every endpoint that reads data, writes data, or
+  spends money is wrapped in `RED.auth.needsPermission`
+  (`llm-plugin.read` for the two GET routes, `llm-plugin.write` for the
+  rest), and the client attaches the editor's bearer token through
+  `Common.apiFetch`. This is required, not automatic: Node-RED does
+  **not** apply `adminAuth` to routes a plugin registers on
+  `RED.httpAdmin` — the core Admin API guards its own routes with
+  `needsPermission` individually, and anything added afterwards is open
+  unless it does the same. `needsPermission` is a no-op when `adminAuth`
+  is unset, so single-user installs behave exactly as before.
+  The three static-asset routes (`vendor/marked.js`, the stylesheet,
+  `src/*`) stay unauthenticated because `<script>` / `<link>` tags cannot
+  send an auth header; they serve only the plugin's own published client
+  code and `src/*` is restricted to `.js` / `.css` / `.json`.
 - API keys (OpenAI and Custom-endpoint) are stored encrypted in
-  `<userDir>/llm-plugin/credentials.json` using AES-256-CTR with
-  Node-RED's `credentialSecret` (or auto-generated `_credentialSecret`)
-  — the same algorithm used for `flows_cred.json`, but in a plugin-owned
-  file so `cleanCredentials` can't strip them on deploy. Plaintext keys
-  from older installs (and any leftover from the earlier synthetic-id
-  `addCredentials` attempt) are migrated automatically on first boot.
+  `<userDir>/llm-plugin/credentials.json` using AES-256-GCM with
+  Node-RED's `credentialSecret` (or auto-generated `_credentialSecret`),
+  in a plugin-owned file so `cleanCredentials` can't strip them on
+  deploy. GCM rather than the CTR that Node-RED uses for
+  `flows_cred.json`: CTR is unauthenticated, so a tampered file decrypts
+  to attacker-chosen bits without error, while GCM rejects it. Blobs
+  written in the old CTR format are still read (prefix `g1:` marks GCM),
+  and the next save rewrites them. Plaintext keys from older installs
+  (and any leftover from the earlier synthetic-id `addCredentials`
+  attempt) are migrated automatically on first boot.
 - API keys are never returned to the client; masked via `maskApiKey()`.
-  POST whitelist prevents field injection.
+  POST whitelist prevents field injection. A stored key is **not**
+  carried across an endpoint change: sending the `__EXISTING_KEY__`
+  sentinel while `customBaseUrl` changes in the same request is rejected,
+  so the settings form cannot be used to redirect a key the client is not
+  allowed to read to an endpoint of the caller's choosing. Endpoint URLs
+  must be `http:` or `https:`.
 - Server-side `maxPromptLength` cap (default 10 000 chars, range
-  100–100 000).
+  100–100 000), plus an independent 1 MB cap on the flow context —
+  both land in the same system message, so without the second cap the
+  first is bypassable by moving the payload into `currentFlow`.
+- Stored documents are bounded: 5 MB per chat and per checkpoint,
+  `client-events.log` rotates at 5 MB, and checkpoints are pruned
+  oldest-first past 200 files.
 - Path traversal blocked by `path.basename` + `startsWith` containment
   on file-serving / deletion routes.
-- `redactSecrets` strips API keys, URLs, and IPs from all error
-  messages and client logs.
-- Credentials stripped from flow context before sending to the LLM.
+- `redactSecrets` strips API keys, URLs, and IPs from all error messages
+  and client logs — including the `meta` object written to
+  `client-events.log`, not only its console preview.
+- Credentials stripped from flow context before sending to the LLM. The
+  runtime node narrows the context further: only the config nodes its
+  selected flows actually reference (transitively), rather than every
+  config node in the instance.
+
+#### Agent mode runs what the model writes
+
+This is a deliberate property of the feature, not an oversight, and it is
+the largest risk in the plugin:
+
+- Agent mode applies the model's reply to the canvas with **no
+  confirmation step**, and `Auto deploy` deploys it immediately.
+- There is **no node-type allowlist**. Generated flows may contain
+  `function` nodes (arbitrary JavaScript in the runtime process) and
+  `exec` nodes (arbitrary shell commands). Restricting what the model may
+  build would defeat the point of the mode, so it is not restricted.
+
+Consequently, whoever controls the model's output controls the Node-RED
+host. Treat the configured LLM endpoint as trusted infrastructure, and
+**do not route untrusted text into an Agent node** — an `http in`
+payload, an inbound MQTT message, scraped page content. With `Auto
+deploy` on, that is a direct path from a remote string to code execution
+on the host. The `llm-self-feedback` sample is a developer toy for
+disposable instances for exactly this reason.
 
 ## Development notes
 
@@ -373,13 +419,11 @@ No chat history is sent — each request is stateless to the LLM.
 - **Module communication**: `window.LLMPlugin` namespace
   (`CanvasLayout`, `FlowConverterCore` / `Configurator`,
   `LLMJsonParser`, `ChatManager`, `UI`, `Importer`).
-- **Chat / checkpoint storage**: server-side, in the first writable
-  location of: `<RED.settings.userDir>/llm-plugin/`,
-  `<os.tmpdir()>/llm-plugin/`, or **memory-only** (logs a warning and
-  keeps everything in RAM until the server restarts). The plugin no
-  longer writes to its own install directory, so it installs cleanly on
-  sandboxed cloud Node-RED hosts (enebular, etc.) where the plugin
-  directory is read-only.
+- **Chat / checkpoint storage**: server-side, resolved by `llm_core.js`
+  (storage resolution above). The plugin never writes to its own install
+  directory, so it installs cleanly on sandboxed cloud Node-RED hosts
+  (enebular, etc.) where that directory is read-only; if nothing on disk
+  is writable it degrades to memory-only and logs a warning.
 - **`prompt_system.txt`** is loaded from the plugin install dir on
   startup; if that read fails (extreme sandbox), a minimal embedded
   prompt is used as fallback.
