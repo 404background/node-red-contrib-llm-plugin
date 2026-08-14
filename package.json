@@ -1,6 +1,6 @@
 {
   "name": "@background404/node-red-contrib-llm-plugin",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Node-RED sidebar plugin for chatting with LLMs (Ollama / OpenAI / Custom OpenAI-compatible endpoints), generating flows, and importing results",
   "main": "llm_plugin.js",
   "files": [
