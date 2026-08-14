@@ -121,10 +121,11 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 | `isCanvasNode(node)` | `!tab && !subflow: && !isConfigNode`。 |
 | `isNoInputType(type)` | ソース専用ノード(`inject`, `catch`, `comment`, …)で true。 |
 | `isNoOutputType(type)` | `comment`(およびランタイム def 経由で出力 0 の型)で true。 |
-| `isMetaProp(key)` | `key` が `_` で始まるとき true — 変換の両方向で強制するメタデータ規約。 |
 | `setRuntimeGetType(fn)` | `RED.nodes.getType` を注入し、ヘルパーがコミュニティノードを見えるようにする。 |
 
-`window.LLMPlugin.Configurator` は後方互換のために残された `FlowConverterCore` の別名。
+メタデータ規約は内部で強制する。`_` で始まるプロパティは
+プラグイン側の管理情報であり、`toIntermediate` はそれを出力せず、
+`toNodeRed` はスキーマから受け付けない。
 
 ## スキーマリファレンス
 

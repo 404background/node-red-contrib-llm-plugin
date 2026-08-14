@@ -125,15 +125,15 @@ LLM へ出力もせず、LLM からも受け付けない。
 LLM の JSON 出力の癖を許容するための層。コメントの除去、壊れたクォートの修復、
 表記ゆれを許すエイリアス照合、散文混じりの応答からのスキーマ抽出を行う。
 
-| カテゴリ | 関数 |
+| エクスポート | 用途 |
 |----------|-----------|
-| トークン正規化 | `normalizeToken`, `normalizeTokenLoose`, `putUniqueToken`, `resolveUniqueApprox` |
-| JSON 修復 | `stripJsonComments`, `repairJsonQuotes`, `collectBalancedJsonSnippets` |
 | スキーマ抽出 | `extractVibeSchema`, `extractConnectionHints`, `extractFlowDirectives` |
 | フロールックアップ | `buildFlowLookup`(エイリアス / 名前 / ID のいずれからでもノード ID を引く。完全一致で見つからなければ表記ゆれを許す照合に落とす) |
-| ノード抽出 | `normalizeSchemaForConversion`, `tryParseFlowNodes`, `extractFlowNodes` |
+| ノード抽出 | `extractFlowNodes` |
 | 診断 | `diagnoseJsonExtractionFailure` — ノード抽出が何も返さなかったとき、各コードフェンスを改めてパースし直し、最初に見つかった具体的なパースエラーを行・列・該当箇所付きで返す。これによりインポート側は漠然とした「JSON が見つからない」ではなく「何行目で構文が壊れている」と表示できる。 |
-| Agent ヘルパー | `resolveAliasInSchema`, `mergeAgentPartialSchemaWithCurrentFlow` |
+
+トークン正規化、JSON 修復(コメント除去・クォート修復・釣り合いの取れたスニペットの走査)、Agent の部分スキーママージは、上記 4 つのエントリポイントの
+内部ステップであり、エクスポートしていない。
 
 ### `chat_manager.js`
 

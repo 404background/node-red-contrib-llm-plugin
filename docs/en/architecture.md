@@ -110,7 +110,7 @@ Shared helpers on `LLMPlugin.Common`: `escapeHtml`, `escapeRegExp`,
 
 ### `core/flow_converter_core.js` — Vibe Schema converter
 
-UMD (`window.LLMPlugin.FlowConverterCore`, alias `Configurator`).
+UMD (`window.LLMPlugin.FlowConverterCore`).
 Bi-directional converter plus type-detection helpers (`isConfigNode`,
 `isCanvasNode`, `isNoInputType`, `isNoOutputType`, `setRuntimeGetType`).
 Also owns the metadata convention (`isMetaProp`): `_`-prefixed properties
@@ -128,15 +128,16 @@ UMD (`window.LLMPlugin.LLMJsonParser`). Tolerates the way LLMs format
 JSON: comment stripping, quote repair, fuzzy alias matching, and Vibe
 Schema extraction from prose-mixed responses.
 
-| Category | Functions |
-|----------|-----------|
-| Token normalization | `normalizeToken`, `normalizeTokenLoose`, `putUniqueToken`, `resolveUniqueApprox` |
-| JSON repair | `stripJsonComments`, `repairJsonQuotes`, `collectBalancedJsonSnippets` |
+| Export | Purpose |
+|--------|---------|
 | Schema extraction | `extractVibeSchema`, `extractConnectionHints`, `extractFlowDirectives` |
 | Flow lookup | `buildFlowLookup` (alias / name / ID → node ID, fuzzy fallback) |
-| Node extraction | `normalizeSchemaForConversion`, `tryParseFlowNodes`, `extractFlowNodes` |
+| Node extraction | `extractFlowNodes` |
 | Diagnostics | `diagnoseJsonExtractionFailure` — when `extractFlowNodes` returns null, re-parses each fenced block and returns the first concrete `JSON.parse` error with line/column/snippet so the importer can show "JSON parse failed at line X" instead of the generic "no JSON found". |
-| Agent helper | `resolveAliasInSchema`, `mergeAgentPartialSchemaWithCurrentFlow` |
+
+Token normalization, JSON repair (comment stripping, quote fixing,
+balanced-snippet scanning) and the Agent partial-schema merge are internal
+steps of those four entry points — they are not exported.
 
 ### `chat_manager.js`
 
@@ -161,7 +162,7 @@ editor.
 **`extractFlowNodes(messageContent, options?)`** —
 Scan fenced ```` ```json ```` / ```` ```javascript ```` blocks (picking
 the *last* valid block), parse with `LLMJsonParser`, prefer Vibe Schema
-via `Configurator.toNodeRed()`, fall back to raw Node-RED arrays or
+via `FlowConverterCore.toNodeRed()`, fall back to raw Node-RED arrays or
 inline JSON outside code fences. Comment stripping is string-safe so
 `//` inside `function` code is preserved. `options` accepts
 `{ mode, currentFlow }` — when `mode === 'agent'`, the parser merges
@@ -261,7 +262,7 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 | `addMessageToUI(content, isUser, showActions, messageMeta?)` | Render message + retry / import buttons; assistant messages show a `mode / model / 1.5s` badge. Also runs `annotateNodeReferences` on assistant messages so inline backtick'd node names become clickable. |
 | `formatMessage(text)` | `marked.parse` with XSS-safe pre-escape of `<` / `>`. |
 | `annotateNodeReferences(rootEl, targetFlowIds?)` | Two-pass scan that makes node mentions clickable. **Pass 1**: every inline `<code>` (skipping `<pre>`-nested ones) is resolved via `LlmJsonParser.buildFlowLookup(...).resolve`; matches become `code.llm-node-ref` with a focus handler. **Pass 2**: walks the remaining text nodes (skipping `<code>/<pre>/<a>/<script>/<style>`) and replaces any token that exactly matches a known alias (length ≥ 3) — this catches plain-prose mentions when the LLM forgets to backtick. Both singleton aliases (`inject`, `debug`) and compound ones (`change_create_sensor_json`) are matched; sort-longest-first plus `\b` boundaries make sure `change_temperature_series` beats `change` on overlapping spans. Tabs are skipped; config nodes ARE included (they open the edit dialog on click). When `targetFlowIds` is provided, the alias map is rebuilt from `UI.getFlowsByIds(targetFlowIds)` — the exact same export the LLM saw — so numbered duplicate aliases (`change_2`, …) resolve back to the same node IDs. Without it, every node on the canvas is scanned. The system prompt also instructs the LLM to backtick node aliases, so Pass 1 is the primary path. |
-| `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)` (with `RED.editor.edit(node)` as fallback). Notifies if the node has since been deleted. Exposed as `LLMPlugin.UI.focusCanvasNode`. |
+| `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)` (with `RED.editor.edit(node)` as fallback). Notifies if the node has since been deleted. |
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
 | `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [design.md](./design.md#7-snapshot-completeness--junction--group). |
@@ -306,8 +307,8 @@ sidebar — there is only one settings + credentials store.
 | Section | Key functions |
 |---------|---------------|
 | Storage resolution | `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
-| Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-CTR), legacy-key migration, `maskApiKey`, `redactSecrets` |
-| Prompt construction | `buildMessages` (loads `prompt_system.txt`, `Configurator.toIntermediate`), `buildChatMessages` (plain Ask-mode chat) |
+| Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-GCM), legacy-key migration, `maskApiKey`, `redactSecrets` |
+| Prompt construction | `buildMessages` (loads `prompt_system.txt`, `FlowConverterCore.toIntermediate`), `buildChatMessages` (plain Ask-mode chat) |
 | LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
 
 ### `server.js`
@@ -417,7 +418,7 @@ disposable instances for exactly this reason.
 
 - **No jQuery** in client modules; vanilla DOM + `fetch`.
 - **Module communication**: `window.LLMPlugin` namespace
-  (`CanvasLayout`, `FlowConverterCore` / `Configurator`,
+  (`CanvasLayout`, `FlowConverterCore`,
   `LLMJsonParser`, `ChatManager`, `UI`, `Importer`).
 - **Chat / checkpoint storage**: server-side, resolved by `llm_core.js`
   (storage resolution above). The plugin never writes to its own install

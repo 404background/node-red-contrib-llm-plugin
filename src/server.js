@@ -538,7 +538,8 @@ function createLLMPluginServer(RED) {
                 return res.json({ success: true });
             }
 
-            // Fallback: match by chatId (legacy support)
+            // No filename yet: chats created in this editor session only
+            // learn their `__file` on the next history reload.
             if (!chatId) return res.status(400).json({ error: 'Chat ID or filename required' });
             const chatFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith('.json'));
             let deleted = false;

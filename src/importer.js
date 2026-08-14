@@ -26,19 +26,16 @@
     //  Module References                                                  //
     // ================================================================== //
 
-    function getConfigurator() {
-        return window.LLMPlugin ? window.LLMPlugin.Configurator : null;
-    }
-
-    function getParser() {
-        return window.LLMPlugin ? window.LLMPlugin.LLMJsonParser : null;
-    }
+    // client.js loads these before this file, so they are bound once here
+    // instead of being re-read (and re-guarded) on every call.
+    let Common    = window.LLMPlugin.Common;
+    let Converter = window.LLMPlugin.FlowConverterCore;
+    let Parser    = window.LLMPlugin.LLMJsonParser;
 
     // ================================================================== //
     //  Basic Utilities                                                    //
     // ================================================================== //
 
-    let Common = window.LLMPlugin.Common;
     let notify = Common.notify;
 
     function genId() { return Common.randomId('id_'); }
@@ -166,33 +163,10 @@
 
     // --- Runtime node-type helpers (thin wrappers over FlowConverterCore) ---
 
-    function nodeCanAcceptInput(type) {
-        if (!type || typeof type !== 'string') return true;
-        let cfg = getConfigurator();
-        if (cfg && typeof cfg.isNoInputType === 'function') return !cfg.isNoInputType(type);
-        return true;
-    }
-
-    function nodeCanEmitOutput(type) {
-        if (!type || typeof type !== 'string') return true;
-        let cfg = getConfigurator();
-        if (cfg && typeof cfg.isNoOutputType === 'function') return !cfg.isNoOutputType(type);
-        return true;
-    }
-
-    function isConfigNodeType(type) {
-        if (!type || typeof type !== 'string') return false;
-        let cfg = getConfigurator();
-        if (cfg && typeof cfg.isConfigType === 'function') return cfg.isConfigType(type);
-        return false;
-    }
-
-    function isConfigNodeObj(node) {
-        if (!node || typeof node !== 'object') return false;
-        let cfg = getConfigurator();
-        if (cfg && typeof cfg.isConfigNode === 'function') return cfg.isConfigNode(node);
-        return isConfigNodeType(node.type);
-    }
+    function nodeCanAcceptInput(type) { return !Converter.isNoInputType(type); }
+    function nodeCanEmitOutput(type)  { return !Converter.isNoOutputType(type); }
+    function isConfigNodeType(type)   { return Converter.isConfigType(type); }
+    function isConfigNodeObj(node)    { return Converter.isConfigNode(node); }
 
     // Drop wires targeting nodes with no inputs (inject / comment / ...).
     function pruneInvalidInputWires(flowNodes) {
@@ -247,36 +221,21 @@
     //  Forwarders to LLMJsonParser (implementations in src/core)         //
     // ------------------------------------------------------------------ //
 
-    function buildFlowLookup(flowNodes, cfg) {
-        let p = getParser();
-        return p ? p.buildFlowLookup(flowNodes, cfg)
-                 : { aliasToId: {}, idToAlias: {}, nameToId: {}, byId: {}, inter: null, resolve: function() { return null; } };
+    function buildFlowLookup(flowNodes) {
+        return Parser.buildFlowLookup(flowNodes, Converter);
     }
     function extractLastVibeSchema(messageContent) {
-        let p = getParser(); let cfg = getConfigurator();
-        return (p && cfg) ? p.extractVibeSchema(messageContent, cfg) : null;
+        return Parser.extractVibeSchema(messageContent, Converter);
     }
     function extractConnectionHints(messageContent) {
-        let p = getParser(); let cfg = getConfigurator();
-        return (p && cfg) ? p.extractConnectionHints(messageContent, cfg) : [];
+        return Parser.extractConnectionHints(messageContent, Converter);
     }
     function extractFlowDirectives(messageContent) {
-        let p = getParser(); let cfg = getConfigurator();
-        return (p && cfg) ? p.extractFlowDirectives(messageContent, cfg) : { removeTokens: [], removeConnections: [], repositionTokens: [] };
+        return Parser.extractFlowDirectives(messageContent, Converter);
     }
     function extractFlowNodes(messageContent, options) {
-        let p = getParser(); let cfg = getConfigurator();
-        return (p && cfg) ? p.extractFlowNodes(messageContent, options, cfg) : null;
+        return Parser.extractFlowNodes(messageContent, options, Converter);
     }
-
-    // ================================================================== //
-    //  Apply Mode                                                         //
-    // ================================================================== //
-
-    // The legacy `applyMode` field is no longer honoured — every import is
-    // a merge: listed nodes are added or updated, aliases mapped to `null`
-    // are deleted, anything else stays. The field is silently ignored when
-    // older schemas or model outputs still carry it.
 
     // ================================================================== //
     //  Unified Alias Lookup                                               //
@@ -290,8 +249,7 @@
     // "function", not the LLM-chosen "function_new". With the _llmAlias
     // index, the schema's own alias resolves to the new node's id.
     function buildUnifiedLookup(flowNodes) {
-        let cfg = getConfigurator();
-        let lookup = buildFlowLookup(flowNodes, cfg);
+        let lookup = buildFlowLookup(flowNodes);
         if (Array.isArray(flowNodes)) {
             flowNodes.forEach(function(n) {
                 if (!n || !n.id) return;
@@ -357,14 +315,7 @@
         return LLMPlugin.UI ? LLMPlugin.UI.getActiveWorkspaceId() : null;
     }
 
-    function isCanvasNode(node) {
-        let cfg = getConfigurator();
-        if (cfg && typeof cfg.isCanvasNode === 'function') return cfg.isCanvasNode(node);
-        if (!node || typeof node !== 'object') return false;
-        if (typeof node.type !== 'string' || !node.type.trim()) return false;
-        if (node.type === 'tab' || String(node.type).indexOf('subflow:') === 0) return false;
-        return !isConfigNodeObj(node);
-    }
+    function isCanvasNode(node) { return Converter.isCanvasNode(node); }
 
     // Groups are canvas entities for z-assignment and re-import, but the
     // layout must never treat them as positionable nodes: a group's bounding
@@ -440,7 +391,6 @@
             }
         });
         let directives = flowDirectives || { removeTokens: [], removeConnections: [], repositionTokens: [] };
-        let cfg = getConfigurator();
 
         function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
@@ -452,7 +402,7 @@
             if (!Array.isArray(removeTokens) || removeTokens.length === 0) {
                 return { remainingNodes: nodes, removedIdSet: removedIdSet };
             }
-            let lookup = buildFlowLookup(nodes, cfg);
+            let lookup = buildFlowLookup(nodes);
 
             removeTokens.forEach(function(tok) {
                 let t = String(tok || '').trim();
@@ -622,7 +572,6 @@
         // _llmAlias on rebuilt) or an EXISTING node from the live flow
         // (look up via toIntermediate's aliasToId / nameToId).
         (function resolveCommentAboveRefs() {
-            let cfg = getConfigurator();
             let aboveCandidates = rebuilt.filter(function(n) {
                 return n && n.type === 'comment' && typeof n._llmAbove === 'string' && n._llmAbove.length > 0;
             });
@@ -631,7 +580,7 @@
             rebuilt.forEach(function(n) {
                 if (n && n.id && typeof n._llmAlias === 'string') newByAlias[n._llmAlias] = n.id;
             });
-            let existingLookup = buildFlowLookup(rebuilt, cfg);
+            let existingLookup = buildFlowLookup(rebuilt);
             aboveCandidates.forEach(function(c) {
                 let want = c._llmAbove;
                 let id = newByAlias[want]
@@ -731,8 +680,7 @@
             ? layout.captureCommentAnchors(allNodes, layoutOpts)
             : null;
 
-        let cfg = getConfigurator();
-        let lookup = buildFlowLookup(allNodes, cfg);
+        let lookup = buildFlowLookup(allNodes);
 
         let subsetIdSet = {};
         aliases.forEach(function(a) {
@@ -1039,8 +987,7 @@
     // earlier in the tab bar and send the whole edit there.
     function inferImplicitFlowTagging(schema, allowedSet) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return schema;
-        let cfg = getConfigurator();
-        if (typeof RED === 'undefined' || !RED.nodes || !cfg || typeof cfg.toIntermediate !== 'function') return schema;
+        if (typeof RED === 'undefined' || !RED.nodes) return schema;
         if (typeof RED.nodes.eachWorkspace !== 'function' || typeof RED.nodes.filterNodes !== 'function') return schema;
 
         let aliasToWorkspaceLabel = {};
@@ -1051,7 +998,7 @@
                 let label = (typeof ws.label === 'string' && ws.label.trim()) ? ws.label : ws.id;
                 let nodes = RED.nodes.filterNodes({ z: ws.id }) || [];
                 if (nodes.length === 0) return;
-                let inter = cfg.toIntermediate(nodes, { includeIdMap: true });
+                let inter = Converter.toIntermediate(nodes, { includeIdMap: true });
                 let interNodes = (inter && inter.nodes) ? inter.nodes : {};
                 Object.keys(interNodes).forEach(function(alias) {
                     if (!aliasToWorkspaceLabel[alias]) {
@@ -1155,7 +1102,7 @@
             if (!wsId) { unresolved.push(label); continue; }
 
             let subSchema = buildSubSchemaForFlow(schema, flowGroups[label]);
-            let subMessage = '```json\n' + JSON.stringify(subSchema, null, 2) + '\n```';
+            let subMessage = serializeSchemaAsMessage(subSchema);
             try {
                 let res = await Importer.importFlowFromMessage(subMessage, Object.assign({}, options, {
                     targetWorkspaceId: wsId,
@@ -1248,7 +1195,6 @@
             let beforeFlow = safeGetCurrentFlow(currentWorkspace);
 
             let hasExistingFlow = Array.isArray(beforeFlow) && beforeFlow.length > 0;
-            let parsedSchema = extractLastVibeSchema(messageContent);
             let connectionHints = extractConnectionHints(messageContent);
             let flowDirectives = extractFlowDirectives(messageContent);
 
@@ -1272,10 +1218,7 @@
                     // Try to surface a real parse error so users can act on
                     // a malformed JSON block (e.g. an unescaped JSONata
                     // quote) instead of the generic "no JSON" message.
-                    let parser = getParser();
-                    let diag = (parser && typeof parser.diagnoseJsonExtractionFailure === 'function')
-                        ? parser.diagnoseJsonExtractionFailure(messageContent)
-                        : null;
+                    let diag = Parser.diagnoseJsonExtractionFailure(messageContent);
                     if (diag) {
                         let where = (diag.line && diag.column)
                             ? ' (line ' + diag.line + ', col ' + diag.column + ')'
@@ -1295,10 +1238,7 @@
             }
 
             // Build unified lookup from current flow
-            let cfg = getConfigurator();
-            let lookup = hasExistingFlow
-                ? buildFlowLookup(beforeFlow, cfg)
-                : buildFlowLookup([], null);
+            let lookup = buildFlowLookup(hasExistingFlow ? beforeFlow : []);
 
             // Resolve hint/directive aliases to real IDs. exactOnly avoids
             // a fuzzy match from hijacking unrelated nodes.
@@ -1525,17 +1465,17 @@
                 };
             }
 
-            notify('Flow reloaded successfully', 'success');
-
             let addedNodes = rebuiltFlow.filter(function(n) {
                 return !!(n && n.id) && !beforeIdSet.has(n.id);
             }).map(function(n) {
                 return { id: n.id, type: n.type || '', name: n.name || '' };
             });
 
-            if (addedNodes.length > 0) {
-                notify('Applied with ' + addedNodes.length + ' added node(s)', 'warning');
-            }
+            // One toast per import: two in a row (and a 'warning' severity for
+            // what is really a success detail) just buried the result.
+            notify(addedNodes.length > 0
+                ? 'Flow updated (' + addedNodes.length + ' node(s) added)'
+                : 'Flow updated', 'success');
 
             return {
                 ok: true,

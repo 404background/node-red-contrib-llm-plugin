@@ -102,10 +102,8 @@ module.exports = function(RED) {
         const configTimeoutSec = toTimeoutSec(config.timeout, DEFAULT_TIMEOUT_SEC);
         // Developer feature: the editor deploys right after applying (Agent).
         const autoDeploy = config.autoDeploy === true;
-        // Multi-select flow ids; tolerate the legacy single-string field.
-        const targetFlows = Array.isArray(config.targetFlows)
-            ? config.targetFlows.slice()
-            : (config.targetFlow ? [config.targetFlow] : []);
+        // Multi-select flow ids (the edit dialog always writes an array).
+        const targetFlows = Array.isArray(config.targetFlows) ? config.targetFlows.slice() : [];
 
         // While a request is in flight, tick the node status with the
         // elapsed time so long local-LLM runs are visibly alive (status
@@ -241,7 +239,7 @@ module.exports = function(RED) {
 
     RED.nodes.registerType('llm-request', LLMRequestNode);
 
-    // Exposed for test/flow_context_scope.test.js — what this returns is what
+    // Exposed for test/cross_flow_isolation.test.js — what this returns is what
     // leaves the machine, so it is covered by a regression test.
     module.exports._flowContextFor = flowContextFor;
 };

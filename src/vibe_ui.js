@@ -652,7 +652,7 @@
         if (typeof RED !== 'undefined' && RED.sidebar) {
             // Wire runtime type info into FlowConverterCore so community
             // nodes are handled correctly (config detection, input checks).
-            let cfg = window.LLMPlugin && window.LLMPlugin.Configurator;
+            let cfg = window.LLMPlugin && window.LLMPlugin.FlowConverterCore;
             if (cfg && typeof cfg.setRuntimeGetType === 'function' &&
                 RED.nodes && typeof RED.nodes.getType === 'function') {
                 cfg.setRuntimeGetType(function(type) {
@@ -674,13 +674,8 @@
         }
     }
 
-    // Expose minimal surface
-    window.LLMPlugin = window.LLMPlugin || {};
-    window.LLMPlugin.UI = window.LLMPlugin.UI || {};
-    window.LLMPlugin.UI.createLLMPluginUI = createLLMPluginUI;
-    window.LLMPlugin.initialize = initializeWhenReady;
-
-    // Auto-init
+    // Auto-init: this module owns the sidebar tab; nothing outside it
+    // needs a handle on the builder.
     initializeWhenReady();
 
 })();

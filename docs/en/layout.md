@@ -85,8 +85,6 @@ const positions = Layout.layoutNodes(
 | `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Incremental layout (keeps existing nodes pinned, places only the new ones). |
 | `estimateNodeWidth(node, options?)` | Label-based width estimate, snapped to `gridSize`. |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
-| `pairSpacing(a, b, options?)` | Width-aware centre-to-centre distance. |
-| `buildWireAdjacency(nodes, byId)` | `outgoing` / `incoming` maps from each node's `wires`. |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
 | `LAYOUT_DEFAULTS` | Default constants. |
 

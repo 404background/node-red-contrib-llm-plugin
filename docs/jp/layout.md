@@ -85,8 +85,6 @@ const positions = Layout.layoutNodes(
 | `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | 増分レイアウト(既存ノードは固定し、新規のみ配置)。 |
 | `estimateNodeWidth(node, options?)` | ラベルベースの幅推定。`gridSize` にスナップ。 |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` があればそれ、なければ `estimateNodeWidth`。 |
-| `pairSpacing(a, b, options?)` | 幅を考慮した中心間距離。 |
-| `buildWireAdjacency(nodes, byId)` | 各ノードの `wires` から `outgoing` / `incoming` マップ。 |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | 縦積みのためのコンポーネントごとの Y オフセット。`spacingY` と `gap` はエッジ間。行ピッチは `nodeHeight + spacingY`、コンポーネントステップは `nodeHeight + gap`。`nodeHeight` のデフォルトは `LAYOUT_DEFAULTS.nodeHeight`。 |
 | `LAYOUT_DEFAULTS` | デフォルト定数。 |
 

@@ -124,11 +124,11 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 | `isCanvasNode(node)` | `!tab && !subflow: && !isConfigNode`. |
 | `isNoInputType(type)` | True for source-only nodes (`inject`, `catch`, `comment`, …). |
 | `isNoOutputType(type)` | True for `comment` (and any other zero-output type via runtime def). |
-| `isMetaProp(key)` | True when `key` starts with `_` — the metadata convention both conversions enforce. |
 | `setRuntimeGetType(fn)` | Inject `RED.nodes.getType` so the helpers see community nodes. |
 
-`window.LLMPlugin.Configurator` is an alias for `FlowConverterCore` kept
-for backward compatibility.
+Both conversions enforce the metadata convention internally: a property
+whose name starts with `_` is plugin bookkeeping, so `toIntermediate`
+never emits one and `toNodeRed` never accepts one from the schema.
 
 ## Schema reference
 

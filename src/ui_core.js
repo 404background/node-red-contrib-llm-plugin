@@ -2,7 +2,10 @@
 // Handles message rendering, flow context export, and retry logic.
 (function(){
     let UI = {};
+    // client.js loads these before this file.
     let Common = window.LLMPlugin.Common;
+    let Converter = window.LLMPlugin.FlowConverterCore;
+    let Parser = window.LLMPlugin.LLMJsonParser;
     let escapeHtml = Common.escapeHtml;
 
     // Strip dangerous URL schemes from marked's output. A plain
@@ -150,12 +153,10 @@
     function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
         if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
-        if (!window.LLMPlugin || !LLMPlugin.LLMJsonParser ||
-            typeof LLMPlugin.LLMJsonParser.buildFlowLookup !== 'function') return;
 
         let scoped = Array.isArray(targetFlowIds) && targetFlowIds.length > 0;
         let allNodes = null;
-        if (scoped && typeof UI.getFlowsByIds === 'function') {
+        if (scoped) {
             try { allNodes = UI.getFlowsByIds(targetFlowIds); } catch (e) { allNodes = null; }
         }
         if (!Array.isArray(allNodes) || allNodes.length === 0) {
@@ -169,10 +170,9 @@
         }
         if (allNodes.length === 0) return;
 
-        let cfg = LLMPlugin.FlowConverterCore || null;
         let lookup;
         try {
-            lookup = LLMPlugin.LLMJsonParser.buildFlowLookup(allNodes, cfg);
+            lookup = Parser.buildFlowLookup(allNodes, Converter);
         } catch (e) { return; }
 
         function isFocusable(id) {
@@ -568,11 +568,6 @@
         return message;
     };
 
-    UI.formatMessage = formatMessage;
-    UI.focusCanvasNode = focusCanvasNode;
-    UI.annotateNodeReferences = annotateNodeReferences;
-    UI.reannotateAllAssistantMessages = reannotateAllAssistantMessages;
-
     UI.retryLastUserMessage = function(messageMeta) {
         try {
             if (!LLMPlugin.ChatManager) return;
@@ -737,8 +732,6 @@
         }
         return targetIds.length > 0 ? UI.getFlowsByIds(targetIds, opts) : null;
     };
-
-    UI.createRestoreCheckpointButton = createRestoreCheckpointButton;
 
     window.LLMPlugin = window.LLMPlugin || {};
     window.LLMPlugin.UI = UI;

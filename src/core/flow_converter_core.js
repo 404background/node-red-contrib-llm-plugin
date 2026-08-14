@@ -7,7 +7,6 @@
         window.LLMPlugin = window.LLMPlugin || {};
         // canvas_layout.js must be loaded first (see ../client.js).
         window.LLMPlugin.FlowConverterCore = factory(window.LLMPlugin.CanvasLayout);
-        window.LLMPlugin.Configurator = window.LLMPlugin.FlowConverterCore;
     }
 })(function(CanvasLayout) {
     'use strict';
@@ -109,7 +108,7 @@
 
     /** Generate a short random ID compatible with Node-RED. */
     function genId() {
-        return 'id_' + Math.random().toString(36).substr(2, 9);
+        return 'id_' + Math.random().toString(36).substring(2, 11);
     }
 
     /** Turn an arbitrary string into a safe, lower-case alias. */
@@ -964,7 +963,6 @@
         isCanvasNode:        isCanvasNode,
         isNoInputType:       isNoInputType,
         isNoOutputType:      isNoOutputType,
-        isMetaProp:          isMetaProp,
         setRuntimeGetType:   setRuntimeGetType
     };
 });

@@ -19,7 +19,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { OpenAI } = require('openai');
-const Configurator = require('./core/flow_converter_core');
+const FlowConverterCore = require('./core/flow_converter_core');
 
 // Fall back to a minimal embedded prompt if the bundled file is
 // unreadable (sandboxed cloud environments occasionally restrict reads).
@@ -86,7 +86,7 @@ function createLLMCore(RED) {
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
     //
-    // API keys are AES-256-CTR-encrypted in `<baseDir>/credentials.json`
+    // API keys are AES-256-GCM-encrypted in `<baseDir>/credentials.json`
     // using Node-RED's own credentialSecret. NOT stored via
     // `RED.nodes.addCredentials`: cleanCredentials wipes entries whose id
     // no flow node references, on every deploy. Non-secret settings stay
@@ -331,7 +331,7 @@ function createLLMCore(RED) {
             }
             return {
                 header: 'CURRENT FLOW (' + flowDisplay + '):',
-                body: JSON.stringify(Configurator.toIntermediate(nodes), null, 2)
+                body: JSON.stringify(FlowConverterCore.toIntermediate(nodes), null, 2)
             };
         }
 
@@ -347,7 +347,7 @@ function createLLMCore(RED) {
             for (const n of flowNodes) allCanvas.push(n);
         }
         const allNodes = allCanvas.concat(Object.values(configById));
-        const inter = Configurator.toIntermediate(allNodes, { includeIdMap: true });
+        const inter = FlowConverterCore.toIntermediate(allNodes, { includeIdMap: true });
         const idToAlias = (inter._meta && inter._meta.idToAlias) || {};
         delete inter._meta;
 

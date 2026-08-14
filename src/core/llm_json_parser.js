@@ -9,7 +9,7 @@
 //  - Partial schema merging and flow node extraction
 //
 // Works as both a CommonJS module (server/tests) and a browser global.
-// Has NO dependency on plugin globals — pass `cfg` (Configurator) explicitly
+// Has NO dependency on plugin globals — pass `cfg` (FlowConverterCore) explicitly
 // to any function that needs Vibe Schema conversion.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
@@ -264,7 +264,7 @@
      * Search order: code fences (last first) → full text → balanced objects.
      *
      * @param {string} messageContent  Raw LLM assistant message.
-     * @param {Object} cfg             Configurator with `isVibeSchema(obj)` method.
+     * @param {Object} cfg             FlowConverterCore with `isVibeSchema(obj)` method.
      * @returns {Object|null}
      */
     function extractVibeSchema(messageContent, cfg) {
@@ -298,7 +298,7 @@
      * Extract explicit connection hints from a Vibe Schema embedded in the message.
      *
      * @param {string} messageContent
-     * @param {Object} cfg   Configurator with `isVibeSchema` method.
+     * @param {Object} cfg   FlowConverterCore with `isVibeSchema` method.
      * @returns {Array<{from: string, to: string, fromPort: number}>}
      */
     function extractConnectionHints(messageContent, cfg) {
@@ -317,7 +317,7 @@
      * reposition requests) from the message.
      *
      * @param {string} messageContent
-     * @param {Object} cfg   Configurator with `isVibeSchema` method.
+     * @param {Object} cfg   FlowConverterCore with `isVibeSchema` method.
      * @returns {{ removeTokens: string[], removeConnections: Array, repositionTokens: string[] }}
      */
     function extractFlowDirectives(messageContent, cfg) {
@@ -379,7 +379,7 @@
      *   exact ID → exact alias → normalized alias → node name → loose alias → fuzzy
      *
      * @param {Array}  flowNodes  Node-RED flow nodes array.
-     * @param {Object} [cfg]      Configurator with `toIntermediate` method (for alias maps).
+     * @param {Object} [cfg]      FlowConverterCore with `toIntermediate` method (for alias maps).
      * @returns {{
      *   resolve: function(token: string, opts?: {minLen?: number, fuzzy?: boolean}): string|null,
      *   aliasToId: Object,
@@ -507,7 +507,7 @@
      *
      * @param {Object} schema       Partial Vibe Schema from the LLM agent.
      * @param {Array}  currentFlow  Current Node-RED flow nodes.
-     * @param {Object} cfg          Configurator with `toIntermediate` method.
+     * @param {Object} cfg          FlowConverterCore with `toIntermediate` method.
      * @returns {Object}  Merged Vibe Schema.
      */
     function mergeAgentPartialSchemaWithCurrentFlow(schema, currentFlow, cfg) {
@@ -571,7 +571,7 @@
      *
      * @param {Object} schema
      * @param {Object} options   { currentFlow: Array }
-     * @param {Object} cfg       Configurator with `toIntermediate` method.
+     * @param {Object} cfg       FlowConverterCore with `toIntermediate` method.
      * @returns {Object}  Clean Vibe Schema ready for cfg.toNodeRed().
      */
     function normalizeSchemaForConversion(schema, options, cfg) {
@@ -643,7 +643,7 @@
      *
      * @param {string} text
      * @param {Object} options  { mode: string, currentFlow: Array }
-     * @param {Object} cfg      Configurator with `isVibeSchema`, `toNodeRed`, `toIntermediate`.
+     * @param {Object} cfg      FlowConverterCore with `isVibeSchema`, `toNodeRed`, `toIntermediate`.
      * @returns {Array|null}
      */
     function tryParseFlowNodes(text, options, cfg) {
@@ -710,7 +710,7 @@
      *
      * @param {string} messageContent
      * @param {Object} options         { mode: string, currentFlow: Array }
-     * @param {Object} cfg             Configurator module.
+     * @param {Object} cfg             FlowConverterCore module.
      * @returns {Array|null}
      */
     function extractFlowNodes(messageContent, options, cfg) {
@@ -798,18 +798,9 @@
     //  Public API                                                         //
     // ================================================================== //
 
+    // Token normalization, JSON repair and schema resolution are internal
+    // steps of the entry points below, not part of the callable surface.
     return {
-        // Token normalization
-        normalizeToken: normalizeToken,
-        normalizeTokenLoose: normalizeTokenLoose,
-        putUniqueToken: putUniqueToken,
-        resolveUniqueApprox: resolveUniqueApprox,
-
-        // JSON parsing / repair
-        stripJsonComments: stripJsonComments,
-        repairJsonQuotes: repairJsonQuotes,
-        collectBalancedJsonSnippets: collectBalancedJsonSnippets,
-
         // Vibe Schema extraction (requires cfg with isVibeSchema)
         extractVibeSchema: extractVibeSchema,
         extractConnectionHints: extractConnectionHints,
@@ -818,13 +809,7 @@
         // Flow lookup (requires cfg with toIntermediate)
         buildFlowLookup: buildFlowLookup,
 
-        // Schema resolution (requires cfg with toIntermediate)
-        resolveAliasInSchema: resolveAliasInSchema,
-        mergeAgentPartialSchemaWithCurrentFlow: mergeAgentPartialSchemaWithCurrentFlow,
-
         // Flow node extraction (requires cfg with isVibeSchema, toNodeRed, toIntermediate)
-        normalizeSchemaForConversion: normalizeSchemaForConversion,
-        tryParseFlowNodes: tryParseFlowNodes,
         extractFlowNodes: extractFlowNodes,
         diagnoseJsonExtractionFailure: diagnoseJsonExtractionFailure
     };

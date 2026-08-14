@@ -1261,14 +1261,11 @@
         LAYOUT_DEFAULTS:              LAYOUT_DEFAULTS,
         estimateNodeWidth:            estimateNodeWidth,
         getNodeWidth:                 getNodeWidth,
-        pairSpacing:                  pairSpacing,
         layoutNodes:                  layoutNodes,
-        buildWireAdjacency:           buildWireAdjacency,
         computeComponentYOffsets:     computeComponentYOffsets,
         reflowCanvasNodes:            reflowCanvasNodes,
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,
-        applyCommentAnchors:          applyCommentAnchors,
-        ensureTopMargin:              ensureTopMargin
+        applyCommentAnchors:          applyCommentAnchors
     };
 });
