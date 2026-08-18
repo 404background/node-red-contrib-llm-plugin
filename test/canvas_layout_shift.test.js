@@ -103,6 +103,17 @@ describe('Step 3.5b cross-component push preserves comment/target gap', function
         // The cm2/c2a gap (40) must be preserved across the shift.
         assert(c2a.y - cm2.y === 40,
             'cm2 should remain 40px above c2a, got ' + (c2a.y - cm2.y));
+        // ...and the cascade must move every pushed component by the SAME
+        // dy, so the chains it did not otherwise touch keep their original
+        // 80px spacing. Deriving dy per component (the historical bug)
+        // aims each one at the modifier's bottom edge instead, which a
+        // later overlap pass then pulls apart to 110 — no collision, but
+        // the band has been sheared. Assert the spacing, not just the
+        // absence of overlap, or that regression goes unnoticed.
+        assert(c3a.y - c2a.y === 80,
+            'chains 2 and 3 should stay 80px apart, got ' + (c3a.y - c2a.y));
+        assert(cm3.y - cm2.y === 80,
+            'captions 2 and 3 should stay 80px apart, got ' + (cm3.y - cm2.y));
     });
 
     it('new comment lands on grid above its new-inject target', function() {

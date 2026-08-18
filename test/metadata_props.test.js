@@ -22,8 +22,12 @@ const files = [
   'src/core/canvas_layout.js',
   'src/core/flow_converter_core.js',
   'src/core/llm_json_parser.js',
-  'src/ui_core.js',
+  // Same order as src/client.js loads them in the editor, so a
+  // load-time dependency that only holds in one order cannot pass here
+  // and fail in production.
+  'src/chat_manager.js',
   'src/importer.js',
+  'src/ui_core.js',
 ];
 
 let assertions = 0, failures = 0;
