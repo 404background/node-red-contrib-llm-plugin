@@ -222,7 +222,10 @@ Full import workflow with these guarantees:
    restored from the existing node. Mentioned-key set comes from
    `_llmSpecKeys` (Vibe Schema path) or `n[key] !== undefined`
    (raw-JSON path), so normaliser-default values don't override user
-   settings.
+   settings. The editor flags ride along: an unmentioned `d` / `l` is
+   preserved, while `disabled: false` deletes `d` yet still lists it as
+   mentioned, so re-enabling is not undone by the restore
+   (see [vibe-schema.md](./vibe-schema.md#editor-flags-disabled-showlabel)).
 7. **Comment placement** — every comment names its target canvas node
    via `above: <alias>` and lands directly atop that node with zero grid
    gap, **left edge aligned** with the target's left edge (not its

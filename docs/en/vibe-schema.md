@@ -106,7 +106,7 @@ real node id first. See [layout.md](./layout.md#comment-placement).
 const Cfg = require('./flow_converter_core.js');
 
 const schema = Cfg.toIntermediate(exportedNodes);
-//   schema.nodes[alias] = { type, name?, config?, props? }
+//   schema.nodes[alias] = { type, name?, config?, disabled?, props? }
 //   schema.connections = [{ from, to, fromPort? }, ...]
 
 const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
@@ -145,6 +145,8 @@ NodeEntry = {
   flow?      : string                   // tab label this node belongs to
   config?    : true                     // mark for config nodes
   above?     : alias                    // comment-only: target node to sit above
+  disabled?  : boolean                  // node is disabled ("commented out")
+  showLabel? : boolean                  // canvas label visibility
   props?     : object                   // type-specific fields
   // any other root-level key is folded into props on conversion,
   // EXCEPT `_`-prefixed keys — those are metadata and are ignored
@@ -163,6 +165,39 @@ sees one, and `toNodeRed` ignores every `_` key a schema supplies, so the
 LLM cannot author one either. Metadata is written solely by `toNodeRed`
 for the importer to consume, and the importer strips all of it before the
 nodes reach the canvas. See [design.md](./design.md) §0.1.
+
+### Editor flags (`disabled`, `showLabel`)
+
+Node-RED stores two editor-level node states under single-letter keys that
+mean nothing to a reader: `d` (the context menu's Enable/Disable — what
+users call "commenting out" a node) and `l` (Appearance → label
+visibility). Neither is type-specific configuration, so the schema lifts
+them to the entry root under the names the editor's own UI uses:
+
+| Node-RED | Schema | Present when |
+|----------|--------|--------------|
+| `d: true` | `disabled: true` | the node is disabled |
+| `l: <bool>` | `showLabel: <bool>` | it differs from the type's default (link nodes hide by default) |
+
+Node-RED exports both keys only when set, so neither appears on an
+ordinary node — a model reading the flow context sees `disabled: true`
+exactly where a user sees a greyed-out node, and nothing otherwise. A
+disabled node is otherwise unchanged: it keeps every property, and is
+listed in the context in full, so the model can inspect and edit it the
+same way a user can open it in the editor.
+
+`toNodeRed` accepts the readable name at the entry root or inside `props`
+and writes back the single-letter key. `d` exists only while a node is
+disabled, so `disabled: false` **removes** the key rather than writing
+`d: false`; it still counts as an explicitly proposed key, which is what
+stops the importer's merge from restoring the node's previous `d: true`
+(see [architecture.md](./architecture.md) — `importFlowFromMessage`, "Property preservation").
+
+`disabled` and `showLabel` are therefore reserved names. A node type that
+owns real properties of those names keeps them: the outbound lift is
+skipped when the name is already taken, an explicit raw `d` / `l` in the
+schema wins over the alias, and only boolean-ish values (`true`, `false`,
+`"true"`, `"false"`) are ever read as a flag.
 
 ### Aliases
 

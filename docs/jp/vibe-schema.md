@@ -103,7 +103,7 @@ LLM が生成しなくて済んだものに注目してほしい: ランダム�
 const Cfg = require('./flow_converter_core.js');
 
 const schema = Cfg.toIntermediate(exportedNodes);
-//   schema.nodes[alias] = { type, name?, config?, props? }
+//   schema.nodes[alias] = { type, name?, config?, disabled?, props? }
 //   schema.connections = [{ from, to, fromPort? }, ...]
 
 const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
@@ -142,6 +142,8 @@ NodeEntry = {
   flow?      : string                   // このノードが属するタブラベル
   config?    : true                     // config ノードの目印
   above?     : alias                    // comment 専用: この上に載る対象ノード
+  disabled?  : boolean                  // ノードが無効化(コメントアウト)されている
+  showLabel? : boolean                  // キャンバス上のラベル表示
   props?     : object                   // 型固有フィールド
   // その他のルートレベルキーは変換時に props にまとめられる。
   // ただし `_` 始まりのキーはメタデータ扱いで無視される
@@ -159,6 +161,36 @@ RemoveEntry = { remove: { from: alias, to: alias } }
 スキーマに書かれたアンダースコア始まりのキーを一切受け付けない(＝ LLM は書けない)。
 メタデータを書き込めるのは変換器自身だけで、インポート側がキャンバスへ渡す前にすべて剥がす。
 詳細は [design.md](./design.md) §0.1。
+
+### エディタ上のフラグ(`disabled` / `showLabel`)
+
+Node-RED は、エディタで切り替える 2 つのノード状態を、読んでも意味の分からない
+1 文字のキーで保持している。`d`(右クリックメニューの有効/無効 — いわゆる
+「ノードのコメントアウト」)と `l`(外観 → ラベル表示)である。どちらも型固有の
+設定ではないので、スキーマではエディタの UI で使われている名前に改め、
+エントリ直下に持ち上げる。
+
+| Node-RED | スキーマ | 現れる条件 |
+|----------|--------|--------------|
+| `d: true` | `disabled: true` | ノードが無効化されているとき |
+| `l: <bool>` | `showLabel: <bool>` | 型の既定と異なるとき(link ノードは既定で非表示) |
+
+Node-RED はこの 2 つを設定されているときだけ書き出すので、普通のノードにはどちらも
+現れない。つまり、人がキャンバスでグレーアウトしたノードを見ているのと同じ場所で、
+LLM は `disabled: true` を見る。無効化されたノードはそれ以外は普通のノードと全く同じで、
+プロパティをすべて保持したまま文脈に含まれる。人がエディタで開いて中身を確かめられるのと同じように、
+LLM も中身を確認して編集できる。
+
+`toNodeRed` はこの読める名前をエントリ直下でも `props` の中でも受け付け、1 文字キーに
+戻して書き込む。`d` は無効の間だけ存在するキーなので、`disabled: false` は `d: false` を
+書くのではなくキーを**削除**する。それでも「明示的に提案されたキー」として数えるので、
+インポート時のマージが元の `d: true` を復元してしまうことはない
+([architecture.md](./architecture.md) の `importFlowFromMessage`「プロパティ保存」を参照)。
+
+したがって `disabled` と `showLabel` は予約名である。これらの名前のプロパティを
+本当に持つノード型も壊れない。名前が埋まっているときは往路の持ち上げを行わず、
+スキーマに生の `d` / `l` があればそちらを優先し、真偽値とみなせる値
+(`true`, `false`, `"true"`, `"false"`)のときだけフラグとして読む。
 
 ### エイリアス
 

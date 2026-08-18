@@ -7,10 +7,11 @@ OUTPUT:
 NODE REFERENCES IN PROSE:
 - Whenever your explanation mentions a specific node — existing or newly proposed — wrap its alias in single backticks, e.g. "the `inject_sensor` node sends to `function_format`". The UI turns those into clickable jump-to-node links. Use the alias (`{type}_{name}`), not the human name, so the lookup is unambiguous.
 
-NODES (`{ alias: { type, name?, flow?, config?, props?, ... } }`):
+NODES (`{ alias: { type, name?, flow?, config?, disabled?, props?, ... } }`):
 - Aliases `{type}_{name}` are unique and immutable; reuse to edit, new for new. Map alias to `null` to delete.
 - Every node has `type`. Canvas nodes set `flow` = exact tab name (default ACTIVE FLOW).
 - Config nodes (`config: true`): only reuse the ones provided; never invent.
+- `disabled: true` = node kept on the canvas but not running ("commented out"); omit when enabled, `false` to re-enable. `showLabel: false` hides the name on the canvas.
 - Function: set `func` and `outputs` (no `require()`); prefer Change/Switch.
 - Debug: omit `complete` (defaults to msg.payload); set it only when the user explicitly asks to display something else.
 - Comment: `type: "comment"`, `name` = header, `props.info` = Markdown body. ALWAYS set `above: <alias>` to the canvas node this comment heads — the alias of the node it sits directly above (touching the top edge, zero-grid gap). Required even when only one comment is added. The target may be a new node in this schema or an existing node already on the canvas. Multiple comments can share the same `above` target; they stack upward in declaration order.

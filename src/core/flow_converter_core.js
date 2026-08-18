@@ -87,6 +87,45 @@
     let META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
 
     /**
+     * Editor-level node flags Node-RED stores under single-letter keys.
+     * They are not type-specific configuration — they are the node states a
+     * user toggles from the editor's context menu — so the schema surfaces
+     * them at the entry root under the name the editor's UI uses:
+     *
+     *   d → disabled    Enable/Disable ("commented out"). Exported by the
+     *                   editor only when true, so the schema key is absent
+     *                   for every enabled node.
+     *   l → showLabel   Appearance → label visibility. Exported only when it
+     *                   differs from the type's default (link nodes default
+     *                   to hidden), so this key is absent for a normal node.
+     *
+     * Both directions go through this table; see NODE_FLAG_RAW for the
+     * inverse. A node type that owns a real property of the alias name keeps
+     * it: the lift is skipped when the name is already taken (outbound), and
+     * an explicit raw `d`/`l` in the schema wins over the alias (inbound).
+     */
+    let NODE_FLAGS = { d: 'disabled', l: 'showLabel' };
+    let NODE_FLAG_RAW = { disabled: 'd', showLabel: 'l' };
+
+    /**
+     * A schema value is only read as an editor flag when it is boolean-ish
+     * (models write `false` as often as `"false"`). Anything else is left
+     * alone, so a node type whose own configuration happens to use one of
+     * the alias names keeps that property instead of being disabled by it.
+     */
+    function isFlagValue(v) {
+        if (typeof v === 'boolean') return true;
+        if (typeof v !== 'string') return false;
+        let s = v.trim().toLowerCase();
+        return s === 'true' || s === 'false';
+    }
+
+    /** Coerce a boolean-ish flag value to a strict boolean. */
+    function toFlagBool(v) {
+        return (typeof v === 'string') ? v.trim().toLowerCase() === 'true' : !!v;
+    }
+
+    /**
      * Metadata naming convention: any property whose name starts with `_` is
      * plugin- or editor-internal bookkeeping, never part of a node's
      * user-facing configuration. Two invariants follow, and both are enforced
@@ -208,6 +247,17 @@
             if (isConfigNode(node)) {
                 entry.config = true;
             }
+            // Lift the single-letter editor flags out of props under their
+            // readable names (see NODE_FLAGS). A disabled node keeps every
+            // property it had — only the flag is renamed — so the model reads
+            // it exactly as a user sees it on the canvas.
+            Object.keys(NODE_FLAGS).forEach(function(raw) {
+                if (!(raw in props)) return;
+                let alias = NODE_FLAGS[raw];
+                if (alias in props) return;   // the type owns a real property of that name
+                entry[alias] = props[raw];
+                delete props[raw];
+            });
             if (Object.keys(props).length > 0) entry.props = props;
 
             intermediateNodes[alias] = entry;
@@ -874,9 +924,30 @@
                 }
             });
 
+            // Translate the readable editor flags back to Node-RED's
+            // single-letter keys. An explicit raw key wins, so a type that
+            // owns a real `disabled`/`showLabel` property round-trips intact.
+            Object.keys(NODE_FLAG_RAW).forEach(function(alias) {
+                if (!(alias in mergedProps)) return;
+                let raw = NODE_FLAG_RAW[alias];
+                if (raw in mergedProps) return;
+                if (!isFlagValue(mergedProps[alias])) return;
+                mergedProps[raw] = toFlagBool(mergedProps[alias]);
+                delete mergedProps[alias];
+            });
+            if ('d' in mergedProps && isFlagValue(mergedProps.d)) mergedProps.d = toFlagBool(mergedProps.d);
+            if ('l' in mergedProps && isFlagValue(mergedProps.l)) mergedProps.l = toFlagBool(mergedProps.l);
+
             Object.keys(mergedProps).forEach(function(key) {
                 node[key] = mergedProps[key];
             });
+
+            // `d` exists only while the node is disabled, so re-enabling
+            // means removing the key, not writing `d: false`. It still
+            // counts as explicitly proposed (_llmSpecKeys below keeps it),
+            // which is what stops the importer's merge from restoring the
+            // node's previous `d: true`.
+            if (node.d !== true) delete node.d;
 
             // Record exactly which property keys the LLM explicitly proposed
             // (i.e. came from the Vibe Schema spec, not from a type-specific
