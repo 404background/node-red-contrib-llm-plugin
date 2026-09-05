@@ -11,13 +11,9 @@
 })(function() {
     'use strict';
 
-    // See docs/*/layout.md for the meaning of each constant and the width-aware
-    // spacing rule (`distance = (widthA + widthB)/2 + edgeGap`).
-    //
-    // `spacingY`, `componentGap`, `edgeGap` all represent EDGE-TO-EDGE
-    // clearance (the visible whitespace), not centre-to-centre distance.
-    // Row pitch / component pitch is computed internally as
-    // `nodeHeight + gap` whenever the centre coordinate is needed.
+    // `spacingY`, `componentGap` and `edgeGap` are EDGE-TO-EDGE clearances
+    // (visible whitespace), not centre-to-centre distances; the pitch is
+    // `nodeHeight + gap`. See docs/*/layout.md for the spacing rule.
     let LAYOUT_DEFAULTS = {
         startX:        60,
         startY:        60,
@@ -258,22 +254,11 @@
         return false;
     }
 
-    // Approximate Node-RED's label-based width. The editor computes
-    //   w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
-    // (view.js redraw, verified against NR 4.1.7), i.e. measured label
-    // text + 50 px chrome (+7 px input-port stub), snapped UP to the
-    // 20 px grid. We mirror that formula with an estimated text width:
-    //   regular nodes: chars*perChar + 57 (chrome 50 + port stub 7 —
-    //     ≤7 px high for no-input types like inject; the grid snap
-    //     absorbs it).
-    //   comment nodes: chars*perChar + 24 — empirically matched to the
-    //     rendered comment (smaller icon, no port stubs); a larger
-    //     chrome pushes the comment's rendered left edge right of its
-    //     target node's left edge and breaks caption alignment.
-    // ASCII glyphs render ~7.5 px in the default 14 px font; fullwidth
-    // glyphs (Japanese / Chinese / Korean) render ~2x wider, so labels
-    // containing any wide char need ~14 px/char or the layout under-
-    // estimates and neighbours overlap.
+    // Mirrors the editor's own width formula (view.js redraw, NR 4.1.7):
+    //   w = max(minWidth, grid * ceil((labelWidth + chrome) / grid))
+    // with the label width estimated per character. The comment chrome (24)
+    // is smaller than a node's (57) and empirically matched: too large and a
+    // caption's left edge no longer lines up with its target's.
     function estimateNodeWidth(node, opts) {
         let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
         let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
@@ -302,23 +287,10 @@
         return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
     }
 
-    // Place leading-position comments directly above the canvas node they
-    // head, touching that node's top edge (zero-grid gap). Multiple
-    // comments targeting the same canvas node stack upward, each touching
-    // the comment beneath it.
-    //
-    // Target selection (per comment):
-    //   1. Explicit `_llmAbove(Id)` — the schema named a target node.
-    //   2. Fallback: the next canvas node in declaration order, via
-    //      `_llmOrder` (legacy behaviour for schemas that omit `above`).
-    //
-    // toNodeRed has already filtered out trailing comments without a
-    // forward neighbour, so the fallback path always has a valid target.
-    //
-    // Existing-comment stacking: if the target already has comments
-    // touching above it (e.g. user-authored or carried over from a
-    // previous run), the new group lands on TOP of that existing stack
-    // instead of colliding with it.
+    // Place each comment directly above the canvas node it heads, stacking
+    // upward when several share a target and landing on top of any comments
+    // already there. Target = `_llmAboveId`, else the next canvas node in
+    // `_llmOrder`. See docs/*/layout.md#comment-placement.
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
@@ -363,14 +335,9 @@
             (groupsByTargetId[target.id] = groupsByTargetId[target.id] || []).push(c);
         });
 
-        // Walk the existing contiguous comment stack above `target` and
-        // return the y where the bottommost NEW comment should land
-        // (i.e. just above the topmost existing comment, or directly
-        // touching the target if no existing stack is present).
-        // Stacking is detected by LEFT EDGE proximity, not centre
-        // proximity, because comments and their targets share a left
-        // edge (not a centre) -- a wide comment over a narrow node has
-        // a very different centre.
+        // Where the bottommost NEW comment lands: above any existing stack,
+        // else touching the target. Detected by LEFT EDGE proximity — a
+        // caption and its target share a left edge, not a centre.
         function findStackBottomY(target, group) {
             let targetLeft = (target.x || 0) - getNodeWidth(target, opts) / 2;
             let targetY = target.y || 0;
@@ -423,20 +390,11 @@
         });
     }
 
-    // Record the offset of each comment that sits TOUCHING the thing
-    // directly below it (a node or another comment). Walking these
-    // touching-hops downward identifies the non-comment "anchor target"
-    // for each caption -- including comments stacked above a node, which
-    // chain through their lower neighbour to reach the target.
-    //
-    // Standalone comments -- those with empty space below them, bird's-
-    // eye annotations, sidebars, legends -- find no touching neighbour
-    // and get NO anchor. applyCommentAnchors leaves them untouched.
-    //
-    // "Touching" = the next thing's centre is at most `stackStep + grid`
-    // (one stack level + grid margin = ~60 px) below, and horizontally
-    // inside its rendered bounding box (+/- gridSize). Tight on purpose:
-    // only captions visibly attached to a node move with the node.
+    // Record each caption's offset to the node it is attached to, by hopping
+    // down through whatever it is TOUCHING (`stackStep + grid` below and
+    // within a grid square horizontally). The tolerance is tight on purpose:
+    // a standalone annotation finds no neighbour, gets no anchor, and is
+    // therefore left exactly where the user put it.
     function captureCommentAnchors(canvasNodes, opts) {
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
@@ -515,25 +473,11 @@
         });
     }
 
-    // Final safety net: scan every (canvas-node, canvas-node) pair and
-    // push the lower one further down whenever their X bounding boxes
-    // overlap AND their Y centres are within nodeHeight. Runs as the
-    // last step so it only fires when the directional pushes in steps
-    // 3.4 / 3.5a / 3.5b couldn't reach the collision (e.g. a new node
-    // dropped at the same Y as an unrelated existing node, or a node
-    // whose `liveNodeWidth` hook turned out optimistic). Comments are
-    // skipped here -- they are re-aligned to their target by the
-    // comment pass that runs after.
-    // Safety-net overlap resolver. When `compOf` (nodeId → connected-
-    // component id) is supplied, each component is treated as a RIGID BODY:
-    // a residual overlap between two different flows is cleared by
-    // translating the WHOLE lower component down, never by shearing
-    // individual nodes out of it. This is what guarantees that a flow the
-    // user did not edit keeps its internal shape and only ever moves as a
-    // unit (see docs/*/layout.md — "unmodified components translate only").
-    // Same-component pairs are skipped: the component's own layout pass
-    // (reflow, or the preserved user layout) already leaves no internal
-    // overlap. Without `compOf` the old per-node behaviour is used.
+    // Last-resort pass for overlaps the directional pushes (3.4 / 3.5a /
+    // 3.5b) couldn't reach. With `compOf` (nodeId → component id) each
+    // component moves as a RIGID BODY, so a flow the user did not edit
+    // keeps its shape; same-component pairs are left to that component's
+    // own layout. Comments are re-aligned afterwards, so they are skipped.
     function resolveOverlaps(canvasNodes, opts, compOf) {
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
@@ -596,14 +540,10 @@
         }
     }
 
-    // Top-edge guard: comment stacks grow UPWARD from their target, so a
-    // caption added above a node near the canvas top can end up at y <= 0
-    // (squeezed against / past the workspace edge). When anything sits
-    // above `topMargin`, translate EVERY canvas node down by the same
-    // grid-snapped delta — relative geometry is preserved, the whole flow
-    // just slides down. Skipped for pinned component reflows
-    // (opts.skipTopMargin): those must stay exactly where the component
-    // was; the caller's own final guard covers the canvas as a whole.
+    // Comment stacks grow upward, so a caption above a node near the top of
+    // the canvas can land at y <= 0. Slide every node down by one shared
+    // delta, preserving relative geometry. Pinned component reflows opt out
+    // (`skipTopMargin`) — their caller guards the canvas as a whole.
     function ensureTopMargin(canvasNodes, opts) {
         if (opts && opts.skipTopMargin) return;
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
@@ -664,18 +604,10 @@
         let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
         let incoming = adj.incoming;
 
-        // Per-predecessor left-edge placement (NOT shared-column widths).
-        // Each node's left edge sits exactly `edgeGap` to the right of
-        // `max(pred.rightEdge)`. Roots (no preds inside the component)
-        // sit at `startX`, so:
-        //   - Column-0 nodes of every component share the same left edge
-        //     (the canvas-wide "first column" the user wants aligned).
-        //   - Direct branch siblings sharing a predecessor share that
-        //     predecessor's `rightEdge + edgeGap`, so they line up too.
-        //   - Further-downstream nodes in a chain advance by THIS chain's
-        //     widths only — they no longer get dragged right just because
-        //     a parallel flow happens to have a wide label in the same
-        //     column index.
+        // Per-predecessor left edges, NOT shared column widths: each node
+        // sits `edgeGap` right of `max(pred.rightEdge)`, roots at `startX`.
+        // Column 0 and branch siblings still align, but a wide label in one
+        // chain no longer drags a parallel chain right.
         let leftEdgeById = {};
         let compBuckets = {};
         ids.forEach(function(id) {
@@ -731,13 +663,8 @@
         return nodes;
     }
 
-    // Reflow a single connected component in place. Used by Step 3.6 of
-    // placeAddedNodesNearNeighbors when an insertion (a new node placed
-    // between two existing nodes) still overlaps after the cheaper
-    // directional pushes. The component's current top-left corner is
-    // snapshotted first and passed to reflowCanvasNodes as startX /
-    // startY, so neighbouring components stay where they are. Comments
-    // ride along via reflowCanvasNodes' built-in capture/apply pass.
+    // Reflow one component, pinned to its current top-left so neighbouring
+    // components stay put. Used by Step 3.6.
     function reflowComponentInPlace(componentNodes, opts) {
         if (!Array.isArray(componentNodes) || componentNodes.length < 2) return;
 
@@ -779,13 +706,20 @@
             ? opts.bandGap
             : pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
         let rawMaxCols = pickOption(opts, 'maxColumns', LAYOUT_DEFAULTS.maxColumns);
-        let maxColumns = (rawMaxCols >= 2) ? rawMaxCols : LAYOUT_DEFAULTS.maxColumns;
+        // Floored like reflowCanvasNodes: a fractional fold width would put
+        // `colMap[a] % maxColumns` on a non-integer boundary. Math.floor
+        // leaves the Infinity that callers pass to disable folding intact.
+        let maxColumns = (rawMaxCols >= 2) ? Math.floor(rawMaxCols) : LAYOUT_DEFAULTS.maxColumns;
         let rowPitch = nodeHeight + spacingY;
 
         existingIdMap = existingIdMap || {};
         basePositions = basePositions || {};
 
-        let canvasNodes = (nodes || []).filter(isCanvas);
+        // An id-less entry has no place in the adjacency maps, so keeping it
+        // would make `incoming[n.id]` undefined and throw in tryPlace.
+        let canvasNodes = (nodes || []).filter(function(n) {
+            return isCanvas(n) && !!n.id;
+        });
         if (canvasNodes.length < 1) return nodes;
 
         let byId = {};
@@ -799,13 +733,8 @@
             }
         });
 
-        // Snapshot each existing comment's offset to its anchor target
-        // AFTER step 1 -- the rebuild stage replaces every LLM-mentioned
-        // existing node with the update payload (which has no x/y), so
-        // capturing earlier would miss any target node that was renamed
-        // or otherwise touched by the LLM and leave its caption stranded.
-        // Re-applied after resolveOverlaps so captions stay glued to
-        // their target even when 3.4 / 3.5b or the safety net shifts it.
+        // After step 1, not before: an LLM-mentioned node arrives with no
+        // x/y, so capturing earlier would miss it and strand its caption.
         let commentAnchors = captureCommentAnchors(canvasNodes, opts);
 
         // Step 2: Wire adjacency
@@ -969,22 +898,11 @@
             }
         }
 
-        // Step 3.6: insertion reflow — any time a new node has been
-        // wired into the graph (i.e. tryPlace succeeded on it because a
-        // positioned pred or succ existed), reflow that node's whole
-        // component in place. The per-edge pushes in 3.4 / 3.5a fix the
-        // common overlap symptoms but leave the rest of the user's
-        // pre-existing nodes pinned, which causes uneven gaps along the
-        // chain whenever the LLM inserts a node whose width differs
-        // from the surrounding cadence. Running a full reflow on every
-        // connected insertion guarantees the affected chain comes out
-        // with a uniform width-aware spacing — exactly what the user
-        // would expect after a "node was added in between" operation.
-        //
-        // Orphan-band new nodes (no positioned neighbour) are excluded:
-        // they are laid out fresh by Step 4 and have no existing-node
-        // cadence to honour. Components with only one canvas node are
-        // also skipped — there is nothing to reflow.
+        // Step 3.6: reflow the whole component around any insertion. The
+        // per-edge pushes in 3.4 / 3.5a clear the overlap but leave the
+        // surrounding nodes pinned, so the chain ends up with uneven gaps
+        // whenever the inserted node's width differs from the cadence.
+        // Orphan-band nodes are excluded — Step 4 lays them out fresh.
         let componentsNeedingReflow = {};
         newlyPlaced.forEach(function(n) {
             let cidN = compOf[n.id];
@@ -999,14 +917,10 @@
             reflowedComponents[cid] = true;
         });
 
-        // Step 3.5b: cross-component push — when an unrelated component
-        // sits where the modified component now extends, shift the WHOLE
-        // unrelated component down so the shape of the other flow is
-        // preserved. "Modified" = contains a new node or a Step 3.4
-        // horizontally-shifted node. Cascade: a pushed component itself
-        // becomes a propagator for the next pass.
-        // Components that started ABOVE a modified component are never
-        // pushed (we only ever move things down).
+        // Step 3.5b: shift a colliding component down as a WHOLE, so the
+        // untouched flow keeps its shape. "Modified" = holds a new node or
+        // one Step 3.4 shifted; a pushed component then propagates in turn.
+        // Components that started above a modifier are never pushed.
         (function pushCollidingComponentsDown() {
             let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
@@ -1070,14 +984,10 @@
                 for (let mi = 0; mi < modIds.length; mi++) {
                     let mid = modIds[mi];
                     let mBox = compBoxes[mid];
-                    // Collect every other component that collides with this
-                    // modifier in one pass, then shift them all by the SAME
-                    // amount. Computing dy per-component (old behaviour) makes
-                    // a shorter component with a higher minY (e.g. a comment
-                    // sitting above its inject) jump further than the inject
-                    // beneath it, so the comment lands ON the inject. A
-                    // uniform shift sized for the topmost candidate keeps the
-                    // pre-existing vertical gaps intact.
+                    // One dy for every colliding component, sized for the
+                    // topmost. Per-component dy makes a caption (higher minY)
+                    // jump further than the inject it sits above, landing on
+                    // it; a uniform shift keeps the existing gaps.
                     let candidates = [];
                     let topMinY = Infinity;
                     let othIds = Object.keys(nodesByComp);
@@ -1132,13 +1042,9 @@
             return true;
         });
 
-        // Step 4: orphan band — entirely-new chains land below the deepest
-        // existing/positioned node, with `bandGap` of edge-to-edge clearance
-        // and left-aligned to the leftmost existing left edge. The Y formula
-        // here mirrors the edge-based maths Step 3.5b uses, so a brand-new
-        // disjoint flow lands the same `bandGap` below the previous flow no
-        // matter whether it arrived via the orphan band or the cross-
-        // component push.
+        // Step 4: orphan band — an entirely new chain lands `bandGap` below
+        // the deepest existing node, left-aligned to the leftmost left edge.
+        // Same edge maths as Step 3.5b, so both routes give the same gap.
         if (remaining.length > 0) {
             let maxBottomEdge = Number.NEGATIVE_INFINITY;
             let minLeftEdge   = Number.POSITIVE_INFINITY;

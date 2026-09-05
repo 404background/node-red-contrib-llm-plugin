@@ -17,7 +17,6 @@ function createLLMPluginServer(RED) {
     // Storage locations resolved once by the shared core.
     const chatsDir = core.chatsDir;
     const checkpointsDir = core.checkpointsDir;
-    const clientEventsLog = core.clientEventsLog;
     const persistenceEnabled = core.persistenceEnabled;
     const writeFileAtomic = core.writeFileAtomic;
 
@@ -37,22 +36,24 @@ function createLLMPluginServer(RED) {
     //  Resource limits                                                    //
     // ------------------------------------------------------------------ //
     //
-    // Every endpoint below writes to disk or spends money on the user's
-    // behalf, so each input that reaches storage or a provider is bounded.
-    // Node-RED's own `apiMaxLength` caps the raw request body, but that
-    // still permits unbounded *accumulation* across requests.
+    // `apiMaxLength` bounds one request body; it does not bound accumulation
+    // across requests, and every endpoint here writes to disk or spends money.
 
-    // The flow context is concatenated into the same system message as the
-    // prompt. Without its own bound, `maxPromptLength` is bypassable by
-    // moving the payload into `currentFlow`.
+    // Needs its own bound: the flow context lands in the same system message
+    // as the prompt, so otherwise maxPromptLength is bypassed by moving the
+    // payload into `currentFlow`.
     const MAX_FLOW_CONTEXT_CHARS = 1024 * 1024;
     // Ceiling for anything persisted as a JSON file (chat, checkpoint).
     const MAX_STORED_JSON_CHARS = 5 * 1024 * 1024;
-    // Client event log: per-field clip, and rotation of the whole file.
-    const MAX_CLIENT_LOG_BYTES = 5 * 1024 * 1024;
+    // Per-field clip for a reported client event.
     const MAX_EVENT_FIELD_CHARS = 4096;
     // Checkpoints are pruned oldest-first past this count.
     const MAX_CHECKPOINT_FILES = 200;
+
+    // RED.log takes ONE message, unlike console.error(a, b, c).
+    function errText(e) {
+        return String((e && e.message) ? e.message : e);
+    }
 
     function clip(text, max) {
         const s = String(text === undefined || text === null ? '' : text);
@@ -76,36 +77,22 @@ function createLLMPluginServer(RED) {
     //  Endpoint authorisation                                             //
     // ------------------------------------------------------------------ //
     //
-    // Node-RED does NOT apply `adminAuth` to routes that plugins/nodes add
-    // to RED.httpAdmin — the core Admin API guards its own routes with
-    // needsPermission individually, and anything registered afterwards is
-    // wide open unless it does the same. Without this, enabling adminAuth
-    // still left /llm-plugin/* reachable unauthenticated: chat history
-    // readable, settings rewritable (which can redirect a stored API key to
-    // an arbitrary endpoint), and generation billable by anyone who can
-    // reach the port.
-    //
-    // needsPermission is a no-op when adminAuth is not configured, so
-    // single-user installs are unaffected.
-    //
-    // `read`-scoped users get the read endpoints (Node-RED maps scope
-    // "read" onto any "*.read" permission); everything that writes,
-    // generates, or spends money requires full access.
+    // `adminAuth` does NOT cover routes a plugin adds to RED.httpAdmin — the
+    // core Admin API guards each of its own routes individually, and anything
+    // registered afterwards is open unless it does the same. Without these
+    // guards, enabling adminAuth still left chat history readable, settings
+    // rewritable and generation billable by anyone who could reach the port.
+    // needsPermission is a no-op when adminAuth is unset, so single-user
+    // installs are unaffected. Only reads take the `read` scope.
     const PERM_READ = 'llm-plugin.read';
     const PERM_WRITE = 'llm-plugin.write';
 
+    // `RED.auth.needsPermission` is part of the plugin API for every runtime
+    // this package supports (package.json requires node-red >= 4.0.0), so
+    // there is no "runtime without RED.auth" branch: if it were ever missing,
+    // this throws while registering routes instead of leaving them reachable.
     function guard(permission) {
-        if (RED.auth && typeof RED.auth.needsPermission === 'function') {
-            return RED.auth.needsPermission(permission);
-        }
-        // Embedded/older runtimes without RED.auth: fail closed only if the
-        // host actually configured adminAuth, otherwise carry on.
-        return function(req, res, next) {
-            if (RED.settings && RED.settings.adminAuth) {
-                return res.status(401).json({ error: 'Authentication required' });
-            }
-            next();
-        };
+        return RED.auth.needsPermission(permission);
     }
 
     // redactSecrets only ever substitutes quote-free placeholders, so a
@@ -123,50 +110,35 @@ function createLLMPluginServer(RED) {
         try { return JSON.parse(text); } catch (e) { return text; }
     }
 
-    function rotateClientLogIfNeeded() {
-        try {
-            if (fs.statSync(clientEventsLog).size < MAX_CLIENT_LOG_BYTES) return;
-            // Single generation; rename replaces any previous .1 on both
-            // POSIX and Windows.
-            fs.renameSync(clientEventsLog, clientEventsLog + '.1');
-        } catch (e) { /* file absent on first write, or lost a rotate race */ }
-    }
-
+    // An import failure happens in the browser, where the operator cannot see
+    // it. Reporting it into the Node-RED log is the whole point: that is the
+    // record a user can actually attach to a bug report. `meta` is redacted
+    // because importer diagnostics put node contents in it.
+    //
+    // There is no separate log FILE: nothing ever read the one this used to
+    // write, and Node-RED's own logging is the configurable, rotatable place
+    // for this. Only warn/error reach the log — an info-level client event is
+    // accepted and dropped.
     function writeClientEvent(level, event, message, meta) {
         const lv = String(level || 'info').toLowerCase();
-        const safeLevel = (lv === 'error' || lv === 'warn' || lv === 'warning') ? lv : 'info';
-        // `meta` is redacted here, not only in the console preview: it used
-        // to reach the log file verbatim, and importer diagnostics put node
-        // contents in it.
-        const payload = {
-            ts: new Date().toISOString(),
-            level: safeLevel,
-            event: clip(event || 'client-event', 200),
-            message: redactSecrets(clip(message, MAX_EVENT_FIELD_CHARS)),
-            meta: redactJson(meta && typeof meta === 'object' ? meta : {})
-        };
+        if (lv !== 'error' && lv !== 'warn' && lv !== 'warning') return;
 
-        if (persistenceEnabled && clientEventsLog) {
-            try {
-                rotateClientLogIfNeeded();
-                fs.appendFile(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8', () => {});
-            } catch (e) { /* logs are best-effort */ }
-        }
+        // Newlines collapsed: this text is caller-supplied and goes into a
+        // line-oriented log, where an embedded newline forges a log entry.
+        const oneLine = (t) => String(t).replace(/[\r\n]+/g, ' ');
+        const safeEvent = oneLine(clip(event || 'client-event', 200));
+        const safeMessage = oneLine(redactSecrets(clip(message, MAX_EVENT_FIELD_CHARS)));
+        const safeMeta = redactJson(meta && typeof meta === 'object' ? meta : {});
 
-        const metaPreview = (() => {
-            try {
-                const text = JSON.stringify(payload.meta);
-                return text && text.length > 0 ? ' meta=' + text : '';
-            } catch (e) {
-                return '';
-            }
-        })();
+        let metaPreview = '';
+        try {
+            const text = JSON.stringify(safeMeta);
+            if (text && text.length > 0) metaPreview = ' meta=' + text;
+        } catch (e) { /* preview is optional */ }
 
-        const line = `[LLM Plugin][Client][${payload.event}] ${payload.message}${metaPreview}`;
-        if (safeLevel === 'error') RED.log.error(line);
-        else if (safeLevel === 'warn' || safeLevel === 'warning') RED.log.warn(line);
-        // By default, info level debug output to terminal is suppressed.
-        // else RED.log.info(line);
+        const line = `[LLM Plugin][Client][${safeEvent}] ${safeMessage}${metaPreview}`;
+        if (lv === 'error') RED.log.error(line);
+        else RED.log.warn(line);
     }
 
     // ------------------------------------------------------------------ //
@@ -205,7 +177,7 @@ function createLLMPluginServer(RED) {
 
             writeFileAtomic(filepath, JSON.stringify(chatData, null, 2));
         } catch (error) {
-            console.error("[LLM Plugin] Error saving chat history:", error);
+            RED.log.error('[LLM Plugin] Error saving chat history: ' + errText(error));
         }
     }
 
@@ -233,12 +205,12 @@ function createLLMPluginServer(RED) {
                     }
                     chatHistories[chatData.id] = chatData;
                 } catch (error) {
-                    console.error("[LLM Plugin] Error reading chat file:", file, error);
+                    RED.log.error('[LLM Plugin] Error reading chat file ' + file + ': ' + errText(error));
                 }
             });
             return chatHistories;
         } catch (error) {
-            console.error("[LLM Plugin] Error loading chat histories:", error);
+            RED.log.error('[LLM Plugin] Error loading chat histories: ' + errText(error));
             return {};
         }
     }
@@ -287,7 +259,7 @@ function createLLMPluginServer(RED) {
             pruneCheckpoints();
             writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
         } catch (e) {
-            console.error('[LLM Plugin] Failed to save checkpoint:', e && e.message ? e.message : e);
+            RED.log.error('[LLM Plugin] Failed to save checkpoint: ' + errText(e));
             throw e;
         }
         return record;
@@ -339,7 +311,7 @@ function createLLMPluginServer(RED) {
         } catch (error) {
             // Log only safe fields  -  never log the full error object which may contain sensitive headers
             const safeErrorText = redactSecrets(error && error.message ? error.message : error);
-            console.error("[LLM Plugin] Generation error:", safeErrorText);
+            RED.log.error('[LLM Plugin] Generation error: ' + safeErrorText);
             let errorMessage = 'Generation failed';
             const providerLabel = provider === 'ollama'
                 ? 'Ollama'
@@ -409,13 +381,10 @@ function createLLMPluginServer(RED) {
         }
     }
 
-    // '__EXISTING_KEY__' means "keep the key you already have". Honouring it
-    // while the endpoint URL is being changed in the SAME request turns the
-    // settings form into a key-exfiltration primitive: point customBaseUrl at
-    // an attacker host, keep the stored key, then hit /generate and the SDK
-    // sends `Authorization: Bearer <stored key>` straight there — defeating
-    // the masking that stops GET /settings from returning the key at all.
-    // Changing the URL therefore requires re-entering the key.
+    // Keeping a stored key while the URL changes in the same request would
+    // make the settings form a key-exfiltration primitive: point customBaseUrl
+    // at an attacker host, keep the key, and /generate sends it there —
+    // defeating the masking that stops GET /settings from returning it.
     function rejectKeyReuseOnUrlChange(bodyKey, oldUrl, newUrl, label) {
         if (bodyKey !== '__EXISTING_KEY__') return;
         if ((oldUrl || '') === (newUrl || '')) return;
@@ -423,7 +392,7 @@ function createLLMPluginServer(RED) {
             '(the stored key is never sent to a new endpoint without confirmation).');
     }
 
-    RED.httpAdmin.post('/llm-plugin/settings', guard(PERM_WRITE), function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/settings', guard(PERM_WRITE), async function(req, res) {
         try {
             const body = req.body || {};
             // Whitelist: only persist known settings fields
@@ -452,7 +421,9 @@ function createLLMPluginServer(RED) {
             } else {
                 newSettings.maxPromptLength = existing.maxPromptLength || 10000;
             }
-            savePluginSettings(newSettings);
+            // Awaited: RED.settings.set is asynchronous, so answering 200
+            // before it resolves reports a save the user may not actually have.
+            await savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
             res.status(error && error.status === 400 ? 400 : 500)
@@ -509,7 +480,7 @@ function createLLMPluginServer(RED) {
                             const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
                             if (cp && cp.chatId === targetChatId) fs.unlinkSync(fp);
                         } catch (e) {
-                            console.warn('[LLM Plugin] Failed to clean up checkpoint file:', file, e && e.message ? e.message : e);
+                            RED.log.warn('[LLM Plugin] Failed to clean up checkpoint file ' + file + ': ' + errText(e));
                         }
                     });
                 } catch (e) { /* ignore cleanup issues */ }
@@ -553,7 +524,7 @@ function createLLMPluginServer(RED) {
                         deleted = true;
                     }
                 } catch (e) {
-                    console.error('[LLM Plugin] Error checking/deleting chat file:', file, e);
+                    RED.log.error('[LLM Plugin] Error checking/deleting chat file ' + file + ': ' + errText(e));
                 }
             });
             // Always respond success if nothing found to keep idempotency
@@ -561,7 +532,7 @@ function createLLMPluginServer(RED) {
             cleanupCheckpointsByChatId(chatId);
             return res.json({ success: deleted });
         } catch (error) {
-            console.error('[LLM Plugin] Error deleting chat file:', error);
+            RED.log.error('[LLM Plugin] Error deleting chat file: ' + errText(error));
             return res.status(500).json({ error: redactSecrets(error.message) });
         }
     });
@@ -636,8 +607,7 @@ function createLLMPluginServer(RED) {
             res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
             res.send(markedJsCache);
         } catch (error) {
-            console.error('[LLM Plugin] Error serving marked.js:',
-                error && error.message ? error.message : error);
+            RED.log.error('[LLM Plugin] Error serving marked.js: ' + errText(error));
             res.status(404).send('/* marked.js not available */');
         }
     });
@@ -653,7 +623,7 @@ function createLLMPluginServer(RED) {
                 res.status(404).send('/* CSS file not found */');
             }
         } catch (error) {
-            console.error('[LLM Plugin] Error serving CSS:', error);
+            RED.log.error('[LLM Plugin] Error serving CSS: ' + errText(error));
             res.status(500).send('/* Error loading CSS */');
         }
     });
@@ -694,7 +664,7 @@ function createLLMPluginServer(RED) {
                 res.status(404).send('/* Not found */');
             }
         } catch (error) {
-            console.error('[LLM Plugin] Error serving client file:', error);
+            RED.log.error('[LLM Plugin] Error serving client file: ' + errText(error));
             res.status(500).send('/* Error */');
         }
     });

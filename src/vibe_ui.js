@@ -25,10 +25,10 @@
 
         // Header buttons
         container.querySelector('[data-action="new-chat"]').addEventListener('click', function() {
-            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.startNewChat();
+            LLMPlugin.ChatManager.startNewChat();
         });
         container.querySelector('[data-action="chat-list"]').addEventListener('click', function() {
-            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.showChatList();
+            LLMPlugin.ChatManager.showChatList();
         });
 
         // Settings manager (dialog controller defined in client.js)
@@ -98,9 +98,7 @@
         let selectionInitialized = false;
 
         // --- Chat history bootstrap ---
-        if (window.LLMPlugin && LLMPlugin.ChatManager) {
-            LLMPlugin.ChatManager.loadChatHistoriesFromServer();
-        }
+        LLMPlugin.ChatManager.loadChatHistoriesFromServer();
 
         // --- Settings helpers ---
         function fetchSettings(force) {
@@ -206,10 +204,7 @@
         let draftBeforeHistory = '';
 
         function getUserMessageHistory() {
-            if (!window.LLMPlugin || !LLMPlugin.ChatManager) return [];
-            let id = LLMPlugin.ChatManager.getCurrentChatId();
-            let hist = LLMPlugin.ChatManager.getChatHistory && LLMPlugin.ChatManager.getChatHistory();
-            let chat = hist && id ? hist[id] : null;
+            let chat = LLMPlugin.ChatManager.getChatHistory()[LLMPlugin.ChatManager.getCurrentChatId()];
             if (!chat || !Array.isArray(chat.messages)) return [];
             return chat.messages.filter(function(m) { return m && m.isUser; });
         }
@@ -293,20 +288,16 @@
         // --- Flow selector ---
         function listWorkspaces() {
             let out = [];
-            if (window.RED && RED.nodes && typeof RED.nodes.eachWorkspace === 'function') {
-                RED.nodes.eachWorkspace(function(ws) {
-                    if (ws && ws.id && ws.type === 'tab') {
-                        out.push({ id: ws.id, label: ws.label || ws.id });
-                    }
-                });
-            }
+            RED.nodes.eachWorkspace(function(ws) {
+                if (ws && ws.id && ws.type === 'tab') {
+                    out.push({ id: ws.id, label: ws.label || ws.id });
+                }
+            });
             return out;
         }
 
         function getActiveWorkspaceId() {
-            return (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.getActiveWorkspaceId === 'function')
-                ? LLMPlugin.UI.getActiveWorkspaceId()
-                : null;
+            return LLMPlugin.UI.getActiveWorkspaceId();
         }
 
         // Persist the user's flow selection across browser sessions, mirroring
@@ -543,9 +534,7 @@
 
             let flowIdsToSend = getSelectedFlowIds();
 
-            if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode });
-            }
+            LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode });
             promptInput.value = '';
             if (typeof promptInput._llmPluginResetHistoryNav === 'function') {
                 promptInput._llmPluginResetHistoryNav();
@@ -554,9 +543,7 @@
             // Checkpoints are captured at import time (right before a flow
             // edit is applied), not here — chat sends that don't end up
             // modifying the flow no longer consume a checkpoint slot.
-            let loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
-                ? LLMPlugin.UI.addMessageToUI('Generating...', false, false)
-                : null;
+            let loadingMsg = LLMPlugin.UI.addMessageToUI('Generating...', false, false);
             if (loadingMsg) loadingMsg.classList.add('loading-message');
 
             generateBtn.disabled = false;
@@ -566,11 +553,9 @@
             // dropdown so mid-flight switches obviously target only the next Send.
             if (modeSelect) modeSelect.disabled = true;
 
-            let currentFlow = null;
-            if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI && 
-                typeof LLMPlugin.UI.getCurrentFlow === 'function') {
-                currentFlow = LLMPlugin.UI.getCurrentFlow(flowIdsToSend);
-            }
+            let currentFlow = (flowIdsToSend.length > 0)
+                ? LLMPlugin.UI.getCurrentFlow(flowIdsToSend)
+                : null;
 
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();
@@ -615,11 +600,7 @@
                     targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null,
                     targetFlowName: targetFlowName
                 };
-                if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                    msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
-                } else if (window.LLMPlugin && LLMPlugin.UI) {
-                    msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
-                }
+                msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
 
                 if (mode === 'agent' && msgEl) {
                     let importBtn = msgEl.querySelector('.import-btn');
@@ -638,7 +619,7 @@
                 if (err && err.status === 404) {
                     errorMsg = 'LLM Plugin endpoint not found. Check plugin installation.';
                 }
-                if (window.LLMPlugin && LLMPlugin.UI) LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false, false);
+                LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false, false);
             })
             .finally(function() {
                 resetGenerateBtn();
@@ -652,13 +633,8 @@
         if (typeof RED !== 'undefined' && RED.sidebar) {
             // Wire runtime type info into FlowConverterCore so community
             // nodes are handled correctly (config detection, input checks).
-            let cfg = window.LLMPlugin && window.LLMPlugin.FlowConverterCore;
-            if (cfg && typeof cfg.setRuntimeGetType === 'function' &&
-                RED.nodes && typeof RED.nodes.getType === 'function') {
-                cfg.setRuntimeGetType(function(type) {
-                    try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
-                });
-            }
+            let cfg = LLMPlugin.FlowConverterCore;
+            cfg.setRuntimeGetType(function(type) { return RED.nodes.getType(type) || null; });
             // `closeable` is undocumented but matches Node-RED's own
             // debug/info tabs (close-X + re-open from the overflow menu).
             RED.sidebar.addTab({

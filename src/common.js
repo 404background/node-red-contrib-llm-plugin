@@ -47,20 +47,15 @@
         return (prefix || '') + Date.now() + '_' + rand;
     };
 
-    // fetch() against the plugin's admin endpoints, carrying the editor's
-    // bearer token. Node-RED only auto-injects the Authorization header into
-    // jQuery ajax calls, so plain fetch() would 401 the moment `adminAuth`
-    // is enabled — every plugin endpoint that touches data or settings is
-    // behind RED.auth.needsPermission (see src/server.js).
-    // Static assets (marked.js, the stylesheet, src/*.js) stay unauthenticated
-    // because <script>/<link> tags cannot send headers.
+    // fetch() carrying the editor's bearer token. Node-RED only injects the
+    // Authorization header into jQuery ajax calls, so a plain fetch() would
+    // 401 as soon as `adminAuth` is on. (Static assets stay unauthenticated —
+    // <script>/<link> tags cannot send headers.)
     Common.apiFetch = function(url, options) {
         let opts = Object.assign({}, options || {});
         let headers = Object.assign({}, opts.headers || {});
         try {
-            let tokens = window.RED && RED.settings && typeof RED.settings.get === 'function'
-                ? RED.settings.get('auth-tokens')
-                : null;
+            let tokens = RED.settings.get('auth-tokens');
             if (tokens && tokens.access_token) {
                 headers['Authorization'] = 'Bearer ' + tokens.access_token;
             }
@@ -73,15 +68,10 @@
     // gone / unnamed). Null when nothing usable so callers can fall back.
     Common.flowLabels = function(ids) {
         if (!Array.isArray(ids) || ids.length === 0) return null;
-        if (!window.RED || !RED.nodes || typeof RED.nodes.workspace !== 'function') return ids.join(', ');
-        try {
-            return ids.map(function(id) {
-                let ws = RED.nodes.workspace(id);
-                return (ws && ws.label) ? ws.label : id;
-            }).join(', ');
-        } catch (e) {
-            return null;
-        }
+        return ids.map(function(id) {
+            let ws = RED.nodes.workspace(id);
+            return (ws && ws.label) ? ws.label : id;
+        }).join(', ');
     };
 
     window.LLMPlugin = window.LLMPlugin || {};

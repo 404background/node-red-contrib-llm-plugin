@@ -82,13 +82,24 @@
                 notify('LLM node: the LLM Plugin is still loading in this editor (or not installed) — wait a moment and retry.', 'warning');
                 return;
             }
-            // A single target tab: focus it so the importer (which targets the
-            // active tab) lands the nodes there. Multiple tabs rely on the
-            // schema's flow tags, like the sidebar.
+            // A single target tab: focus it so the user sees the edit land.
+            // Multiple tabs rely on the schema's flow tags, like the sidebar.
             if (ids.length === 1 && RED.workspaces && typeof RED.workspaces.show === 'function') {
                 try { RED.workspaces.show(ids[0]); } catch (e) { /* tab may be gone */ }
             }
-            P.Importer.importFlowFromMessage(payload.response, { mode: 'agent' })
+            P.Importer.importFlowFromMessage(payload.response, {
+                mode: 'agent',
+                // The node's selected flows are what was sent to the model, so
+                // they are also the only flows this edit may write to — the
+                // same scope the sidebar passes as the message's targetFlowIds.
+                // Without it every write fell back to "unrestricted", and an
+                // alias is unique only WITHIN a flow: `inject` on the target
+                // tab can resolve against an unrelated one and the rebuild
+                // clears its target's canvas before re-importing. An empty
+                // selection means no flow context was sent, which keeps the
+                // legacy active-tab behaviour.
+                allowedWorkspaceIds: ids
+            })
                 .then(function (result) {
                     if (result && result.ok) {
                         var applied = 'LLM node applied changes to ' + flowNames(ids);

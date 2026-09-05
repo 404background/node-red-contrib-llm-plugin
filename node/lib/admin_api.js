@@ -4,11 +4,9 @@
 // GET <adminRoot>/flows (v2). Changes are NOT applied here — Agent hands the
 // reply to the open editor over comms.
 //
-// Base URL: opts.url if set (manual fallback); otherwise auto-detected from
-// the live runtime — port from RED.server.address() (correct even when
-// embedded in Express) → uiPort → 1880, root from settings.httpAdminRoot,
-// https if RED.server is an https.Server. Auth: none (the plugin assumes
-// adminAuth is off for this local read).
+// Base URL: `opts.url`, else auto-detected — port from RED.server.address()
+// (correct even when embedded in Express) → uiPort → 1880, root from
+// settings.httpAdminRoot. No auth: this local read assumes adminAuth is off.
 // Docs: https://nodered.org/docs/api/admin/methods/get/flows/
 const http = require('http');
 const https = require('https');

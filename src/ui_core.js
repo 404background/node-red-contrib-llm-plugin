@@ -8,26 +8,16 @@
     let Parser = window.LLMPlugin.LLMJsonParser;
     let escapeHtml = Common.escapeHtml;
 
-    // Strip dangerous URL schemes from marked's output. A plain
-    // href=~javascript: regex is trivially bypassed with HTML-entity
-    // encoding (`javascript&colon;`, `&#106;avascript:`) which the browser
-    // decodes on click — so we resolve each URL through the DOM (exactly
-    // what the browser does) and drop anything outside a scheme allowlist.
-    // This matters because the message renders in the editor, which holds
-    // full RED admin privileges.
+    // Messages render inside the editor, which holds full admin privileges.
+    // A regex over `href` is bypassed by entity encoding (`javascript&colon;`)
+    // that the browser decodes on click, so each URL is resolved through the
+    // DOM — what the browser itself does — and matched against this allowlist.
     let SAFE_URL_SCHEMES = { 'http:': 1, 'https:': 1, 'mailto:': 1, 'tel:': 1 };
     function sanitizeRenderedHtml(html) {
-        // Parse into an inert document rather than assigning innerHTML on a
-        // live-document element: the allowlist below runs BEFORE anything
-        // can be fetched, so a marked-emitted <img src> never fires a
-        // request on content that is about to be stripped.
-        let holder;
-        try {
-            holder = new DOMParser().parseFromString(html, 'text/html').body;
-        } catch (e) {
-            holder = document.createElement('div');
-            holder.innerHTML = html;
-        }
+        // Inert document, not innerHTML on a live element: the allowlist below
+        // must run before anything can be fetched. There is deliberately no
+        // fallback — the only one available is the very thing this avoids.
+        let holder = new DOMParser().parseFromString(html, 'text/html').body;
         // Anchors: keep the text, drop an unsafe href (relative/#/http(s)
         // resolve to http:/https: and are allowed).
         holder.querySelectorAll('a[href]').forEach(function(a) {
@@ -78,53 +68,40 @@
         return escapeHtml(text);
     }
 
-    // Focus a node like the Debug sidebar does (show tab, highlight,
-    // RED.view.reveal, clear highlight after a delay). Config nodes have
-    // no canvas position, so they open their edit dialog instead.
+    // Focus a node the way the Debug sidebar does. Config nodes have no
+    // canvas position, so they open their edit dialog instead. One try/catch
+    // for the whole routine: focus is best-effort, and every failure along
+    // the way has the same answer.
     function focusCanvasNode(nodeId) {
         try {
-            if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
+            if (!nodeId) return;
             let node = RED.nodes.node(nodeId);
             if (!node) {
                 Common.notify('Node no longer exists', 'warning');
                 return;
             }
 
-            let hasCanvasPos = typeof node.x === 'number' && typeof node.y === 'number';
-            if (!hasCanvasPos) {
-                if (RED.editor && typeof RED.editor.editConfig === 'function') {
-                    try { RED.editor.editConfig('', node.type, node.id); return; } catch (e) {}
-                }
-                if (RED.editor && typeof RED.editor.edit === 'function') {
-                    try { RED.editor.edit(node); return; } catch (e) {}
-                }
-                Common.notify('Cannot focus config "' + (node.name || node.id) + '"', 'warning');
+            // Config nodes have no canvas position — open their editor instead.
+            if (typeof node.x !== 'number' || typeof node.y !== 'number') {
+                RED.editor.editConfig('', node.type, node.id);
                 return;
             }
 
-            if (node.z && RED.workspaces && typeof RED.workspaces.show === 'function') {
-                try { RED.workspaces.show(node.z); } catch (e) {}
-            }
-            try { node.highlighted = true; node.dirty = true; } catch (e) {}
+            if (node.z) RED.workspaces.show(node.z);
+            node.highlighted = true;
+            node.dirty = true;
+            RED.view.reveal(node.id);
+            RED.view.redraw();
 
-            if (RED.view && typeof RED.view.reveal === 'function') {
-                try { RED.view.reveal(node.id); } catch (e) {}
-            }
-            if (RED.view && typeof RED.view.redraw === 'function') {
-                try { RED.view.redraw(); } catch (e) {}
-            }
             setTimeout(function() {
-                try {
-                    let live = RED.nodes.node(nodeId);
-                    if (live) {
-                        live.highlighted = false;
-                        live.dirty = true;
-                        if (RED.view && RED.view.redraw) RED.view.redraw();
-                    }
-                } catch (e) {}
+                let live = RED.nodes.node(nodeId);
+                if (!live) return;
+                live.highlighted = false;
+                live.dirty = true;
+                RED.view.redraw();
             }, 2500);
         } catch (e) {
-            // Swallow silently — focus is a best-effort UX affordance.
+            console.warn('[LLM Plugin] Could not focus node', nodeId, e);
         }
     }
 
@@ -140,19 +117,14 @@
         });
     }
 
-    // Make node references in an assistant message clickable.
-    // Pass 1: inline <code> elements (outside <pre>) resolved via
-    // buildFlowLookup. Pass 2: plain-text tokens that exactly match a
-    // known alias (safety net when the LLM forgets to backtick-quote).
+    // Make node references clickable: pass 1 over inline <code>, pass 2 over
+    // plain text (for when the LLM forgets to backtick an alias).
     //
-    // Alias → ID determinism: toIntermediate numbers duplicate aliases by
-    // iteration order, so `change_2` only resolves correctly if the alias
-    // map is built from the SAME node list the LLM saw. With targetFlowIds
-    // we therefore reuse UI.getFlowsByIds (the function that produced the
-    // LLM context); unscoped messages fall back to scanning every node.
+    // The alias map must be built from the SAME node list the LLM saw —
+    // toIntermediate numbers duplicates by iteration order, so `change_2`
+    // otherwise points at a different node. Hence getFlowsByIds(targetFlowIds).
     function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
-        if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
 
         let scoped = Array.isArray(targetFlowIds) && targetFlowIds.length > 0;
         let allNodes = null;
@@ -161,12 +133,8 @@
         }
         if (!Array.isArray(allNodes) || allNodes.length === 0) {
             allNodes = [];
-            try {
-                RED.nodes.eachNode(function(n) { if (n) allNodes.push(n); });
-                if (typeof RED.nodes.eachConfig === 'function') {
-                    RED.nodes.eachConfig(function(n) { if (n) allNodes.push(n); });
-                }
-            } catch (e) { return; }
+            RED.nodes.eachNode(function(n) { allNodes.push(n); });
+            RED.nodes.eachConfig(function(n) { allNodes.push(n); });
         }
         if (allNodes.length === 0) return;
 
@@ -215,8 +183,6 @@
             pattern = new RegExp('\\b(' + aliases.map(Common.escapeRegExp).join('|') + ')\\b', 'g');
         } catch (e) { return; }
 
-        let TreeWalker = window.NodeFilter && document.createTreeWalker;
-        if (!TreeWalker) return;
         let walker = document.createTreeWalker(
             rootEl,
             NodeFilter.SHOW_TEXT,
@@ -325,7 +291,7 @@
         btn.dataset.checkpointId = checkpointId;
         btn.addEventListener('click', function() {
             let cpId = btn.dataset.checkpointId;
-            if (!cpId || !LLMPlugin.Importer) return;
+            if (!cpId) return;
             let ok = confirm('Restore the flow from this checkpoint? Current flow will be replaced.');
             if (!ok) return;
             btn.disabled = true;
@@ -472,10 +438,9 @@
 
         if (!isUser) {
             try {
-                let flowNodes = LLMPlugin.Importer ? LLMPlugin.Importer.extractFlowNodes(content) : null;
-                let hasDirectivesOnly = !flowNodes || flowNodes.length === 0
-                    ? !!(LLMPlugin.Importer && LLMPlugin.Importer.hasFlowDirectives(content))
-                    : false;
+                let flowNodes = LLMPlugin.Importer.extractFlowNodes(content);
+                let hasDirectivesOnly = (!flowNodes || flowNodes.length === 0) &&
+                    LLMPlugin.Importer.hasFlowDirectives(content);
                 if ((flowNodes && flowNodes.length > 0) || hasDirectivesOnly) {
                     let flowActions = document.createElement('div');
                     flowActions.className = 'flow-actions';
@@ -487,9 +452,8 @@
                     if (isAgent) importBtn.style.display = 'none';
 
                     importBtn.addEventListener('click', function() {
-                        if (!LLMPlugin.Importer) return;
                         importBtn.disabled = true;
-                        let chatId = LLMPlugin.ChatManager ? LLMPlugin.ChatManager.getCurrentChatId() : null;
+                        let chatId = LLMPlugin.ChatManager.getCurrentChatId();
                         let targetFlowIds = (messageMeta && messageMeta.meta && Array.isArray(messageMeta.meta.targetFlowIds))
                             ? messageMeta.meta.targetFlowIds
                             : null;
@@ -498,9 +462,7 @@
                         // import so the Restore button always points at the
                         // true pre-edit state. If the save fails we still
                         // run the import (just with no Restore button).
-                        let checkpointPromise = (LLMPlugin.ChatManager && LLMPlugin.ChatManager.saveImportCheckpoint)
-                            ? LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
-                            : Promise.resolve(null);
+                        let checkpointPromise = LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds);
 
                         checkpointPromise.then(function(checkpointId) {
                             return LLMPlugin.Importer.importFlowFromMessage(content, {
@@ -530,7 +492,7 @@
                                 }
                                 preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
                                 preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
-                                if (messageMeta && messageMeta.id && LLMPlugin.ChatManager) {
+                                if (messageMeta && messageMeta.id) {
                                     LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
                                         pluginEdited: true,
                                         checkpointId: checkpointId
@@ -570,9 +532,8 @@
 
     UI.retryLastUserMessage = function(messageMeta) {
         try {
-            if (!LLMPlugin.ChatManager) return;
             let chatId = LLMPlugin.ChatManager.getCurrentChatId();
-            let history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
+            let history = LLMPlugin.ChatManager.getChatHistory();
             let chat = history[chatId];
             if (!chat || !chat.messages) return;
             let userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
@@ -592,7 +553,7 @@
                 generateBtn.click();
             }
 
-            if (checkpointId && LLMPlugin.Importer && typeof LLMPlugin.Importer.restoreCheckpoint === 'function') {
+            if (checkpointId) {
                 LLMPlugin.Importer.restoreCheckpoint(checkpointId)
                     .then(doSend)
                     .catch(function(err) {
@@ -635,18 +596,13 @@
                 });
             });
 
-            // Junctions and groups live in separate editor registries that
-            // filterNodes never returns. Callers that will REBUILD the flow
-            // (import, checkpoint snapshot) must opt in to include them, or
-            // the remove-then-reimport cycle silently deletes them and severs
-            // every wire that targets a junction. The LLM-context path leaves
-            // them out (default) so the alias numbering the model sees is
-            // unchanged.
+            // filterNodes never returns junctions or groups. A caller that
+            // will REBUILD the flow must opt in, or the remove-then-reimport
+            // cycle deletes them. The LLM-context path stays opted out so the
+            // alias numbering the model sees does not change.
             if (opts && opts.includeCanvasExtras) {
                 ids.forEach(function(zid) {
-                    let extras = [];
-                    if (typeof RED.nodes.junctions === 'function') extras = extras.concat(RED.nodes.junctions(zid) || []);
-                    if (typeof RED.nodes.groups === 'function')    extras = extras.concat(RED.nodes.groups(zid) || []);
+                    let extras = (RED.nodes.junctions(zid) || []).concat(RED.nodes.groups(zid) || []);
                     extras.forEach(function(node) {
                         if (node && node.id && !seenIds[node.id]) {
                             seenIds[node.id] = true;
@@ -667,27 +623,49 @@
         }
     };
 
+    // By reference only — the flow selection is the user's statement of what
+    // may leave the machine. References are followed transitively (broker →
+    // tls-config) and through array properties, matching `flowContextFor` in
+    // node/llm-request/llm-request.js.
     function collectReferencedConfigs(nodes, seenIds) {
-        let configNodes = [];
-        let referencedIds = {};
-
-        // Find which config node IDs are actually referenced by the targeted canvas nodes
-        nodes.forEach(function(n) {
-            Object.keys(n).forEach(function(k) {
-                if (k === 'id' || k === 'z' || k === 'type' || k === 'wires' || k === 'x' || k === 'y') return;
-                if (typeof n[k] === 'string' && n[k].length > 5) {
-                    referencedIds[n[k]] = true;
-                }
-            });
+        let configById = {};
+        RED.nodes.eachConfig(function(cn) {
+            if (cn && cn.id) configById[cn.id] = cn;
         });
 
-        if (RED.nodes.eachConfig) {
-            RED.nodes.eachConfig(function(cn) {
-                // Include config nodes ONLY if they are explicitly referenced
-                if (cn && (!seenIds || !seenIds[cn.id]) && referencedIds[cn.id]) {
-                    configNodes.push(cn);
-                    seenIds[cn.id] = true;
-                }
+        let SKIP_KEYS = { id: 1, z: 1, type: 1, wires: 1, x: 1, y: 1, g: 1 };
+        function referencedConfigIds(node) {
+            let out = [];
+            Object.keys(node).forEach(function(k) {
+                if (SKIP_KEYS[k]) return;
+                let value = node[k];
+                let candidates = Array.isArray(value) ? value : [value];
+                candidates.forEach(function(v) {
+                    if (typeof v === 'string' && configById[v]) out.push(v);
+                });
+            });
+            return out;
+        }
+
+        // `visited` is local so a reference cycle between two config nodes
+        // terminates even when the caller passes no `seenIds`.
+        let visited = {};
+        let configNodes = [];
+        let queue = nodes.slice();
+        while (queue.length > 0) {
+            let node = queue.pop();
+            if (!node) continue;
+            referencedConfigIds(node).forEach(function(id) {
+                if (visited[id]) return;
+                visited[id] = true;
+                let cn = configById[id];
+                if (!cn) return;
+                // A config node may itself reference another one, so it is
+                // queued whether or not the export set already holds it.
+                queue.push(cn);
+                if (seenIds && seenIds[id]) return;
+                if (seenIds) seenIds[id] = true;
+                configNodes.push(cn);
             });
         }
         return configNodes;

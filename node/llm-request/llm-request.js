@@ -38,16 +38,11 @@ module.exports = function(RED) {
         catch (e) { return normaliseText(String(payload)); }
     }
 
-    // Reduce the full flow set to just the selected tabs (their canvas nodes
-    // and tab definitions) plus the config nodes those tabs actually
-    // reference. Returns null when nothing is selected so the prompt carries
-    // no flow context.
-    //
-    // Config nodes used to be included wholesale, which sent every broker,
-    // server and credential-holder in the whole instance to the provider
-    // regardless of which flows the user picked. The selection is the user's
-    // statement of what may leave the machine, so config nodes are pulled in
-    // by reference only (transitively - a config node may point at another).
+    // The selected tabs plus only the config nodes they reference, followed
+    // transitively. Null when nothing is selected, so the prompt carries no
+    // flow context. The selection is the user's statement of what may leave
+    // the machine — including config nodes wholesale sent every broker and
+    // credential-holder in the instance to the provider.
     function flowContextFor(allFlows, ids) {
         if (!Array.isArray(ids) || ids.length === 0 || !Array.isArray(allFlows)) return null;
         const set = new Set(ids);

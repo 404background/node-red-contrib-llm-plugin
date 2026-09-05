@@ -26,7 +26,6 @@
     }
 
     function snapshotCurrentFlow(targetFlowIds) {
-        if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) return null;
         // includeCanvasExtras: checkpoints must record junctions and groups
         // too, else Restore removes them from the workspace and re-imports a
         // snapshot that never had them — deleting them for good.
@@ -93,6 +92,17 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chatId: chatId, chatData: chat })
+        }).then(function(res) {
+            // fetch only rejects on a transport error, so a refusal (a chat
+            // past the server's 5 MB storage cap, or a permission failure)
+            // used to look exactly like a successful save.
+            if (res && res.ok) return;
+            return res.json()
+                .catch(function() { return {}; })
+                .then(function(d) {
+                    Common.notify('Failed to save chat: ' +
+                        ((d && d.error) || ('HTTP ' + (res ? res.status : '?'))), 'warning');
+                });
         }).catch(function() {
             Common.notify('Failed to save chat', 'warning');
         });
@@ -190,9 +200,7 @@
         currentChatId = chatId;
         clearChatArea();
         (chat.messages || []).forEach(function(msg) {
-            if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-                LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
-            }
+            LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
         });
         Common.notify('Loaded chat: ' + chat.title, 'success');
     };
@@ -252,15 +260,7 @@
         }
         ChatManager.saveChatToServer(chatId);
 
-        if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-            return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser, message);
-        }
-        // Fallback when UI module is unavailable
-        let chatArea = document.getElementById('llm-plugin-chat');
-        if (chatArea) {
-            chatArea.appendChild(el('div', null, content));
-            chatArea.scrollTop = chatArea.scrollHeight;
-        }
+        return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser, message);
     };
 
     window.LLMPlugin = window.LLMPlugin || {};

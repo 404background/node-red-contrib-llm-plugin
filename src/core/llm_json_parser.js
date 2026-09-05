@@ -1,16 +1,11 @@
-// LLM JSON Parser Core: utilities for parsing structured data from LLM output.
+// LLM JSON Parser Core.
 //
-// Handles the ambiguity that LLMs produce when generating JSON:
-//  - JS-style comments in JSON, unescaped quotes inside string values
-//  - JSON embedded in markdown code fences or free-form prose
-//  - Fuzzy token matching for node aliases and names
-//  - Vibe Schema extraction, connection hints, and flow directives
-//  - Flow lookup tables for alias/name/ID resolution
-//  - Partial schema merging and flow node extraction
+// Absorbs the ways LLM output is not quite JSON: comments, unescaped quotes
+// inside strings, JSON buried in code fences or prose, and alias references
+// that do not match any existing node exactly.
 //
-// Works as both a CommonJS module (server/tests) and a browser global.
-// Has NO dependency on plugin globals — pass `cfg` (FlowConverterCore) explicitly
-// to any function that needs Vibe Schema conversion.
+// CommonJS module and browser global both. No plugin globals — `cfg`
+// (FlowConverterCore) is passed in wherever Vibe Schema conversion is needed.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -58,15 +53,9 @@
         if (mapObj[token] !== id) mapObj[token] = null;
     }
 
-    /**
-     * Fuzzy resolver: returns a match only when exactly one plausible candidate
-     * exists (boundary/prefix overlap). Short tokens are rejected via `minLen`.
-     *
-     * @param {Object} mapObj   Token→value map (nulls = ambiguous, skipped).
-     * @param {string} token    Normalized token to look up.
-     * @param {number} [minLen] Minimum token length to attempt fuzzy matching (default 8).
-     * @returns {*|null}
-     */
+    // Boundary/prefix match, but only when exactly ONE candidate qualifies —
+    // an ambiguous token resolves to nothing rather than to a guess. Tokens
+    // shorter than `minLen` (default 8) are not matched at all.
     function resolveUniqueApprox(mapObj, token, minLen) {
         let source = mapObj || {};
         let k = normalizeToken(token);
@@ -168,12 +157,6 @@
                     result.push(ch, text[i + 1]);
                     i += 2;
                 } else if (ch === '"') {
-                    // Peek at the next non-whitespace character by advancing
-                    // an index, rather than materialising the rest of the
-                    // text per quote. The old substring form measured the
-                    // same (V8 makes substring O(1) via SlicedString and the
-                    // anchored ^\s+ stops at the first non-space), but that
-                    // is an engine detail this hot loop need not depend on.
                     let k = i + 1;
                     while (k < len && /\s/.test(text[k])) k++;
                     let next = k < len ? text[k] : '';
@@ -207,15 +190,8 @@
     //  Balanced JSON Snippet Extraction                                   //
     // ================================================================== //
 
-    /**
-     * Collect all balanced JSON snippets delimited by openChar/closeChar from text.
-     * Respects string literals so braces inside strings are not counted.
-     *
-     * @param {string} text
-     * @param {string} openChar   e.g. '{' or '['
-     * @param {string} closeChar  e.g. '}' or ']'
-     * @returns {string[]}  All matched balanced substrings, ordered by start position.
-     */
+    // All balanced `openChar`…`closeChar` spans, in start order. String
+    // literals are tracked so a brace inside one is not counted.
     function collectBalancedJsonSnippets(text, openChar, closeChar) {
         let snippets = [];
         let stack = [];
@@ -259,14 +235,8 @@
         return (parsed && isVibeSchemaFn(parsed)) ? parsed : null;
     }
 
-    /**
-     * Extract the last Vibe Schema object from LLM message text.
-     * Search order: code fences (last first) → full text → balanced objects.
-     *
-     * @param {string} messageContent  Raw LLM assistant message.
-     * @param {Object} cfg             FlowConverterCore with `isVibeSchema(obj)` method.
-     * @returns {Object|null}
-     */
+    // The last Vibe Schema in a reply. Search order: code fences (last
+    // first) → full text → balanced objects.
     function extractVibeSchema(messageContent, cfg) {
         if (!cfg || !cfg.isVibeSchema) return null;
 
@@ -294,13 +264,7 @@
         return null;
     }
 
-    /**
-     * Extract explicit connection hints from a Vibe Schema embedded in the message.
-     *
-     * @param {string} messageContent
-     * @param {Object} cfg   FlowConverterCore with `isVibeSchema` method.
-     * @returns {Array<{from: string, to: string, fromPort: number}>}
-     */
+    // → [{ from, to, fromPort }]
     function extractConnectionHints(messageContent, cfg) {
         let hints = [];
         let parsed = extractVibeSchema(messageContent, cfg);
@@ -312,14 +276,8 @@
         return hints;
     }
 
-    /**
-     * Extract flow directives (node deletions, connection deletions,
-     * reposition requests) from the message.
-     *
-     * @param {string} messageContent
-     * @param {Object} cfg   FlowConverterCore with `isVibeSchema` method.
-     * @returns {{ removeTokens: string[], removeConnections: Array, repositionTokens: string[] }}
-     */
+    // Node deletions, connection deletions and reposition requests.
+    // → { removeTokens, removeConnections, repositionTokens }
     function extractFlowDirectives(messageContent, cfg) {
         let directives = { removeTokens: [], removeConnections: [], repositionTokens: [] };
         let parsed = extractVibeSchema(messageContent, cfg);
@@ -371,24 +329,9 @@
     //  Flow Lookup                                                        //
     // ================================================================== //
 
-    /**
-     * Build a unified lookup table for resolving aliases, names, and raw IDs to
-     * node IDs from a Node-RED flow snapshot.
-     *
-     * Resolution cascade (resolve method):
-     *   exact ID → exact alias → normalized alias → node name → loose alias → fuzzy
-     *
-     * @param {Array}  flowNodes  Node-RED flow nodes array.
-     * @param {Object} [cfg]      FlowConverterCore with `toIntermediate` method (for alias maps).
-     * @returns {{
-     *   resolve: function(token: string, opts?: {minLen?: number, fuzzy?: boolean}): string|null,
-     *   aliasToId: Object,
-     *   idToAlias: Object,
-     *   nameToId: Object,
-     *   byId: Object,
-     *   inter: Object|null
-     * }}
-     */
+    // Resolve an alias, name or raw ID to a node ID, in this order:
+    //   exact ID → exact alias → normalized alias → name → loose alias → fuzzy
+    // `resolve(token, { minLen, fuzzy, exactOnly })` plus the maps it built.
     function buildFlowLookup(flowNodes, cfg) {
         let aliasToId = {};
         let idToAlias = {};
@@ -466,15 +409,9 @@
     //  Schema Resolution                                                  //
     // ================================================================== //
 
-    /**
-     * Resolve a Vibe Schema alias token against the intermediate nodes of the
-     * current flow. Falls back through normalized alias → name → fuzzy.
-     *
-     * @param {string} token          Alias to resolve.
-     * @param {Object} currentNodes   Intermediate node map from toIntermediate().
-     * @param {Object} explicitNodes  Nodes already defined in the schema being built.
-     * @returns {string}  Resolved alias (or original token if unresolvable).
-     */
+    // Alias → alias, against the current flow's intermediate nodes
+    // (normalized → name → fuzzy). Returns the token unchanged if nothing
+    // resolves.
     function resolveAliasInSchema(token, currentNodes, explicitNodes) {
         if (typeof token !== 'string' || !token) return token;
         if (explicitNodes && explicitNodes[token]) return token;
@@ -500,16 +437,8 @@
         return found || token;
     }
 
-    /**
-     * Merge a partial agent schema (which may only list changed nodes) with the
-     * intermediate representation of the current flow. Pulls in any nodes that
-     * appear as connection endpoints but are not defined in the partial schema.
-     *
-     * @param {Object} schema       Partial Vibe Schema from the LLM agent.
-     * @param {Array}  currentFlow  Current Node-RED flow nodes.
-     * @param {Object} cfg          FlowConverterCore with `toIntermediate` method.
-     * @returns {Object}  Merged Vibe Schema.
-     */
+    // An Agent reply may list only what changed, so connection endpoints it
+    // never declared have to be pulled in from the current flow.
     function mergeAgentPartialSchemaWithCurrentFlow(schema, currentFlow, cfg) {
         try {
             if (!schema || !cfg || !cfg.toIntermediate || !Array.isArray(currentFlow) || currentFlow.length === 0) {
@@ -522,7 +451,13 @@
             let merged = {
                 description: schema.description || '',
                 nodes: {},
-                connections: Array.isArray(schema.connections) ? schema.connections.slice() : []
+                // Deep-cloned, not `slice()`d: the endpoint-resolution pass
+                // below rewrites `conn.from` / `conn.to`, and a shallow copy
+                // shares those objects with the caller's schema — so the
+                // caller would silently see the merged aliases too.
+                connections: Array.isArray(schema.connections)
+                    ? JSON.parse(JSON.stringify(schema.connections))
+                    : []
             };
             // Preserve directive fields the merger doesn't otherwise touch
             // so a reposition-only agent message survives the merge.
@@ -565,15 +500,8 @@
     //  Flow Node Extraction                                               //
     // ================================================================== //
 
-    /**
-     * Normalize a Vibe Schema for conversion to Node-RED JSON:
-     * skips null/invalid entries and infers missing `type` from the current flow.
-     *
-     * @param {Object} schema
-     * @param {Object} options   { currentFlow: Array }
-     * @param {Object} cfg       FlowConverterCore with `toIntermediate` method.
-     * @returns {Object}  Clean Vibe Schema ready for cfg.toNodeRed().
-     */
+    // Drop null/invalid entries and infer a missing `type` from the current
+    // flow, so the result is safe to hand to cfg.toNodeRed().
     function normalizeSchemaForConversion(schema, options, cfg) {
         let out = {
             description: (schema && schema.description) || '',
@@ -637,15 +565,8 @@
         return out;
     }
 
-    /**
-     * Try to parse Node-RED flow nodes from a single JSON text snippet.
-     * Handles Vibe Schema, raw Node-RED arrays, and single-node objects.
-     *
-     * @param {string} text
-     * @param {Object} options  { mode: string, currentFlow: Array }
-     * @param {Object} cfg      FlowConverterCore with `isVibeSchema`, `toNodeRed`, `toIntermediate`.
-     * @returns {Array|null}
-     */
+    // One snippet → nodes. Accepts Vibe Schema, a raw Node-RED array, or a
+    // single node object.
     function tryParseFlowNodes(text, options, cfg) {
         let cleaned = stripJsonComments(text).trim();
         let parsed;
@@ -668,16 +589,9 @@
                 let conversionSchema = normalizeSchemaForConversion(sourceSchema, options, cfg);
                 if (Object.keys(conversionSchema.nodes).length === 0) return [];
 
-                // Always preserve aliases on rebuilt nodes -- the importer
-                // needs them to resolve `above` references for comments
-                // (each `above: <alias>` is matched against rebuilt nodes
-                // via `_llmAlias`). Without it, a fresh import has no way
-                // to map a comment's anchor alias back to the real node id
-                // generated for the same alias in toNodeRed, and every
-                // caption falls through to the order-based fallback --
-                // landing above the NEXT sample's inject instead of its
-                // own. _llmAlias is stripped after the importer consumes it,
-                // so leaving it on always is cheap.
+                // preserveAlias is always on: the importer matches a comment's
+                // `above: <alias>` against `_llmAlias` to find its target, and
+                // strips the marker once consumed.
                 let converted = cfg.toNodeRed(conversionSchema, {
                     preserveAlias: true
                 });
@@ -704,20 +618,14 @@
         return null;
     }
 
-    /**
-     * Extract Node-RED flow nodes from LLM message content.
-     * Tries (in order): code fences → full text → balanced objects → balanced arrays.
-     *
-     * @param {string} messageContent
-     * @param {Object} options         { mode: string, currentFlow: Array }
-     * @param {Object} cfg             FlowConverterCore module.
-     * @returns {Array|null}
-     */
+    // Whole reply → nodes. Tries code fences → full text → balanced objects
+    // → balanced arrays, last candidate first at each stage.
     function extractFlowNodes(messageContent, options, cfg) {
+        let raw = String(messageContent || '');
         let codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
         let candidates = [];
         let m;
-        while ((m = codeBlockRegex.exec(messageContent)) !== null) {
+        while ((m = codeBlockRegex.exec(raw)) !== null) {
             candidates.push(m[1].trim());
         }
         for (let i = candidates.length - 1; i >= 0; i--) {
@@ -725,7 +633,7 @@
             if (nodes) return nodes;
         }
 
-        let stripped = messageContent.replace(/```[\s\S]*?```/g, '');
+        let stripped = raw.replace(/```[\s\S]*?```/g, '');
         let whole = stripped.trim();
         if (whole) {
             let wholeNodes = tryParseFlowNodes(whole, options, cfg);
@@ -746,26 +654,16 @@
         return null;
     }
 
-    /**
-     * Diagnose why `extractFlowNodes` returned null. Re-parses each fenced
-     * code block (preferring the last one, same priority extractFlowNodes
-     * uses) and returns the parse error of the first block that fails
-     * both `JSON.parse` and `repairJsonQuotes`. Used by the importer to
-     * surface a useful "JSON parse failed at line X, col Y" notification
-     * instead of the generic "No JSON flow found" — the common cause is
-     * an LLM forgetting to escape inner quotes in a JSONata expression
-     * (e.g. `"to": "foo" & bar`).
-     *
-     * @param {string} messageContent
-     * @returns {{error: string, line?: number, column?: number, snippet?: string} | null}
-     *          null when no fenced code block exists (truly "no JSON found"),
-     *          or every fenced block parses fine (the failure happened elsewhere).
-     */
+    // Why extractFlowNodes returned null, so the importer can say "JSON parse
+    // failed at line X" instead of "no JSON found". The usual cause is an
+    // unescaped quote inside a JSONata expression. Null when there was no
+    // fenced block at all, or when every block parses (failure was elsewhere).
     function diagnoseJsonExtractionFailure(messageContent) {
+        let raw = String(messageContent || '');
         let codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
         let candidates = [];
         let m;
-        while ((m = codeBlockRegex.exec(messageContent)) !== null) {
+        while ((m = codeBlockRegex.exec(raw)) !== null) {
             candidates.push(m[1].trim());
         }
         if (candidates.length === 0) return null;

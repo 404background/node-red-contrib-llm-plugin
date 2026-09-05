@@ -6,13 +6,8 @@
 (function(){
     let Importer = {};
 
-    // ================================================================== //
-    //  Layout Constants                                                   //
-    // ================================================================== //
-    // Plugin-specific overrides passed to CanvasLayout. All gap values are
-    // EDGE-TO-EDGE clearances (the visible whitespace), not centre-to-
-    // centre distances — CanvasLayout adds the rendered node size
-    // internally. See docs/*/layout.md for the full spacing rule.
+    // Overrides passed to CanvasLayout. Every gap is an EDGE-TO-EDGE
+    // clearance (visible whitespace), not a centre-to-centre distance.
     let LAYOUT = {
         startX:       200,   // canvas origin X (px) - left edge of first column
         startY:       200,   // canvas origin Y (px) - top edge of first row
@@ -41,27 +36,23 @@
     function genId() { return Common.randomId('id_'); }
 
     function safeGetCurrentFlow(workspaceId) {
-        if (!window.LLMPlugin || !LLMPlugin.UI) return null;
         // includeCanvasExtras: the rebuild base must carry the workspace's
         // junctions and groups so they survive the remove/reimport cycle and
         // wires that target a junction are not pruned as dangling.
         let opts = { includeCanvasExtras: true };
-        if (workspaceId && LLMPlugin.UI.getFlowsByIds) {
-            return LLMPlugin.UI.getFlowsByIds([workspaceId], opts);
-        }
-        return LLMPlugin.UI.getCurrentFlow ? LLMPlugin.UI.getCurrentFlow(undefined, opts) : null;
+        return workspaceId
+            ? LLMPlugin.UI.getFlowsByIds([workspaceId], opts)
+            : LLMPlugin.UI.getCurrentFlow(undefined, opts);
     }
 
     // ------------------------------------------------------------------ //
     //  Workspace Scope                                                    //
     // ------------------------------------------------------------------ //
-    // Every workspace-resolution step below must be confined to the flows
-    // that were actually sent to the LLM as context. Scanning ALL
-    // workspaces is unsafe: auto-generated aliases (`inject`, `debug_1`,
-    // `function_2`, …) are only unique WITHIN a flow, so a global scan lets
-    // an alias collision resolve an edit onto a flow the conversation never
-    // saw — and `replaceWorkspaceFlow` rebuilds its target destructively.
-    // A null set means "unrestricted" (no flow context was selected).
+    // Every workspace decision below stays inside the flows sent to the LLM
+    // as context. Auto-generated aliases are unique only WITHIN a flow, and
+    // replaceWorkspaceFlow rebuilds its target destructively, so a global
+    // scan can wipe a flow the conversation never saw. A null set means
+    // unrestricted (no flow context was selected).
 
     function buildAllowedWorkspaceSet(ids) {
         if (!Array.isArray(ids) || ids.length === 0) return null;
@@ -146,9 +137,7 @@
     }
 
     function postTerminalLog(level, event, message, meta) {
-        try {
-            if (typeof fetch !== 'function') return;
-            Common.apiFetch('llm-plugin/client-log', {
+        Common.apiFetch('llm-plugin/client-log', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -157,8 +146,7 @@
                     message: String(message || ''),
                     meta: (meta && typeof meta === 'object') ? meta : {}
                 })
-            }).catch(function() {});
-        } catch (e) {}
+        }).catch(function() { /* logging is best-effort */ });
     }
 
     // --- Runtime node-type helpers (thin wrappers over FlowConverterCore) ---
@@ -241,13 +229,10 @@
     //  Unified Alias Lookup                                               //
     // ================================================================== //
 
-    // Wraps buildFlowLookup with an extra index for `_llmAlias` markers
-    // carried by freshly-added nodes from toNodeRed. Without this, a
-    // connection like `{ from: "inject_existing", to: "function_new" }`
-    // resolves the source (auto-generated alias from toIntermediate over
-    // the rebuilt flow) but loses the target — its auto-alias is just
-    // "function", not the LLM-chosen "function_new". With the _llmAlias
-    // index, the schema's own alias resolves to the new node's id.
+    // buildFlowLookup plus an index of the `_llmAlias` markers new nodes
+    // carry. A new node's auto-alias is just its type ("function"), so
+    // without this a connection to the LLM's "function_new" resolves the
+    // source but loses the target.
     function buildUnifiedLookup(flowNodes) {
         let lookup = buildFlowLookup(flowNodes);
         if (Array.isArray(flowNodes)) {
@@ -274,13 +259,10 @@
 
         let desiredByFromPort = {};
         hints.forEach(function(h) {
-            // exactOnly: a hint's alias must match a real alias/name/ID
-            // exactly. Fuzzy matching here is unsafe — a new-node alias
-            // like "inject_py_1" can prefix-match an existing "inject"
-            // and silently reroute every connection to the wrong node.
-            // The unified lookup already indexes new nodes by `_llmAlias`,
-            // so exact resolution handles both existing and just-added
-            // nodes without falling back to fuzzy.
+            // exactOnly: fuzzy matching here would let a new-node alias
+            // ("inject_py_1") prefix-match an existing "inject" and reroute
+            // the connection to the wrong node. The unified lookup already
+            // covers new nodes, so exact resolution is enough.
             let fromId = lookup.resolve(h.from, { exactOnly: true });
             let toId = lookup.resolve(h.to, { exactOnly: true });
             if (!fromId || !toId || !lookup.byId[fromId] || !lookup.byId[toId]) return;
@@ -312,7 +294,7 @@
     // ================================================================== //
 
     function getActiveWorkspaceId() {
-        return LLMPlugin.UI ? LLMPlugin.UI.getActiveWorkspaceId() : null;
+        return LLMPlugin.UI.getActiveWorkspaceId();
     }
 
     function isCanvasNode(node) { return Converter.isCanvasNode(node); }
@@ -332,42 +314,33 @@
     //   groups     -> RED.nodes.removeGroup(groupObj)
     //   junctions  -> RED.nodes.removeJunction(juncObj)
     function collectWorkspaceEntities(wsId) {
-        let out = { nodes: [], groups: [], junctions: [] };
-        if (!RED || !RED.nodes) return out;
-        if (typeof RED.nodes.filterNodes === 'function') out.nodes = RED.nodes.filterNodes({ z: wsId }) || [];
-        if (typeof RED.nodes.groups === 'function')      out.groups = RED.nodes.groups(wsId) || [];
-        if (typeof RED.nodes.junctions === 'function')   out.junctions = RED.nodes.junctions(wsId) || [];
-        return out;
+        return {
+            nodes:     RED.nodes.filterNodes({ z: wsId }) || [],
+            groups:    RED.nodes.groups(wsId) || [],
+            junctions: RED.nodes.junctions(wsId) || []
+        };
     }
 
-    // Repaint the canvas after a destructive flow change. Node-RED's
-    // _redraw only repaints a node / group / junction body when its
-    // `dirty` flag is set, so without this step a plain redraw after
-    // RED.nodes.import paints wires but leaves the bodies blank.
-    // Marks every canvas-level entity in the touched workspaces, then
-    // forces a sync redraw plus one rAF-deferred redraw (the latter
-    // covers cases where the SVG <g> for new nodes hadn't attached
-    // yet, e.g. when checkpoint restore switches tabs in the same tick).
+    // Node-RED's _redraw only repaints an entity whose `dirty` flag is set,
+    // so after an import a plain redraw draws the wires and leaves the node
+    // bodies blank. The second, rAF-deferred redraw covers new nodes whose
+    // SVG <g> had not attached yet (checkpoint restore switching tabs).
     function refreshCanvasView(workspaceIds) {
-        if (!RED || !RED.view) return;
-        try { RED.actions.invoke('core:select-none'); } catch (e) { /* ignore */ }
-        try { RED.nodes.dirty(true); } catch (e) { /* ignore */ }
+        RED.actions.invoke('core:select-none');
+        RED.nodes.dirty(true);
 
         function markAndRedraw() {
             (workspaceIds || []).forEach(function(wsId) {
                 let ents = collectWorkspaceEntities(wsId);
-                ents.nodes.forEach(function(n)     { if (n) n.dirty = true; });
-                ents.groups.forEach(function(g)    { if (g) g.dirty = true; });
-                ents.junctions.forEach(function(j) { if (j) j.dirty = true; });
+                ents.nodes.forEach(function(n)     { n.dirty = true; });
+                ents.groups.forEach(function(g)    { g.dirty = true; });
+                ents.junctions.forEach(function(j) { j.dirty = true; });
             });
-            try { RED.view.redraw(true, true); } catch (e) { /* ignore */ }
+            RED.view.redraw(true, true);
         }
 
         markAndRedraw();
-        let raf = (typeof window !== 'undefined' && window.requestAnimationFrame)
-            ? window.requestAnimationFrame.bind(window)
-            : function(cb) { return setTimeout(cb, 16); };
-        raf(markAndRedraw);
+        window.requestAnimationFrame(markAndRedraw);
     }
 
     // ================================================================== //
@@ -443,13 +416,9 @@
             return { remainingNodes: nodes, removedIdSet: removedIdSet };
         }
 
-        // ====================================================== //
-        //  Phase 1: Delete                                        //
-        //    Drop every node named in removeTokens from base.     //
-        //    Edge deletions (`removeConnections`) are deferred to //
-        //    Phase 3 because they need the post-merge alias map   //
-        //    to resolve new-node endpoints.                       //
-        // ====================================================== //
+        // --- Phase 1: Delete ---
+        // Edge deletions wait for Phase 3, which has the post-merge alias map
+        // needed to resolve new-node endpoints.
         let deletion = applyNodeDeletions(base, directives.removeTokens);
         base = deletion.remainingNodes;
         let removedIdSet = deletion.removedIdSet;
@@ -482,13 +451,9 @@
             });
         }
 
-        // ====================================================== //
-        //  Phase 2: Add / Update                                  //
-        //    Merge each update into byId. Nodes whose ID or       //
-        //    _llmAlias appears in removedIdSet are skipped — the  //
-        //    schema explicitly asked for their deletion, and we   //
-        //    must not let the merge re-introduce them.            //
-        // ====================================================== //
+        // --- Phase 2: Add / Update ---
+        // Anything Phase 1 removed stays removed: the merge must not
+        // re-introduce a node the same schema asked to delete.
         let byId = {};
         base.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
 
@@ -534,13 +499,8 @@
             });
         }
 
-        // ====================================================== //
-        //  Phase 3: Connect                                       //
-        //    Build a unified alias map (existing auto-aliases +   //
-        //    new-node _llmAlias + names + IDs), prune dangling    //
-        //    wires, apply edge deletions, then add the schema's   //
-        //    connections via the same lookup.                     //
-        // ====================================================== //
+        // --- Phase 3: Connect ---
+        // Runs last so both endpoints resolve against the final node set.
         let validIds = {};
         rebuilt.forEach(function(n) { if (n && n.id) validIds[n.id] = true; });
         rebuilt.forEach(function(n) {
@@ -607,52 +567,49 @@
         pruneInvalidOutputWires(rebuilt);
         fixConfigNodeProperties(rebuilt);
 
-        let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
-        if (layout) {
-            // Prefer Node-RED's live `.w` (measured from the rendered SVG)
-            // for existing nodes when the label is unchanged. If the LLM
-            // renamed the node or changed its type the cached width no
-            // longer matches the post-import label, so fall back to the
-            // estimate which can grow the column to fit the new label.
-            function liveNodeWidth(n) {
-                if (!n || !n.id) return undefined;
-                if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.node !== 'function') return undefined;
-                try {
-                    let live = RED.nodes.node(n.id);
-                    if (!live || typeof live.w !== 'number' || live.w <= 0) return undefined;
-                    let liveLabel = (typeof live.name === 'string' && live.name.trim()) ? live.name : (live.type || '');
-                    let newLabel  = (typeof n.name    === 'string' && n.name.trim())    ? n.name    : (n.type    || '');
-                    if (liveLabel !== newLabel) return undefined;
-                    return live.w;
-                } catch (e) { /* ignore */ }
-                return undefined;
-            }
-            let layoutOpts = {
-                startX: LAYOUT.startX, startY: LAYOUT.startY,
-                spacingY: LAYOUT.spacingY,
-                edgeGap: LAYOUT.edgeGap,
-                componentGap: LAYOUT.componentGap,
-                bandGap: LAYOUT.componentGap,
-                maxColumns: LAYOUT.maxColumns,
-                isCanvasNode: isLayoutNode,
-                getNodeWidth: liveNodeWidth
-            };
-            if (Object.keys(baseIds).length === 0) {
-                // Fresh flow: honour maxColumns so long chains fold neatly.
-                layout.reflowCanvasNodes(rebuilt, layoutOpts);
-            } else {
-                // Incremental edit: disable column folding so the existing
-                // flow shape is preserved and new nodes just extend right.
-                let incrementalOpts = Object.assign({}, layoutOpts, { maxColumns: Infinity });
-                layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
-            }
+        let layout = LLMPlugin.CanvasLayout;
+        // Prefer Node-RED's live `.w` (measured from the rendered SVG)
+        // for existing nodes when the label is unchanged. If the LLM
+        // renamed the node or changed its type the cached width no
+        // longer matches the post-import label, so fall back to the
+        // estimate which can grow the column to fit the new label.
+        function liveNodeWidth(n) {
+            if (!n || !n.id) return undefined;
+            try {
+                let live = RED.nodes.node(n.id);
+                if (!live || typeof live.w !== 'number' || live.w <= 0) return undefined;
+                let liveLabel = (typeof live.name === 'string' && live.name.trim()) ? live.name : (live.type || '');
+                let newLabel  = (typeof n.name    === 'string' && n.name.trim())    ? n.name    : (n.type    || '');
+                if (liveLabel !== newLabel) return undefined;
+                return live.w;
+            } catch (e) { /* ignore */ }
+            return undefined;
+        }
+        let layoutOpts = {
+            startX: LAYOUT.startX, startY: LAYOUT.startY,
+            spacingY: LAYOUT.spacingY,
+            edgeGap: LAYOUT.edgeGap,
+            componentGap: LAYOUT.componentGap,
+            bandGap: LAYOUT.componentGap,
+            maxColumns: LAYOUT.maxColumns,
+            isCanvasNode: isLayoutNode,
+            getNodeWidth: liveNodeWidth
+        };
+        if (Object.keys(baseIds).length === 0) {
+            // Fresh flow: honour maxColumns so long chains fold neatly.
+            layout.reflowCanvasNodes(rebuilt, layoutOpts);
+        } else {
+            // Incremental edit: disable column folding so the existing
+            // flow shape is preserved and new nodes just extend right.
+            let incrementalOpts = Object.assign({}, layoutOpts, { maxColumns: Infinity });
+            layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
+        }
 
-            // Selective reposition: relayout the named subset in place,
-            // keeping their IDs and properties. Runs AFTER the general
-            // layout pass so coordinates of unaffected nodes are stable.
-            if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
-                repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts);
-            }
+        // Selective reposition: relayout the named subset in place,
+        // keeping their IDs and properties. Runs AFTER the general
+        // layout pass so coordinates of unaffected nodes are stable.
+        if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
+            repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts);
         }
 
         // Metadata sweep #2: the layout passes have consumed what they needed,
@@ -665,20 +622,13 @@
         return rebuilt;
     }
 
-    // Selective layout: reflow only the nodes named by `aliases` (and any
-    // already-existing wires between them), keeping their IDs intact. The
-    // subset is translated back to its previous top-left corner so the
-    // rest of the canvas is undisturbed. Comment captions anchored above
-    // any subset node are carried along by capture/apply so they don't
-    // get left behind their target's old position.
+    // Reflow only the named nodes, keeping their IDs, then translate the
+    // subset back to its previous top-left so the rest of the canvas does
+    // not shift. Captions ride along via capture/apply.
     function repositionSubsetByAliases(allNodes, aliases, layoutOpts) {
         if (!Array.isArray(aliases) || aliases.length === 0) return;
-        let layout = window.LLMPlugin && window.LLMPlugin.CanvasLayout;
-        if (!layout || typeof layout.reflowCanvasNodes !== 'function') return;
-
-        let commentAnchors = (typeof layout.captureCommentAnchors === 'function')
-            ? layout.captureCommentAnchors(allNodes, layoutOpts)
-            : null;
+        let layout = LLMPlugin.CanvasLayout;
+        let commentAnchors = layout.captureCommentAnchors(allNodes, layoutOpts);
 
         let lookup = buildFlowLookup(allNodes);
 
@@ -746,14 +696,22 @@
         });
 
         // Re-align captions to follow their (now moved) anchor target.
-        if (commentAnchors && typeof layout.applyCommentAnchors === 'function') {
-            layout.applyCommentAnchors(allNodes, commentAnchors);
-        }
+        layout.applyCommentAnchors(allNodes, commentAnchors);
     }
 
     // ================================================================== //
     //  Replace Workspace Flow                                             //
     // ================================================================== //
+
+    // Serialise live editor entities into their import-ready export shape.
+    // `createExportableNodeSet` is mandatory for groups and junctions: a live
+    // group's `nodes` array holds node OBJECTS, so the obvious fallback — a
+    // plain JSON clone — writes whole nodes where the import format expects
+    // ids. A fallback that produces a corrupt backup is worse than none.
+    function exportEntities(entities) {
+        let list = (entities || []).filter(Boolean);
+        return list.length > 0 ? RED.nodes.createExportableNodeSet(list) : [];
+    }
 
     function replaceWorkspaceFlow(nodes, targetWorkspaceId) {
         let workspaceId = (targetWorkspaceId && typeof targetWorkspaceId === 'string')
@@ -765,7 +723,13 @@
         try {
             let ents = collectWorkspaceEntities(workspaceId);
             let canvasNodes = ents.nodes.filter(isCanvasNode);
-            backupEntitiesJSON = canvasNodes.map(function(n) { return JSON.parse(JSON.stringify(n)); });
+            // Junctions and groups are removed below too, so they belong in
+            // the rollback snapshot. A node-only backup used to restore the
+            // canvas without them — silently deleting them on the very error
+            // path that is supposed to leave the flow untouched.
+            backupEntitiesJSON = exportEntities(
+                canvasNodes.concat(ents.junctions || [], ents.groups || [])
+            );
             canvasNodes.forEach(function(n) {
                 try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ }
             });
@@ -893,12 +857,20 @@
         return groups;
     }
 
-    // Slice a schema down to one flow: its tagged canvas nodes, all
-    // untagged (config / shared) nodes, and connections internal to it.
-    function buildSubSchemaForFlow(schema, aliases) {
+    // Slice a schema down to one flow: its tagged canvas nodes, the untagged
+    // (config / shared) ones, and the connections internal to it.
+    // `ownedDeletes` is this flow's share of the delete directives, decided
+    // by routeDeleteTokens.
+    function buildSubSchemaForFlow(schema, aliases, ownedDeletes) {
         let aliasSet = {};
         aliases.forEach(function(a) { aliasSet[a] = true; });
         let subNodes = {};
+
+        // Deletions are never broadcast: an alias collision (`debug` on both
+        // tabs) would delete from a flow the schema never mentioned.
+        function deletionBelongsHere(token) {
+            return !!aliasSet[token] || !!(ownedDeletes && ownedDeletes[token]);
+        }
 
         aliases.forEach(function(alias) {
             if (Object.prototype.hasOwnProperty.call(schema.nodes || {}, alias)) {
@@ -908,23 +880,20 @@
         Object.keys(schema.nodes || {}).forEach(function(alias) {
             if (aliasSet[alias]) return;
             let spec = schema.nodes[alias];
-            if (spec === null) { subNodes[alias] = spec; return; }
+            if (spec === null) {
+                if (deletionBelongsHere(alias)) subNodes[alias] = spec;
+                return;
+            }
             if (!spec || typeof spec !== 'object') return;
             let isUntagged = !spec.flow || typeof spec.flow !== 'string' || !spec.flow.trim();
             if (isUntagged) subNodes[alias] = spec;
         });
 
-        // Endpoint classification per sub-import:
-        //   - in `aliasSet`           → a node owned by THIS sub-schema
-        //   - tagged with a different `flow`  → owned by ANOTHER sub-import
-        //   - untagged in schema.nodes        → shared (config / cross-cutting)
-        //   - not in schema.nodes at all      → an existing canvas node on
-        //                                       the target workspace, to be
-        //                                       resolved by the sub-import's
-        //                                       unified alias lookup
-        // The connection is forwarded to this sub-import when at least one
-        // endpoint belongs here and neither endpoint is tagged to a
-        // different flow (cross-flow wires are not supported by Node-RED).
+        // A connection is forwarded here when at least one endpoint belongs
+        // to this sub-schema and neither is tagged to a different flow —
+        // Node-RED has no cross-flow wires. An endpoint absent from
+        // schema.nodes is an existing canvas node, resolved by the
+        // sub-import's own lookup.
         function endpointBelongsToAnotherFlow(endpoint) {
             if (aliasSet[endpoint]) return false;
             let spec = schema.nodes && schema.nodes[endpoint];
@@ -958,37 +927,88 @@
         };
         if (typeof schema.description === 'string') out.description = schema.description;
         if (Array.isArray(schema.remove)) {
-            out.remove = schema.remove.filter(function(t) { return aliasSet[t]; });
+            out.remove = schema.remove.filter(deletionBelongsHere);
         }
         return out;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Routing deletions across a fan-out                                 //
+    // ------------------------------------------------------------------ //
+
+    // Every deletion a schema can express: the top-level `remove` array and
+    // the `nodes: { alias: null }` form.
+    function collectDeleteTokens(schema) {
+        let tokens = [];
+        let seen = {};
+        function add(t) {
+            if (typeof t !== 'string') return;
+            let s = t.trim();
+            if (!s || seen[s]) return;
+            seen[s] = true;
+            tokens.push(s);
+        }
+        if (schema && Array.isArray(schema.remove)) schema.remove.forEach(add);
+        if (schema && schema.nodes && typeof schema.nodes === 'object') {
+            Object.keys(schema.nodes).forEach(function(alias) {
+                if (schema.nodes[alias] === null) add(alias);
+            });
+        }
+        return tokens;
+    }
+
+    // A deletion carries no `flow` tag and its node is normally not
+    // redeclared under `nodes`, so the only evidence is which canvas holds
+    // it. Routed only when exactly ONE in-scope flow resolves the token;
+    // ambiguous or unresolvable ones are reported, not applied, because a
+    // deletion cannot be undone from the import itself.
+    // → { byLabel: { <flow label>: { <token>: true } }, unrouted: [] }
+    function routeDeleteTokens(tokens, labelToWorkspaceId) {
+        let byLabel = {};
+        let unrouted = [];
+        let labels = Object.keys(labelToWorkspaceId || {});
+        if (tokens.length === 0 || labels.length === 0) {
+            return { byLabel: byLabel, unrouted: tokens.slice() };
+        }
+
+        let lookups = {};
+        labels.forEach(function(label) {
+            lookups[label] = buildFlowLookup(RED.nodes.filterNodes({ z: labelToWorkspaceId[label] }) || []);
+        });
+
+        tokens.forEach(function(token) {
+            let owners = labels.filter(function(l) {
+                return !!lookups[l].resolve(token, { exactOnly: true });
+            });
+            if (owners.length !== 1) {
+                // Looser tiers only when the exact pass was inconclusive: the
+                // alias numbering the model sees spans every context flow
+                // (`debug_2`), while these lookups are per-flow (`debug`).
+                owners = labels.filter(function(l) {
+                    return !!lookups[l].resolve(token);
+                });
+            }
+            if (owners.length === 1) {
+                (byLabel[owners[0]] = byLabel[owners[0]] || {})[token] = true;
+            } else {
+                unrouted.push(token);
+            }
+        });
+        return { byLabel: byLabel, unrouted: unrouted };
     }
 
     // ================================================================== //
     //  Implicit Flow Tagging                                              //
     // ================================================================== //
 
-    // LLMs often forget to set `flow: "<tab name>"` on every node, even
-    // when the message clearly spans multiple workspaces (e.g. "MCU 側"
-    // / "Server 側"). Without tags, collectFlowGroupsFromSchema sees no
-    // groups, the multi-flow dispatch never fires, and connections that
-    // cross the active workspace boundary fail to resolve — exactly the
-    // "nothing connects to mqtt_out" symptom users report.
-    //
-    // This helper scans the CONTEXT workspaces (`allowedSet`; every
-    // workspace only when no context was selected), builds an
-    // `alias → workspace label` map, seeds it onto schema nodes whose
-    // alias already exists on one of those canvases, and propagates labels
-    // through `connections` so brand-new nodes inherit the flow of their
-    // existing-node neighbors. The schema is cloned, never mutated.
-    //
-    // Scoping is load-bearing, not an optimisation: aliases are unique only
-    // within a flow, and this map is first-workspace-wins, so a global scan
-    // would tag `inject` with an unrelated tab that merely happens to sit
-    // earlier in the tab bar and send the whole edit there.
+    // LLMs routinely omit `flow` tags even when a message spans workspaces,
+    // leaving the dispatch unfired and cross-tab connections unresolved.
+    // Recover the tags from the context canvases and propagate them along
+    // connections; the schema is cloned. The `allowedSet` scope is
+    // load-bearing — the map is first-workspace-wins, so a global scan would
+    // tag `inject` with whichever unrelated tab sits earlier in the tab bar.
     function inferImplicitFlowTagging(schema, allowedSet) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return schema;
-        if (typeof RED === 'undefined' || !RED.nodes) return schema;
-        if (typeof RED.nodes.eachWorkspace !== 'function' || typeof RED.nodes.filterNodes !== 'function') return schema;
 
         let aliasToWorkspaceLabel = {};
         try {
@@ -1093,15 +1113,30 @@
         let unresolved = [];
         let flowLabels = Object.keys(flowGroups);
 
+        // Resolve every target workspace up front: deletions have to be
+        // routed against the whole set of candidate flows, not one at a time.
+        // Out-of-scope labels resolve to null and are reported as skipped —
+        // a fan-out must never reach a flow outside the conversation's
+        // context.
+        let labelToWs = {};
+        flowLabels.forEach(function(label) {
+            let wsId = resolveFlowLabelToWorkspace(label, allowedSet);
+            if (wsId) labelToWs[label] = wsId;
+            else unresolved.push(label);
+        });
+
+        let routedDeletes = routeDeleteTokens(collectDeleteTokens(schema), labelToWs);
+        if (routedDeletes.unrouted.length > 0) {
+            notify('Could not tell which flow these node(s) should be deleted from; left in place: ' +
+                routedDeletes.unrouted.join(', '), 'warning');
+        }
+
         for (let li = 0; li < flowLabels.length; li++) {
             let label = flowLabels[li];
-            // Out-of-scope labels resolve to null and are reported as
-            // skipped — a fan-out must never reach a flow outside the
-            // conversation's context.
-            let wsId = resolveFlowLabelToWorkspace(label, allowedSet);
-            if (!wsId) { unresolved.push(label); continue; }
+            let wsId = labelToWs[label];
+            if (!wsId) continue;
 
-            let subSchema = buildSubSchemaForFlow(schema, flowGroups[label]);
+            let subSchema = buildSubSchemaForFlow(schema, flowGroups[label], routedDeletes.byLabel[label]);
             let subMessage = serializeSchemaAsMessage(subSchema);
             try {
                 let res = await Importer.importFlowFromMessage(subMessage, Object.assign({}, options, {
@@ -1146,12 +1181,9 @@
             // target anyway.
             let allowedSet = buildAllowedWorkspaceSet(options.allowedWorkspaceIds);
 
-            // Multi-flow dispatch: when the schema tags nodes with `flow`,
-            // split the proposal per workspace before importing. If the
-            // LLM omitted `flow` tags but the schema's nodes / connections
-            // can be resolved against existing canvases across multiple
-            // workspaces, inferImplicitFlowTagging fills the tags in so
-            // this dispatch still fires.
+            // Split a `flow`-tagged schema per workspace before importing.
+            // inferImplicitFlowTagging fills in tags the LLM omitted, so the
+            // dispatch still fires without explicit markers.
             if (!options._isSubImport) {
                 let rawSchema = extractLastVibeSchema(messageContent);
                 let dispatchSchema = inferImplicitFlowTagging(rawSchema, allowedSet);

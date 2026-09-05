@@ -86,24 +86,12 @@
     // Runtime keys never treated as type-specific `props`.
     let META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
 
-    /**
-     * Editor-level node flags Node-RED stores under single-letter keys.
-     * They are not type-specific configuration — they are the node states a
-     * user toggles from the editor's context menu — so the schema surfaces
-     * them at the entry root under the name the editor's UI uses:
-     *
-     *   d → disabled    Enable/Disable ("commented out"). Exported by the
-     *                   editor only when true, so the schema key is absent
-     *                   for every enabled node.
-     *   l → showLabel   Appearance → label visibility. Exported only when it
-     *                   differs from the type's default (link nodes default
-     *                   to hidden), so this key is absent for a normal node.
-     *
-     * Both directions go through this table; see NODE_FLAG_RAW for the
-     * inverse. A node type that owns a real property of the alias name keeps
-     * it: the lift is skipped when the name is already taken (outbound), and
-     * an explicit raw `d`/`l` in the schema wins over the alias (inbound).
-     */
+    // Node-RED's single-letter editor flags, renamed to the words the
+    // editor's own UI uses. Both are exported only when set, so the schema
+    // key is absent for a normal node. A type owning a real property of the
+    // alias name keeps it: the lift is skipped when the name is taken, and
+    // an explicit raw `d`/`l` wins on the way back.
+    // See docs/*/vibe-schema.md#editor-flags-disabled-showlabel.
     let NODE_FLAGS = { d: 'disabled', l: 'showLabel' };
     let NODE_FLAG_RAW = { disabled: 'd', showLabel: 'l' };
 
@@ -125,18 +113,10 @@
         return (typeof v === 'string') ? v.trim().toLowerCase() === 'true' : !!v;
     }
 
-    /**
-     * Metadata naming convention: any property whose name starts with `_` is
-     * plugin- or editor-internal bookkeeping, never part of a node's
-     * user-facing configuration. Two invariants follow, and both are enforced
-     * here so the rule lives in one place (see docs/{en,jp}/design.md §0):
-     *   - `toIntermediate` never emits a `_` key  → the LLM never sees
-     *     metadata, matching the split "deterministic bookkeeping is the
-     *     code's job, node semantics are the model's job".
-     *   - `toNodeRed` never accepts a `_` key from the schema → the LLM
-     *     cannot forge metadata; only this module writes it, and the
-     *     importer strips it again before the nodes reach the canvas.
-     */
+    // `_`-prefixed = plugin-internal bookkeeping. The rule lives here alone
+    // so both invariants hold: toIntermediate never emits such a key (the
+    // LLM never sees metadata) and toNodeRed never accepts one (the LLM
+    // cannot forge it). See docs/*/design.md §0.1.
     function isMetaProp(key) {
         return typeof key === 'string' && key.charAt(0) === '_';
     }
@@ -305,19 +285,8 @@
     // ------------------------------------------------------------------ //
 
 
-    /**
-     * Convert Vibe Schema intermediate JSON into an array of Node-RED nodes.
-     *
-     * @param  {Object} intermediate  Vibe Schema object.
-     * @param  {Object} [options]     Optional overrides.
-     * @param  {string} [options.workspace]  Tab ID to assign (z).
-     * @param  {number} [options.startX]    Defaults to LAYOUT_DEFAULTS.startX.
-     * @param  {number} [options.startY]    Defaults to LAYOUT_DEFAULTS.startY.
-     * @param  {number} [options.spacingY]  Defaults to LAYOUT_DEFAULTS.spacingY.
-     * @param  {number} [options.edgeGap]   Pixels between adjacent node edges.
-     * @param  {number} [options.maxColumns] Defaults to LAYOUT_DEFAULTS.maxColumns.
-     * @return {Array}  Node-RED JSON nodes array.
-     */
+    // Vibe Schema → Node-RED nodes. `options.workspace` sets `z`; the layout
+    // options fall back to LAYOUT_DEFAULTS.
     function toNodeRed(intermediate, options) {
         if (!intermediate || !intermediate.nodes) return [];
 
@@ -340,16 +309,10 @@
             nodeSpecs[k] = spec;
         });
 
-        // --- Auto-create missing config nodes ---
-        // LLMs sometimes reference config nodes by alias in props without
-        // defining them.  Detect such dangling references and create stubs.
-        //
-        // Detection strategies:
-        //  1. Props keys ending in "config" (e.g. venvconfig → venv-config)
-        //  2. Well-known reference keys that commonly point to config nodes
-        // Aliases of the stubs invented below. Tracked here rather than as a
-        // flag on the spec so the schema itself can never claim "I am an auto
-        // stub" — metadata is authored by this module only.
+        // Stub the config nodes an LLM referenced by alias but never defined.
+        // Two detections: a props key ending in "config", or a well-known
+        // reference key. Stub aliases are tracked here rather than flagged on
+        // the spec, so a schema can never claim to be an auto stub.
         let autoStubAliases = {};
         let CONFIG_REF_KEYS = {
             'broker': 'mqtt-broker',
@@ -395,20 +358,9 @@
             });
         });
 
-        // --- Comment-node placement rule ---
-        // Comments are kept whenever:
-        //   - they declare an explicit `above: <alias>` (the LLM is
-        //     naming its anchor target -- importer.resolveCommentAboveRefs
-        //     resolves it against the schema OR the live canvas, so order
-        //     within `nodes` is irrelevant), OR
-        //   - there is a canvas node *later* in declaration order to head
-        //     — `{c1, n1, c2, n2}` keeps both so each lands above its own
-        //     sequence.
-        // Trailing comments with no `above` and no canvas node after them
-        // are dropped (they have no resolvable target).
-        // Exception: if the schema contains no canvas nodes at all (e.g. a
-        // merge-mode patch that only adds standalone annotations), every
-        // comment is intentional — keep them all.
+        // Drop only comments with no resolvable target: no `above`, and no
+        // canvas node later in declaration order to head. A schema with no
+        // canvas nodes at all is a deliberate annotation patch — keep those.
         (function dropTrailingComments() {
             function aliasIsCanvas(a) {
                 let s = nodeSpecs[a];
@@ -636,6 +588,14 @@
             formatted = formatted.replace(/\n{3,}/g, '\n\n');
             formatted = formatted.replace(/^\s*\n/, '');  // leading blank line
             formatted = formatted.replace(/\n\s*$/, '');  // trailing blank line
+
+            // This pass only ever inserts or drops WHITESPACE — every other
+            // character is pushed through verbatim. Assert that here rather
+            // than trust it: the walker does not model regex literals or
+            // comments, so a future edit that starts consuming characters
+            // inside one would rewrite the user's function body. Falling back
+            // to the original code costs only the pretty-printing.
+            if (formatted.replace(/\s+/g, '') !== code.replace(/\s+/g, '')) return code;
             return formatted;
         }
 
@@ -646,16 +606,8 @@
         function normalizeFunctionNode(node) {
             if (!node.func || typeof node.func !== 'string') return;
 
-            // Match require() patterns ANYWHERE in the code — not just at
-            // the start of a line.  LLMs often emit the entire function
-            // body on one line separated by semicolons.
-            //
-            // Matches:
-            //   const net = require('net');
-            //   let net = require("net");
-            //   let  net = require( 'net' );
-            //   const { Socket } = require('net');
-            //   …also mid-line: "…[]; const net = require('net'); …"
+            // Anywhere in the code, not just line-initial: LLMs often emit a
+            // whole function body on one line. Handles destructuring too.
             let requireRe = /\b(?:const|let|var)\s+(?:\{[^}]+\}|([a-zA-Z_$][a-zA-Z0-9_$]*))\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)\s*;?/g;
             let libs = Array.isArray(node.libs) ? node.libs.slice() : [];
             let existingModules = {};
@@ -804,15 +756,9 @@
             canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap, nodeHeight
         );
 
-        // Per-predecessor left-edge placement. Each alias' left edge sits
-        // exactly `edgeGap` to the right of `max(pred.rightEdge)`. Roots
-        // (no preds inside the component) sit at `startX`, so column-0
-        // nodes of every component line up and direct branch siblings
-        // sharing a predecessor line up — but downstream nodes in each
-        // chain advance by THIS chain's widths only. Mirrors the matching
-        // pass in CanvasLayout.reflowCanvasNodes so a toNodeRed call
-        // produces the same coordinates as an explicit reflow over the
-        // resulting array.
+        // Per-predecessor left edges, mirroring the matching pass in
+        // CanvasLayout.reflowCanvasNodes so that converting and then
+        // reflowing yields the same coordinates.
         let nodeWidthByAlias = {};
         canvasAliases.forEach(function(alias) {
             let spec = nodeSpecs[alias];
@@ -871,17 +817,10 @@
             // reference. The importer uses it to skip the stub when the real
             // config node already exists (Config Node Protection).
             if (autoStubAliases[alias]) node._autoStub = true;
-            // Preserve the Vibe Schema `flow` field as `_llmFlow` so the
-            // importer can route this node to the correct workspace in
-            // multi-flow edits. The field is stripped before nodes reach
-            // the canvas (handled by the importer).
-            if (typeof spec.flow === 'string' && spec.flow.length > 0) {
-                node._llmFlow = spec.flow;
-            }
-            // Preserve the Vibe Schema `above` field (comment-only) so the
-            // layout pass can place this comment directly above the named
-            // target canvas node. The importer resolves the alias to a
-            // real node id before layout; the field is stripped after.
+            // `spec.flow` is deliberately not carried onto the node: routing
+            // happens on the raw schema, before this conversion runs.
+            // `above` is, so the layout pass can anchor the comment; the
+            // importer resolves it to a node id and strips it afterwards.
             if (spec.type === 'comment' && typeof spec.above === 'string' && spec.above.length > 0) {
                 node._llmAbove = spec.above;
             }
@@ -927,13 +866,15 @@
             // Translate the readable editor flags back to Node-RED's
             // single-letter keys. An explicit raw key wins, so a type that
             // owns a real `disabled`/`showLabel` property round-trips intact.
-            Object.keys(NODE_FLAG_RAW).forEach(function(alias) {
-                if (!(alias in mergedProps)) return;
-                let raw = NODE_FLAG_RAW[alias];
+            // `flagName` — not `alias`, which is this node's schema alias in
+            // the enclosing scope.
+            Object.keys(NODE_FLAG_RAW).forEach(function(flagName) {
+                if (!(flagName in mergedProps)) return;
+                let raw = NODE_FLAG_RAW[flagName];
                 if (raw in mergedProps) return;
-                if (!isFlagValue(mergedProps[alias])) return;
-                mergedProps[raw] = toFlagBool(mergedProps[alias]);
-                delete mergedProps[alias];
+                if (!isFlagValue(mergedProps[flagName])) return;
+                mergedProps[raw] = toFlagBool(mergedProps[flagName]);
+                delete mergedProps[flagName];
             });
             if ('d' in mergedProps && isFlagValue(mergedProps.d)) mergedProps.d = toFlagBool(mergedProps.d);
             if ('l' in mergedProps && isFlagValue(mergedProps.l)) mergedProps.l = toFlagBool(mergedProps.l);
@@ -949,13 +890,9 @@
             // node's previous `d: true`.
             if (node.d !== true) delete node.d;
 
-            // Record exactly which property keys the LLM explicitly proposed
-            // (i.e. came from the Vibe Schema spec, not from a type-specific
-            // normaliser default). The importer uses this list when merging
-            // into an existing node so that unmentioned properties - mqtt
-            // `topic`, `broker`, function `outputs`, etc. - are preserved
-            // from the user's current setup instead of being silently
-            // replaced by normaliser defaults.
+            // The keys the LLM actually proposed, as opposed to the ones the
+            // normalisers below will default. The importer's merge preserves
+            // everything not listed here from the user's existing node.
             let llmSpecKeys = Object.keys(mergedProps);
             if (spec.name) llmSpecKeys.push('name');
             node._llmSpecKeys = llmSpecKeys;
@@ -991,20 +928,9 @@
     //  Detection helper                                                   //
     // ------------------------------------------------------------------ //
 
-    /**
-     * Check whether the given parsed JSON object looks like Vibe Schema.
-     * Accepts:
-     *   - the canonical add/edit shape — an object `nodes` map and/or an
-     *     array `connections`; either alone is valid (a pure node-prop
-     *     update has no connection changes; a pure wiring tweak has no
-     *     node changes). The prompt explicitly tells the LLM either may
-     *     be omitted, so the validator has to mirror that.
-     *   - directive-only shapes that carry just a `reposition` array
-     *     (or its `relayout` / `reflow` aliases) so a pure reposition
-     *     message is still detected.
-     * @param  {*} obj  Parsed JSON value.
-     * @return {boolean}
-     */
+    // `nodes` and `connections` are each optional — the prompt tells the LLM
+    // either may be omitted, so this has to accept one alone. A bare
+    // `reposition` (or its aliases) also counts, for directive-only replies.
     function isVibeSchema(obj) {
         if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
         let hasNodesObj =
