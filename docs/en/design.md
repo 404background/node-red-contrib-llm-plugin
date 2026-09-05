@@ -44,7 +44,7 @@ with `_`) — and it constrains **both directions** of the boundary.
 - **"The model cannot forge it" is part of the rule**: if a schema could set `_llmSpecKeys`
   (which decides property preservation, §4.2) or `_autoStub` (which feeds config protection,
   §5), the LLM's output could bend the merge rules themselves.
-- Regression test: `test/metadata_props.test.js` (registered in `npm test`).
+- Regression test: `test/schema_conventions.test.js` (registered in `npm test`).
 
 ---
 
@@ -186,6 +186,11 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 - A group also has x/y, so `isCanvasNode` is true too, but **a group's bounding box encloses its own members**. Feeding it to the collision-resolution passes makes it "collide with its own contents" and break.
 - → Added `isLayoutNode()` (= `isCanvasNode && type!=='group'`), applied to all layout calls. **Groups are excluded from layout** (their positions are kept as-is).
 - Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive.
+
+### The rollback snapshot is subject to the same rule
+- `replaceWorkspaceFlow` takes its own backup before clearing the workspace, so a failing `RED.nodes.import` can put the flow back. That backup used to hold **regular nodes only** — so the error path, the one case that is supposed to change nothing, deleted the workspace's junctions and groups for good.
+- The backup now covers junctions and groups too, and is produced with `createExportableNodeSet` rather than a plain JSON clone: a *live* group's `nodes` array holds node **objects**, which a naive clone would serialise into the backup where the import format expects ids.
+- Regression test: `test/import_safety.test.js` scenario B.
 
 ---
 

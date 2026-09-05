@@ -85,7 +85,7 @@ pattern and communicate via `window.LLMPlugin`.
 | POST | `/llm-plugin/delete-chat` | Delete by filename or chat id |
 | POST | `/llm-plugin/checkpoint/save` | Save flow snapshot |
 | GET | `/llm-plugin/checkpoint/:id` | Load saved checkpoint |
-| POST | `/llm-plugin/client-log` | Write a structured client event to the server log |
+| POST | `/llm-plugin/client-log` | Report a client-side failure into the Node-RED log |
 | GET | `/llm-plugin/vendor/marked.js` | Serve the bundled marked.js (offline Markdown rendering) |
 | GET | `/llm-plugin_styles.css` | Serve plugin stylesheet |
 | GET | `/llm-plugin/src/*` | Serve client JS modules |
@@ -203,6 +203,20 @@ Full import workflow with these guarantees:
    existing-node neighbors. The inferred-tagged schema is then handed to
    `collectFlowGroupsFromSchema` so the multi-flow dispatch fires even
    without explicit `flow` markers.
+
+   **Deletion routing** — a node spec carries a `flow` tag; a *deletion*
+   (`remove: [...]`, or `nodes: { alias: null }`) does not, and the node
+   being deleted is normally not redeclared under `nodes` either. So when
+   the dispatch slices the schema per workspace, `routeDeleteTokens`
+   resolves each token against every candidate flow's live canvas: a
+   token exactly one in-scope flow can resolve is routed there; anything
+   ambiguous (an unnamed `debug` exists on several tabs) or unresolvable
+   is reported via a toast and left in place, because replaying it across
+   every flow would delete from a canvas the schema never mentioned and a
+   deletion is not recoverable from the import itself. The earlier slice
+   kept only tokens the same sub-schema also *declared*, so a fan-out
+   silently ignored every deletion. Regression test:
+   `test/import_safety.test.js` scenarios A1–A3.
 4. **Strict delete → add → connect ordering** —
    `rebuildWorkspaceFromSnapshot` runs three labeled phases so a single
    schema cannot contradict itself mid-merge:
@@ -265,10 +279,10 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 | `addMessageToUI(content, isUser, showActions, messageMeta?)` | Render message + retry / import buttons; assistant messages show a `mode / model / 1.5s` badge. Also runs `annotateNodeReferences` on assistant messages so inline backtick'd node names become clickable. |
 | `formatMessage(text)` | `marked.parse` with XSS-safe pre-escape of `<` / `>`. |
 | `annotateNodeReferences(rootEl, targetFlowIds?)` | Two-pass scan that makes node mentions clickable. **Pass 1**: every inline `<code>` (skipping `<pre>`-nested ones) is resolved via `LlmJsonParser.buildFlowLookup(...).resolve`; matches become `code.llm-node-ref` with a focus handler. **Pass 2**: walks the remaining text nodes (skipping `<code>/<pre>/<a>/<script>/<style>`) and replaces any token that exactly matches a known alias (length ≥ 3) — this catches plain-prose mentions when the LLM forgets to backtick. Both singleton aliases (`inject`, `debug`) and compound ones (`change_create_sensor_json`) are matched; sort-longest-first plus `\b` boundaries make sure `change_temperature_series` beats `change` on overlapping spans. Tabs are skipped; config nodes ARE included (they open the edit dialog on click). When `targetFlowIds` is provided, the alias map is rebuilt from `UI.getFlowsByIds(targetFlowIds)` — the exact same export the LLM saw — so numbered duplicate aliases (`change_2`, …) resolve back to the same node IDs. Without it, every node on the canvas is scanned. The system prompt also instructs the LLM to backtick node aliases, so Pass 1 is the primary path. |
-| `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)` (with `RED.editor.edit(node)` as fallback). Notifies if the node has since been deleted. |
+| `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)`. Notifies if the node has since been deleted. A single try/catch wraps the whole routine — focus is best-effort, so every failure has the same answer (stop and log). |
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
-| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [design.md](./design.md#7-snapshot-completeness--junction--group). |
+| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the runtime node. `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
@@ -309,7 +323,7 @@ sidebar — there is only one settings + credentials store.
 
 | Section | Key functions |
 |---------|---------------|
-| Storage resolution | `chatsDir` / `checkpointsDir` / `clientEventsLog` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
+| Storage resolution | `chatsDir` / `checkpointsDir` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-GCM), legacy-key migration, `maskApiKey`, `redactSecrets` |
 | Prompt construction | `buildMessages` (loads `prompt_system.txt`, `FlowConverterCore.toIntermediate`), `buildChatMessages` (plain Ask-mode chat) |
 | LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
@@ -322,7 +336,7 @@ Thin HTTP layer over `llm_core.js`, plus the sidebar-only persistence.
 |---------|---------------|
 | Chat history | `saveChatHistory`, `loadAllChatHistories` (per-chat JSON files) |
 | Checkpoints | `saveCheckpoint` (per-import flow snapshots) |
-| Client logging | `writeClientEvent` (structured, secret-redacted) |
+| Client logging | `writeClientEvent` (secret-redacted, into `RED.log`) |
 | HTTP admin endpoints | All `RED.httpAdmin.*` routes (delegating generation to the engine) |
 
 ### `node/` — runtime workflow node
@@ -363,10 +377,16 @@ No chat history is sent — each request is stateless to the LLM.
   send an auth header; they serve only the plugin's own published client
   code and `src/*` is restricted to `.js` / `.css` / `.json`.
 - API keys (OpenAI and Custom-endpoint) are stored encrypted in
-  `<userDir>/llm-plugin/credentials.json` using AES-256-GCM with
-  Node-RED's `credentialSecret` (or auto-generated `_credentialSecret`),
-  in a plugin-owned file so `cleanCredentials` can't strip them on
-  deploy. GCM rather than the CTR that Node-RED uses for
+  `<userDir>/llm-plugin/credentials.json` using AES-256-GCM, in a
+  plugin-owned file so `cleanCredentials` can't strip them on deploy.
+  The key comes from the plugin's **own** secret
+  (`llmPluginCredentialSecret`, generated on first use). It is deliberately
+  NOT derived from Node-RED's `_credentialSecret`: that setting belongs to
+  the runtime, which generates it *and deletes it* the moment the user sets
+  their own `credentialSecret` in `settings.js` — so deriving from it made
+  that documented change silently destroy every stored key. Both runtime
+  secrets are still READ, so blobs written by an older build still decrypt
+  and are re-encrypted with the plugin key on the next save. GCM rather than the CTR that Node-RED uses for
   `flows_cred.json`: CTR is unauthenticated, so a tampered file decrypts
   to attacker-chosen bits without error, while GCM rejects it. Blobs
   written in the old CTR format are still read (prefix `g1:` marks GCM),
@@ -374,6 +394,11 @@ No chat history is sent — each request is stateless to the LLM.
   (and any leftover from the earlier synthetic-id `addCredentials`
   attempt) are migrated automatically on first boot.
 - API keys are never returned to the client; masked via `maskApiKey()`.
+  A stored key always yields a NON-EMPTY mask: the settings form reads an
+  empty mask as "no key stored", shows a blank field, and the next save
+  would then delete the key it was only meant to keep. Keys too short to
+  mask by prefix/suffix without giving most of themselves away get a
+  fixed-length placeholder instead.
   POST whitelist prevents field injection. A stored key is **not**
   carried across an endpoint change: sending the `__EXISTING_KEY__`
   sentinel while `customBaseUrl` changes in the same request is rejected,
@@ -384,14 +409,23 @@ No chat history is sent — each request is stateless to the LLM.
   100–100 000), plus an independent 1 MB cap on the flow context —
   both land in the same system message, so without the second cap the
   first is bypassable by moving the payload into `currentFlow`.
-- Stored documents are bounded: 5 MB per chat and per checkpoint,
-  `client-events.log` rotates at 5 MB, and checkpoints are pruned
-  oldest-first past 200 files.
+- Stored documents are bounded: 5 MB per chat and per checkpoint, and
+  checkpoints are pruned oldest-first past 200 files.
 - Path traversal blocked by `path.basename` + `startsWith` containment
   on file-serving / deletion routes.
-- `redactSecrets` strips API keys, URLs, and IPs from all error messages
-  and client logs — including the `meta` object written to
-  `client-events.log`, not only its console preview.
+- `redactSecrets` strips API keys, URLs and IPs from every error message
+  and client-reported event, `meta` included. The configured key VALUES are
+  matched literally, first: a custom endpoint's key can be any shape at all,
+  so no pattern covers it, and an endpoint that echoes the Authorization
+  header into its error body would otherwise put it in the Node-RED log.
+  The patterns remain as a net for keys that were never stored here.
+- `credentials.json` is written atomically with the file created `0600` —
+  a mode passed to a plain write is ignored once the target exists, and a
+  crash mid-write would otherwise truncate the blob and lose every key.
+- A key too short to mask by its ends gets a FIXED-width placeholder, so the
+  mask never publishes the length of the secret.
+- Client-reported events have newlines collapsed before they reach the
+  line-oriented log, so caller-supplied text cannot forge a log entry.
 - Credentials stripped from flow context before sending to the LLM. The
   runtime node narrows the context further: only the config nodes its
   selected flows actually reference (transitively), rather than every
@@ -428,9 +462,12 @@ disposable instances for exactly this reason.
   directory, so it installs cleanly on sandboxed cloud Node-RED hosts
   (enebular, etc.) where that directory is read-only; if nothing on disk
   is writable it degrades to memory-only and logs a warning.
-- **`prompt_system.txt`** is loaded from the plugin install dir on
-  startup; if that read fails (extreme sandbox), a minimal embedded
-  prompt is used as fallback.
+- **`prompt_system.txt`** is read from the plugin install dir at module
+  load. There is no embedded fallback: the file ships in the package and
+  sits beside the module that reads it, so a failure is a packaging bug,
+  and a stand-in prompt would keep generating flows while silently
+  dropping the alias / `flow` / `above` / `reposition` rules the importer
+  depends on. Presence is asserted by `npm test`.
 - **Settings storage**: non-secret fields live in
   `RED.settings.get/set('llmPluginSettings')` (Node-RED's internal
   config, not in exported flows). API keys (OpenAI and Custom-endpoint)

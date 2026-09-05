@@ -52,7 +52,7 @@ in `flow_converter_core.js`.
 
 Actual output for the schema above (random IDs replaced with
 `<gen-id-N>`; the internal `_llm*` marker keys — `_llmOrder`,
-`_llmAbove`, `_llmFlow`, `_llmSpecKeys` — are omitted here because the
+`_llmAbove`, `_llmSpecKeys` — are omitted here because the
 importer consumes and strips them before nodes reach the canvas):
 
 ```json
@@ -317,8 +317,8 @@ list — declaration order doesn't matter once the anchor is named. See
    width-aware column placement; see [layout.md](./layout.md).
 7. **Build per-port wires** with the same source/target filtering.
 8. **Assemble nodes**: carry `id`, `type`, `name`, and the metadata the
-   importer needs — `_llmAlias` (when `preserveAlias: true`), `_llmFlow`
-   (from `spec.flow`), `_llmAbove` (comment anchor), `_llmSpecKeys` (the
+   importer needs — `_llmAlias` (when `preserveAlias: true`),
+   `_llmAbove` (comment anchor), `_llmSpecKeys` (the
    keys the schema actually set), `_llmOrder` (declaration index for
    layout), `_autoStub`; set `z` to the workspace
    for canvas nodes; flatten `props` + root-level keys; resolve alias

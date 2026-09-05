@@ -161,7 +161,7 @@ So whoever controls the model's output controls the Node-RED host. Point Agent m
 
 ### Credentials and endpoints
 
-API keys (OpenAI and Custom-endpoint) are stored encrypted in `<userDir>/llm-plugin/credentials.json` using AES-256-GCM with your Node-RED `credentialSecret`. Non-secret settings stay in `RED.settings`. The plugin also masks keys in the UI and redacts them from logs. Keys saved by earlier versions (AES-256-CTR) are read as-is and re-encrypted on the next save.
+API keys (OpenAI and Custom-endpoint) are stored encrypted in `<userDir>/llm-plugin/credentials.json` (AES-256-GCM, file mode `0600`), under a key the plugin generates for itself and keeps in `RED.settings` as `llmPluginCredentialSecret`. Non-secret settings stay in `RED.settings` too. Keys are masked in the UI and redacted from logs — by exact value, so a key of any shape is covered. Keys saved by earlier versions are still read and re-encrypted on the next save.
 
 A stored key is never carried over to a new endpoint behind your back: change the Custom endpoint Base URL and the plugin requires you to re-enter its API key.
 
@@ -169,7 +169,7 @@ A stored key is never carried over to a new endpoint behind your back: change th
 
 If you enable `adminAuth`, the plugin's endpoints require an authenticated editor session (`llm-plugin.read` / `llm-plugin.write` permissions). Note that Agent-mode results are broadcast to **every** open editor session, so in a shared instance one user's Agent node edits everyone's canvas.
 
-The encrypted file is only as safe as your `credentialSecret`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `credentials.json`, `flows_cred.json`, `.config.*.json`, and your `settings.js` out of the share — and never publish your `credentialSecret`. Older installs that stored the key in plaintext are migrated to the encrypted file automatically on first boot.
+The encrypted file is only as safe as the key that opens it, and that key lives in `.config.runtime.json`. When sharing your Node-RED user directory (Git, backups, environment exports), keep `credentials.json`, `flows_cred.json`, `.config.*.json` and `settings.js` out of the share. Older installs that stored the API key in plaintext are migrated to the encrypted file automatically on first boot.
 
 ## Notes
 

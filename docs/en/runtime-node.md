@@ -30,6 +30,7 @@ A runtime node can't edit the browser canvas directly, so it publishes the reply
 over Node-RED's comms channel; a subscriber in `llm-request.html` (running in the
 editor) applies it with the plugin's importer — the same path as the sidebar.
 
+- The node's **Flows** selection is passed to the importer as the write scope, exactly as the sidebar passes a message's `targetFlowIds`: the flows sent to the model are the only flows the reply may modify. Selecting nothing sends no flow context and keeps the legacy active-tab behaviour. See [architecture.md](./architecture.md) — `importer.js`, guarantee 2.
 - An **editor must be open** with the plugin loaded; headless runs have no canvas.
 - **No chat history** and **no Restore Checkpoint** for node interactions (unlike
   the sidebar). Review on the canvas before Deploy; use the editor's undo if needed.
