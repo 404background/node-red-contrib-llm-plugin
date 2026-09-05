@@ -74,19 +74,24 @@ common → canvas_layout → flow_converter_core → llm_json_parser
 
 ## HTTP エンドポイント
 
-| Method | Path | 用途 |
-|--------|------|---------|
-| POST | `/llm-plugin/generate` | プロンプト + フローコンテキストを LLM へ送信(Ask/Agent 両方。Agent の自動 import はクライアント側) |
-| GET / POST | `/llm-plugin/settings` | 設定の読み書き(ホワイトリスト項目のみ。API キーは読み取り時マスク) |
-| GET | `/llm-plugin/chat-histories` | 永続化されたチャットの一覧 |
-| POST | `/llm-plugin/save-chat` | チャットの永続化 |
-| POST | `/llm-plugin/delete-chat` | ファイル名またはチャット ID で削除 |
-| POST | `/llm-plugin/checkpoint/save` | フロースナップショットの保存 |
-| GET | `/llm-plugin/checkpoint/:id` | 保存済みチェックポイントの読み込み |
-| POST | `/llm-plugin/client-log` | ブラウザ側で起きた失敗を Node-RED のログへ報告 |
-| GET | `/llm-plugin/vendor/marked.js` | 同梱の marked.js を提供(オフライン Markdown 描画) |
-| GET | `/llm-plugin_styles.css` | プラグインスタイルシートの提供 |
-| GET | `/llm-plugin/src/*` | クライアント JS モジュールの提供 |
+| Method | Path | 権限 | 用途 |
+|--------|------|------|---------|
+| POST | `/llm-plugin/generate` | write | プロンプト + フローコンテキストを LLM へ送信(Ask/Agent 両方。Agent の自動 import はクライアント側) |
+| GET | `/llm-plugin/settings` | read | 設定の読み取り(API キーはマスク) |
+| POST | `/llm-plugin/settings` | write | 設定の書き込み(ホワイトリスト項目のみ) |
+| GET | `/llm-plugin/chat-histories` | read | 永続化されたチャットの一覧 |
+| POST | `/llm-plugin/save-chat` | write | チャットの永続化 |
+| POST | `/llm-plugin/delete-chat` | write | ファイル名またはチャット ID で削除 |
+| POST | `/llm-plugin/checkpoint/save` | write | フロースナップショットの保存 |
+| GET | `/llm-plugin/checkpoint/:id` | read | 保存済みチェックポイントの読み込み |
+| POST | `/llm-plugin/client-log` | write | ブラウザ側で起きた失敗を Node-RED のログへ報告 |
+| GET | `/llm-plugin/vendor/marked.js` | **なし** | 同梱の marked.js を提供(オフライン Markdown 描画) |
+| GET | `/llm-plugin_styles.css` | **なし** | プラグインスタイルシートの提供 |
+| GET | `/llm-plugin/src/*` | **なし** | クライアント JS モジュールの提供 |
+
+権限は `llm-plugin.read` / `llm-plugin.write`。データを読む・書く・課金が発生する
+ルートにはすべて権限を付けてある。未認証の3本は、`<script>` / `<link>` タグが
+ヘッダを付けずに取得する静的アセットである。
 
 全ルートは `RED.httpAdmin` に登録される — [セキュリティ対策](#セキュリティ対策)を参照。
 
@@ -413,6 +418,31 @@ Agent ノードに流し込まないこと** — `http in` のペイロード、
 `llm-self-feedback` サンプルが「使い捨てインスタンス用の開発者向けおもちゃ」なのは、
 まさにこの理由による。
 
+## テスト
+
+`npm test` はオフラインで動き、Node 以外に必要なものはない。各スイートは
+「何を守るためのテストか」を冒頭のコメントに書いてある。まずそこを読むこと。
+
+| スイート | 守っているもの |
+|------|------|
+| `canvas_layout` | レイアウトエンジン。コンポーネント同士の押し下げ、挿入時の再配置、編集していないフローは形を変えずに平行移動だけすること。 |
+| `flow_converter_core` | config ノードの自動補完と、1行 `func` の整形が空白しか変えないこと。 |
+| `llm_core` | 暗号鍵がプラグイン自身のものであり、ユーザーが `credentialSecret` を設定しても保存済みキーが読めること。旧データも復号できること。設定の書き込み失敗が呼び出し元に届くこと。API キーがどの出口からも漏れないこと。システムプロンプトが同梱されていること。 |
+| `schema_conventions` | Vibe Schema の境界の両方向。アンダースコア始まりのメタデータと、エディタのフラグ(`disabled` / `showLabel`)。 |
+| `junction_preserve` | 編集で junction や group が消えないこと。ワイヤを切るのは明示的な指示があるときだけであること。 |
+| `cross_flow_isolation` | フローの選択が「書き込んでよい範囲」と「外に出てよい範囲」の両方を決めること。 |
+| `import_safety` | 削除指示が正しいフローに届くこと。インポート失敗時に完全に巻き戻ること。フローコンテキストが config の参照をたどること。 |
+
+`test/helpers.js` には、アサーションの集計と `loadPluginSandbox(RED)` を置いている。
+後者はクライアントの各モジュールを実際に vm 上で読み込むもので、読み込み順は
+`client.js` と同一にしてある。ある順序でしか成立しない依存が、テストだけ通って
+本番で壊れることがないようにするためである。`buildRED` は各スイートが自前で持つ。
+どんなレジストリを用意し、何を記録するかがそのスイートの本題だからである。
+
+`npm run test:llm`(`test/llm_roundtrip.test.js`)は意図的に `npm test` から
+外してある。実際のモデルと通信するため、検証は厳密な一致ではなく構造の確認に
+とどめており、接続先が未設定なら終了コード 2 で抜ける。
+
 ## 開発メモ
 
 - クライアント側に **jQuery は使わない**。素の DOM 操作と標準の通信 API だけで書く。
@@ -430,6 +460,15 @@ Agent ノードに流し込まないこと** — `http in` のペイロード、
 - **設定の保存**: 秘匿でない項目は Node-RED 内部の設定ストアに置く。ここはエクスポートされる
   フローには含まれない。API キーは暗号化した認証情報の置き場に分離する(上記セキュリティ
   対策を参照)。Custom エンドポイントの API キーは、認証不要のサーバなら空欄でよい。
+- **壊れたインストールは黙って動かない。** エントリポイントはエラーを記録したうえで
+  **再スロー**するので、Node-RED はプラグインを読み込み失敗として扱う。握りつぶすと、
+  全エンドポイントが 404 を返す状態でサイドバーだけが普通に開き、ログには何も残らない。
+- **すでにバグの原因になった Node-RED API の作法:**
+  ログ出力の関数は引数を**1つ**しか取らない。`console.error(a, b, c)` と違い、2つ目以降は
+  捨てられる。設定の書き込み関数は Promise を返し、保存先がない場合は同期的に例外を
+  投げるので、await と try/catch の両方が要る。`_credentialSecret` はランタイムの
+  所有物で、ユーザーが `credentialSecret` を設定すると削除される。ここから鍵を
+  導出してはならず、書き込んでもならない。
 - **新しいエンドポイントを足すとき**は HTTP 層に追加し、Node-RED を再起動する。
 - **新しいクライアントモジュールを足すとき**は `src/` にファイルを置き、ローダーの読み込み
   順の並びに加え、共通の名前空間に公開する。

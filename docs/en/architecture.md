@@ -76,19 +76,24 @@ pattern and communicate via `window.LLMPlugin`.
 
 ## HTTP endpoints
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/llm-plugin/generate` | Send prompt + flow context to LLM (both Ask and Agent; Agent's auto-import is client-side) |
-| GET / POST | `/llm-plugin/settings` | Read / write settings (whitelisted fields; API key masked on read) |
-| GET | `/llm-plugin/chat-histories` | List persisted chats |
-| POST | `/llm-plugin/save-chat` | Persist a chat |
-| POST | `/llm-plugin/delete-chat` | Delete by filename or chat id |
-| POST | `/llm-plugin/checkpoint/save` | Save flow snapshot |
-| GET | `/llm-plugin/checkpoint/:id` | Load saved checkpoint |
-| POST | `/llm-plugin/client-log` | Report a client-side failure into the Node-RED log |
-| GET | `/llm-plugin/vendor/marked.js` | Serve the bundled marked.js (offline Markdown rendering) |
-| GET | `/llm-plugin_styles.css` | Serve plugin stylesheet |
-| GET | `/llm-plugin/src/*` | Serve client JS modules |
+| Method | Path | Permission | Purpose |
+|--------|------|------------|---------|
+| POST | `/llm-plugin/generate` | write | Send prompt + flow context to LLM (both Ask and Agent; Agent's auto-import is client-side) |
+| GET | `/llm-plugin/settings` | read | Read settings (API key masked) |
+| POST | `/llm-plugin/settings` | write | Write settings (whitelisted fields) |
+| GET | `/llm-plugin/chat-histories` | read | List persisted chats |
+| POST | `/llm-plugin/save-chat` | write | Persist a chat |
+| POST | `/llm-plugin/delete-chat` | write | Delete by filename or chat id |
+| POST | `/llm-plugin/checkpoint/save` | write | Save flow snapshot |
+| GET | `/llm-plugin/checkpoint/:id` | read | Load saved checkpoint |
+| POST | `/llm-plugin/client-log` | write | Report a client-side failure into the Node-RED log |
+| GET | `/llm-plugin/vendor/marked.js` | **none** | Serve the bundled marked.js (offline Markdown rendering) |
+| GET | `/llm-plugin_styles.css` | **none** | Serve plugin stylesheet |
+| GET | `/llm-plugin/src/*` | **none** | Serve client JS modules |
+
+Permissions are `llm-plugin.read` / `llm-plugin.write`. Every route that
+reads data, writes data or spends money has one; the three unauthenticated
+ones are static assets a `<script>`/`<link>` tag must fetch without headers.
 
 All routes register on `RED.httpAdmin` — see
 [Security measures](#security-measures).
@@ -363,10 +368,9 @@ No chat history is sent — each request is stateless to the LLM.
 #### Security measures
 
 - **Authentication.** Every endpoint that reads data, writes data, or
-  spends money is wrapped in `RED.auth.needsPermission`
-  (`llm-plugin.read` for the two GET routes, `llm-plugin.write` for the
-  rest), and the client attaches the editor's bearer token through
-  `Common.apiFetch`. This is required, not automatic: Node-RED does
+  spends money is wrapped in `RED.auth.needsPermission` — see the
+  permission column in [HTTP endpoints](#http-endpoints) — and the client
+  attaches the editor's bearer token through `Common.apiFetch`. This is required, not automatic: Node-RED does
   **not** apply `adminAuth` to routes a plugin registers on
   `RED.httpAdmin` — the core Admin API guards its own routes with
   `needsPermission` individually, and anything added afterwards is open
@@ -451,6 +455,32 @@ deploy` on, that is a direct path from a remote string to code execution
 on the host. The `llm-self-feedback` sample is a developer toy for
 disposable instances for exactly this reason.
 
+## Tests
+
+`npm test` runs offline and needs nothing but Node. Each suite states the
+guarantee it protects in its header comment; that comment, not the assertion
+names, is the place to look first.
+
+| Suite | Guards |
+|-------|--------|
+| `canvas_layout` | The layout engine: cross-component push, insertion reflow, and that a component the edit did not touch is translated rather than sheared. |
+| `flow_converter_core` | Auto-stub creation, and that the single-line `func` pretty-printer only ever changes whitespace. |
+| `llm_core` | The credential key is the plugin's own and survives the user setting `credentialSecret`; older blobs still decrypt; a failed settings write reaches the caller; a configured API key escapes through none of its exits; the system prompt ships. |
+| `schema_conventions` | Both directions of the Vibe Schema boundary: `_`-prefixed metadata, and the editor flags (`disabled` / `showLabel`). |
+| `junction_preserve` | An edit does not delete junctions or groups, and wires are severed only on an explicit `remove`. |
+| `cross_flow_isolation` | The flow selection bounds what an edit may write to, and what leaves the machine. |
+| `import_safety` | Deletions reach the flow that owns them; a failed import rolls back completely; the flow context follows config references. |
+
+`test/helpers.js` holds the assertion counter and `loadPluginSandbox(RED)`,
+which runs the real client modules in a vm context — in the same order
+`client.js` uses, so a load-order dependency cannot pass here and fail in
+production. Each suite keeps its own `buildRED`: the registries and the state
+a scenario captures are the point of that suite.
+
+`npm run test:llm` (`test/llm_roundtrip.test.js`) is deliberately outside
+`npm test`. It talks to a real model, so its assertions are structural rather
+than exact, and it exits 2 when no endpoint is configured.
+
 ## Development notes
 
 - **No jQuery** in client modules; vanilla DOM + `fetch`.
@@ -474,6 +504,16 @@ disposable instances for exactly this reason.
   are split off into the encrypted credentials store — see Security
   measures above. The Custom endpoint's API key may be left blank for
   servers that don't require authentication.
+- **A broken install fails loudly.** `llm_plugin.js` logs and RETHROWS, so
+  Node-RED marks the plugin as failed to load. Swallowing the error left the
+  sidebar loading against endpoints that all 404, with nothing in the log.
+- **Node-RED API shapes that have already caused bugs here:**
+  `RED.log.info/warn/error` take ONE message — unlike `console.error(a, b, c)`,
+  extra arguments are dropped. `RED.settings.set` returns a Promise and throws
+  synchronously when the runtime has no settings store, so it must be both
+  awaited and try/caught. `_credentialSecret` is owned by the runtime, which
+  deletes it when the user sets `credentialSecret` — never derive from it or
+  write to it.
 - **Adding a new endpoint**: add to `server.js`, restart Node-RED.
 - **Adding a new client module**: drop file under `src/`, add to the
   load list in `client.js`, expose on `window.LLMPlugin`.
