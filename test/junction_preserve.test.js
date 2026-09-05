@@ -4,32 +4,7 @@
 //       asks (a `remove` directive) — omitting wires means "keep them".
 // Loads the real client modules in a mocked RED/browser sandbox and drives
 // Importer.importFlowFromMessage end to end.
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-
-const ROOT = path.resolve(__dirname, '..');
-const files = [
-  'src/common.js',
-  'src/core/canvas_layout.js',
-  'src/core/flow_converter_core.js',
-  'src/core/llm_json_parser.js',
-  // Same order as src/client.js loads them in the editor, so a
-  // load-time dependency that only holds in one order cannot pass here
-  // and fail in production.
-  'src/chat_manager.js',
-  'src/importer.js',
-  'src/ui_core.js',
-];
-
-let assertions = 0, failures = 0;
-function ok(cond, msg) {
-  assertions++;
-  if (cond) { console.log('  ok  ' + msg); }
-  else { failures++; console.log('  FAIL ' + msg); }
-}
-
-const clone = (x) => JSON.parse(JSON.stringify(x));
+const { ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
 
 // Build a mocked RED whose registries mirror the real editor: filterNodes
 // returns ONLY regular nodes; junctions/groups live in separate lookups.
@@ -72,27 +47,13 @@ function buildRED(nodesArr, junctionsArr, groupsArr) {
 // Fresh sandbox + module load per scenario (modules hold singletons).
 async function runImport(nodesArr, junctionsArr, groupsArr, message) {
   const { RED, captured } = buildRED(nodesArr, junctionsArr, groupsArr);
-  const sandbox = {
-    console, setTimeout,
-    requestAnimationFrame: (cb) => cb(),
-    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
-    document: { getElementById: () => null, querySelectorAll: () => [], createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {} }) },
-    RED,
-  };
-  sandbox.window = sandbox;
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  for (const rel of files) {
-    vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
-  }
-  const Importer = sandbox.window.LLMPlugin.Importer;
+  const Importer = loadPluginSandbox(RED).Importer;
   const res = await Importer.importFlowFromMessage(message, { mode: 'agent' });
   const byId = {};
   (captured.import || []).forEach((n) => { byId[n.id] = n; });
   return { res, imported: captured.import || [], byId, captured };
 }
 
-function fence(obj) { return '```json\n' + JSON.stringify(obj) + '\n```'; }
 
 async function scenarioJunctionSurvivesAddNode() {
   console.log('Scenario 1: adding a node must not delete a junction or sever its wires');
@@ -150,8 +111,7 @@ async function run() {
   await scenarioJunctionSurvivesAddNode();
   await scenarioWiresKeptOnPropertyEdit();
   await scenarioExplicitRemoveDoesCut();
-  console.log('\n' + (assertions - failures) + ' passed, ' + failures + ' failed');
-  process.exit(failures ? 1 : 0);
+  summary();
 }
 
 run().catch((e) => { console.error(e); process.exit(1); });

@@ -1,46 +1,16 @@
-// Regression tests for the flow-isolation guarantee: the user's flow
-// selection is the boundary, in both directions.
+// The flow-isolation guarantee: the user's flow selection is the boundary,
+// in both directions.
 //
-// INBOUND (scenarios 1-7): an LLM edit may only modify the flow(s) that were
-// sent to the model as context. Aliases are unique only WITHIN a flow, so any
-// workspace resolution that scans every tab can land an edit on a flow the
-// conversation never saw — and the rebuild clears its target's canvas before
-// re-importing, so a misroute is destructive, not additive. Loads the real
-// client modules in a mocked RED sandbox and drives
-// Importer.importFlowFromMessage end to end with `allowedWorkspaceIds`
-// (the scope the sidebar passes from the message's targetFlowIds).
+// INBOUND (1-7): an edit may only modify the flows sent to the model.
+// Aliases are unique only WITHIN a flow and the rebuild clears its target's
+// canvas first, so a misrouted edit is destructive, not additive.
 //
-// OUTBOUND (scenario 8): the same selection bounds what LEAVES the machine.
-// The runtime node used to attach every config node in the instance to the
-// prompt regardless of which flows were picked, so choosing one small flow
-// still shipped every broker, server and endpoint definition to the provider.
-// Config nodes must come in by reference only, transitively.
-const fs = require('fs');
+// OUTBOUND (8): the same selection bounds what LEAVES the machine. Attaching
+// every config node in the instance meant picking one small flow still
+// shipped every broker and endpoint definition to the provider.
 const path = require('path');
-const vm = require('vm');
 
-const ROOT = path.resolve(__dirname, '..');
-const files = [
-  'src/common.js',
-  'src/core/canvas_layout.js',
-  'src/core/flow_converter_core.js',
-  'src/core/llm_json_parser.js',
-  // Same order as src/client.js loads them in the editor, so a
-  // load-time dependency that only holds in one order cannot pass here
-  // and fail in production.
-  'src/chat_manager.js',
-  'src/importer.js',
-  'src/ui_core.js',
-];
-
-let assertions = 0, failures = 0;
-function ok(cond, msg) {
-  assertions++;
-  if (cond) { console.log('  ok  ' + msg); }
-  else { failures++; console.log('  FAIL ' + msg); }
-}
-
-const clone = (x) => JSON.parse(JSON.stringify(x));
+const { ROOT, ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
 
 // Two-tab editor. `filterNodes` mirrors the real registry (regular nodes
 // only, filtered by z); every workspace is visible to eachWorkspace, which
@@ -86,25 +56,8 @@ function buildRED(tabs, nodesArr, activeId) {
 // Fresh sandbox + module load per scenario (modules hold singletons).
 async function runImport(tabs, nodesArr, activeId, message, importOpts) {
   const { RED, captured } = buildRED(tabs, nodesArr, activeId);
-  const sandbox = {
-    console: { log() {}, warn() {}, error() {} },
-    setTimeout,
-    requestAnimationFrame: (cb) => cb(),
-    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
-    document: {
-      getElementById: () => null,
-      querySelectorAll: () => [],
-      createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {} }),
-    },
-    RED,
-  };
-  sandbox.window = sandbox;
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  for (const rel of files) {
-    vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
-  }
-  const Importer = sandbox.window.LLMPlugin.Importer;
+  const LLMPlugin = loadPluginSandbox(RED);
+  const Importer = LLMPlugin.Importer;
   const res = await Importer.importFlowFromMessage(message, Object.assign({ mode: 'agent' }, importOpts));
   const imported = [].concat(...captured.imports);
   // Post-run editor state, so a scenario can assert what a specific node
@@ -116,7 +69,6 @@ async function runImport(tabs, nodesArr, activeId, message, importOpts) {
   return { res, imported, captured, after };
 }
 
-function fence(obj) { return '```json\n' + JSON.stringify(obj) + '\n```'; }
 
 // Which workspaces did the import actually write to / clear?
 function writtenWorkspaces(imported, captured) {
@@ -366,8 +318,7 @@ async function run() {
   await scenarioMultiFlowContextStillFansOut();
   await scenarioUntaggedNodesFollowTheContextFlow();
   scenarioProviderContextIsScoped();
-  console.log('\n' + (assertions - failures) + ' passed, ' + failures + ' failed');
-  process.exit(failures ? 1 : 0);
+  summary();
 }
 
 run().catch((e) => { console.error(e); process.exit(1); });

@@ -1,40 +1,93 @@
-// Regression tests for the editor-level node flags (`disabled`, `showLabel`).
+// The two conventions governing how a node crosses the Vibe Schema boundary.
+// Both are enforced in the same three places (toIntermediate, toNodeRed, the
+// importer), so they share one harness.
 //
-// Node-RED stores them under single-letter keys — `d` (Enable/Disable, what
-// users call "commenting out" a node) and `l` (label visibility) — which say
-// nothing to a reader. The schema renames them to the editor's own UI words
-// and keeps them at the entry root, present only when set, so:
-//   (A) a model reads a disabled node the way a user sees it on the canvas —
-//       flagged, and otherwise listed in full with all its properties;
-//   (B) `disabled: false` re-enables by REMOVING `d`, and the importer's
-//       merge must not restore the node's previous `d: true`.
-// See docs/{en,jp}/vibe-schema.md "Editor flags".
+// (1) METADATA — `_`-prefixed keys never reach the LLM and never reach the
+//     canvas. The historical leak: `_llmAboveId` was consumed by the layout
+//     pass but never deleted, so it rode into RED.nodes.import.
+//     docs/{en,jp}/design.md §0.
+//
+// (2) EDITOR FLAGS — Node-RED's `d` / `l` are surfaced under the editor's own
+//     words, present only when set. `disabled: false` re-enables by REMOVING
+//     `d`, and the merge must not restore the node's previous `d: true`.
+//     docs/{en,jp}/vibe-schema.md "Editor flags".
 
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-
-const ROOT = path.resolve(__dirname, '..');
+const { ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
 const Cfg = require('../src/core/flow_converter_core.js');
 
-const files = [
-  'src/common.js',
-  'src/core/canvas_layout.js',
-  'src/core/flow_converter_core.js',
-  'src/core/llm_json_parser.js',
-  'src/chat_manager.js',
-  'src/importer.js',
-  'src/ui_core.js',
-];
-
-let assertions = 0, failures = 0;
-function ok(cond, msg) {
-  assertions++;
-  if (cond) { console.log('  ok  ' + msg); }
-  else { failures++; console.log('  FAIL ' + msg); }
+function metaKeysOf(obj) {
+  return Object.keys(obj || {}).filter((k) => k.charAt(0) === '_');
 }
 
-const clone = (x) => JSON.parse(JSON.stringify(x));
+// ------------------------------------------------------------------ //
+//  (A) Outbound: nothing metadata-shaped reaches the LLM              //
+// ------------------------------------------------------------------ //
+
+function outboundKeepsMetadataOut() {
+  console.log('Outbound (toIntermediate): the LLM sees no metadata');
+  // A flow whose nodes carry every metadata key the plugin can attach.
+  const flow = [
+    { id: 'a', type: 'inject', z: 'tab1', name: 'A', x: 100, y: 100, wires: [['b']],
+      _llmOrder: 0, _llmAlias: 'inject_a', _llmSpecKeys: ['name'] },
+    { id: 'b', type: 'function', z: 'tab1', name: 'B', x: 300, y: 100, func: 'return msg;', wires: [[]],
+      _llmAboveId: 'a', _autoStub: true },
+    { id: 'c', type: 'comment', z: 'tab1', name: 'Note', x: 300, y: 40, info: 'hi', wires: [],
+      _llmAbove: 'function_b', _llmAboveId: 'b' },
+  ];
+  const inter = Cfg.toIntermediate(flow);
+  const leaked = [];
+  Object.keys(inter.nodes).forEach((alias) => {
+    const entry = inter.nodes[alias];
+    metaKeysOf(entry).forEach((k) => leaked.push(alias + '.' + k));
+    metaKeysOf(entry.props).forEach((k) => leaked.push(alias + '.props.' + k));
+  });
+  ok(leaked.length === 0, 'no `_` key in the emitted schema (' + (leaked.join(', ') || 'none') + ')');
+
+  // The same guarantee for the deterministic fields the code owns.
+  const serialized = JSON.stringify(inter);
+  ok(serialized.indexOf('"id"') === -1, 'no node IDs in the emitted schema');
+  ok(!/"[xy]":/.test(serialized), 'no coordinates in the emitted schema');
+  ok(inter.nodes.function_b && inter.nodes.function_b.props.func === 'return msg;',
+    'real properties still pass through');
+
+  // includeIdMap is an internal caller aid; llm_core deletes it before the
+  // prompt. It must stay `_`-prefixed so the convention flags it as such.
+  const withMap = Cfg.toIntermediate(flow, { includeIdMap: true });
+  ok(metaKeysOf(withMap).indexOf('_meta') !== -1, 'the id map is exposed as `_meta` (metadata-named)');
+}
+
+// ------------------------------------------------------------------ //
+//  (B1) Inbound: a schema cannot forge metadata                       //
+// ------------------------------------------------------------------ //
+
+function inboundIgnoresForgedMetadata() {
+  console.log('\nInbound (toNodeRed): a schema cannot forge metadata');
+  const schema = {
+    nodes: {
+      function_x: {
+        type: 'function',
+        name: 'X',
+        _autoStub: true,           // would have skipped Config Node Protection
+        _llmSpecKeys: ['func'],    // would have faked "the LLM set this"
+        props: { func: 'return msg;', _llmAboveId: 'nope' },
+      },
+    },
+    connections: [],
+  };
+  const flow = Cfg.toNodeRed(schema, { workspace: 'tab1', preserveAlias: true });
+  const fn = flow.find((n) => n.type === 'function');
+  ok(!!fn, 'function node produced');
+  ok(fn._autoStub === undefined, 'schema-supplied `_autoStub` ignored');
+  ok(fn._llmAboveId === undefined, 'schema-supplied `_llmAboveId` in props ignored');
+  ok(fn._llmSpecKeys.indexOf('_llmSpecKeys') === -1 && fn._llmSpecKeys.indexOf('_autoStub') === -1,
+    '_llmSpecKeys lists only real properties');
+  ok(fn.func === 'return msg;', 'real property still applied');
+  ok(fn._llmAlias === 'function_x', 'converter-owned metadata is still attached for the importer');
+}
+
+// ------------------------------------------------------------------ //
+//  (B2) Inbound end-to-end: nothing `_`-prefixed reaches the canvas   //
+// ------------------------------------------------------------------ //
 
 // ------------------------------------------------------------------ //
 //  (A) Outbound: the model reads the flags under their editor names   //
@@ -153,25 +206,41 @@ function buildRED(nodesArr) {
 
 async function runImport(nodesArr, message) {
   const { RED, captured } = buildRED(nodesArr);
-  const sandbox = {
-    console, setTimeout,
-    requestAnimationFrame: (cb) => cb(),
-    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
-    document: { getElementById: () => null, querySelectorAll: () => [], createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {} }) },
-    RED,
-  };
-  sandbox.window = sandbox;
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  for (const rel of files) {
-    vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
-  }
-  const Importer = sandbox.window.LLMPlugin.Importer;
+  const LLMPlugin = loadPluginSandbox(RED);
+  const Importer = LLMPlugin.Importer;
   const res = await Importer.importFlowFromMessage(message, { mode: 'agent' });
   return { res, imported: captured.import || [] };
 }
 
-function fence(obj) { return '```json\n' + JSON.stringify(obj) + '\n```'; }
+
+async function canvasReceivesNoMetadata() {
+  console.log('\nInbound end-to-end: the canvas receives no metadata');
+  const A = { id: 'a', type: 'inject', z: 'tab1', name: 'A', x: 100, y: 100, wires: [['b']] };
+  const B = { id: 'b', type: 'function', z: 'tab1', name: 'B', x: 300, y: 100, func: 'return msg;', wires: [[]] };
+  // A comment with `above` is the case that used to leak `_llmAboveId`.
+  const msg = 'Adding a debug node and a caption.\n' + fence({
+    nodes: {
+      debug_out: { type: 'debug' },
+      comment_note: { type: 'comment', name: 'Output', above: 'debug_out', props: { info: 'shows the result' } },
+    },
+    connections: [{ from: 'function_b', to: 'debug_out' }],
+  });
+  const { res, imported } = await runImport([A, B], msg);
+  ok(res && res.ok, 'import returned ok');
+
+  const leaked = [];
+  imported.forEach((n) => {
+    metaKeysOf(n).forEach((k) => leaked.push((n.type || '?') + '.' + k));
+  });
+  ok(leaked.length === 0, 'no `_` key on any imported node (' + (leaked.join(', ') || 'none') + ')');
+
+  // The metadata was still doing its job before being stripped.
+  const comment = imported.find((n) => n.type === 'comment');
+  const debug = imported.find((n) => n.type === 'debug');
+  ok(!!comment && !!debug, 'comment and debug nodes were both imported');
+  ok(comment && debug && comment.y < debug.y,
+    'the comment was placed above its `above:` target (metadata was consumed)');
+}
 
 const injectA = () => ({ id: 'a', type: 'inject', z: 'tab1', name: 'Tick', x: 100, y: 100,
   repeat: '5', payloadType: 'date', wires: [['b']] });
@@ -213,12 +282,14 @@ async function endToEndFlags() {
 }
 
 async function run() {
+  outboundKeepsMetadataOut();
+  inboundIgnoresForgedMetadata();
   outboundRenamesFlags();
   outboundLeavesRealPropertiesAlone();
   inboundMapsFlagsBack();
+  await canvasReceivesNoMetadata();
   await endToEndFlags();
-  console.log('\n' + (assertions - failures) + ' passed, ' + failures + ' failed');
-  process.exit(failures ? 1 : 0);
+  summary();
 }
 
 run().catch((e) => { console.error(e); process.exit(1); });

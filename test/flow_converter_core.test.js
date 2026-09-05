@@ -142,6 +142,33 @@ it('vibe-schema.md Example 1 produces exactly its 5 declared nodes', function() 
     assert.deepStrictEqual(out.wires, []);
 });
 
+// --- The single-line `func` pretty-printer may only touch whitespace ---
+// Its character walk models string literals but NOT regex literals or
+// comments, so a `/"/` or a `// note {` can flip it into the wrong state.
+// That must never cost the user a character of their function body.
+it('reformatting a function body never changes anything but whitespace', function() {
+    const bodies = [
+        // A quote inside a regex literal: the walker reads it as a string open.
+        'msg.payload = String(msg.payload).replace(/["{}]/g, ""); return msg;',
+        // A line comment carrying braces and a quote.
+        'let a = 1; // it\'s { fine } return msg;\nreturn msg;',
+        // Plain single-line code — the case the formatter exists for.
+        'let x = 1; if (x > 0) { x = x + 1; } return { payload: x };',
+        // A template literal holding a brace pair.
+        'msg.topic = `a${msg.payload}b`; return msg;',
+    ];
+    const strip = (s) => s.replace(/\s+/g, '');
+    bodies.forEach(function(func) {
+        const flow = Cfg.toNodeRed({
+            nodes: { function_x: { type: 'function', name: 'X', props: { func: func } } },
+            connections: []
+        }, { workspace: 'ws' });
+        const fn = byType(flow, 'function')[0];
+        assert.strictEqual(strip(fn.func), strip(func),
+            'function body changed beyond whitespace:\n  in:  ' + func + '\n  out: ' + fn.func);
+    });
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 if (failed > 0) process.exit(1);
