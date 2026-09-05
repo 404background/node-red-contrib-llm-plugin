@@ -93,7 +93,8 @@ See **[docs/en/runtime-node.md](docs/en/runtime-node.md)** ([日本語](docs/jp/
 ## Tests
 
 ```bash
-npm test          # offline regression suite (converter, layout, importer scoping)
+npm test          # offline regression suite (converter, layout, importer
+                  # scoping, credential store)
 npm run test:llm  # live round-trip against a real LLM endpoint
 ```
 
