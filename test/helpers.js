@@ -18,6 +18,7 @@ const CLIENT_MODULES = [
   'src/core/canvas_layout.js',
   'src/core/flow_converter_core.js',
   'src/core/llm_json_parser.js',
+  'src/apply_queue.js',
   'src/chat_manager.js',
   'src/importer.js',
   'src/ui_core.js',

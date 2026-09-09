@@ -301,6 +301,68 @@
 .restore-btn:hover {
     background: #d97706;
 }
+/* Apply queue panel */
+.llm-queue-panel {
+    border: 1px solid #f0c36d;
+    background: #fff8e6;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+.llm-queue-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+.llm-queue-title { font-weight: bold; color: #7a5b00; }
+.llm-queue-release {
+    background: none;
+    border: 1px solid #d9b45b;
+    border-radius: 3px;
+    color: #7a5b00;
+    font-size: 11px;
+    padding: 1px 6px;
+    cursor: pointer;
+}
+.llm-queue-release:hover { background: #f5e6bf; }
+.llm-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+}
+/* Which producer the request came from, so a node firing on a timer is
+   not mistaken for something the user did. */
+.llm-queue-source {
+    flex: none;
+    font-size: 10px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 3px;
+    color: #fff;
+    background: #6c757d;
+}
+.llm-queue-source.source-node { background: #7048e8; }
+.llm-queue-source.source-sidebar { background: #1c7ed6; }
+.llm-queue-label {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.llm-queue-why { flex: none; color: #7a5b00; font-size: 11px; }
+.llm-queue-cancel {
+    flex: none;
+    background: none;
+    border: none;
+    color: #a00;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+}
 /* Restore-point browser */
 .checkpoint-filter {
     display: flex;

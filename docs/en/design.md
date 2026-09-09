@@ -375,3 +375,66 @@ edit that never landed.
 - Regression tests: `test/incremental_apply.test.js` (what gets touched),
   `test/deploy_churn.test.js` (what gets restarted), `test/import_safety.test.js`
   scenario B (canvas rollback) and scenario D (config-node rollback).
+
+---
+
+## 13. Ordering two producers against one canvas
+
+### The collision
+The sidebar's Import button and the Agent node both apply flow edits to the same
+canvas, and the node's reply arrives whenever the model finishes — not at a moment
+anyone chose. Nothing separated them.
+
+The damage lands on the **first** edit, not the second. Applying is a merge against
+the flow as it currently stands (§0, §3), so when the second apply takes its
+snapshot, the first edit is already there: undeployed, unreviewed, and now part of
+the base the second edit merges into. Both changes end up on the canvas, and the
+second apply's checkpoint rewinds to a state that already contains the first — so
+neither can be undone cleanly any more.
+
+### The rule
+A flow that has been **applied but not yet deployed is held**, and anything else
+targeting that flow waits. Applies that touch different flows never wait for each
+other, and among those that do wait, the earlier request goes first.
+
+"Held until deployed" is the right boundary because it is the same boundary the
+runtime uses. Until a deploy, the edit exists only in the editor: it is the user's
+to review, undo, or restore, and a second edit merging into it takes that decision
+away. After a deploy it is simply the flow, and the next edit merging into it is
+what merging is for.
+
+### Release
+One signal covers both cases: the editor's `deploy` event, which Node-RED emits only
+from the success path of a deploy. The Agent node's auto deploy goes through
+`core:deploy-flows`, the same action as the Deploy button, so an unattended node
+releases its own hold while a node without auto deploy waits for the user — which is
+the behaviour asked for, without the queue needing to tell the two apart.
+
+Two cases the deploy event does not cover, both surfaced in the sidebar's queue
+panel rather than left to deadlock:
+- **A failed apply holds nothing.** The importer rolls back, so nothing was
+  committed; holding its flows would make the next request wait for a deploy that
+  has no reason to happen.
+- **An edit undone by hand, or a restored checkpoint**, ends the edit without a
+  deploy. **Release** clears the hold manually. A waiting request can also be
+  cancelled, and its caller is told rather than left hanging.
+
+An apply with **no declared scope** (no flow context was selected) conflicts with
+everything in both directions: it may read or write any flow, and guessing otherwise
+is how an edit lands somewhere nobody looked.
+
+### Scope — one editor, not one server
+The queue is per editor session, and that is where the two producers actually
+collide: the sidebar and the Agent node are both in the same browser. It does **not**
+coordinate two people with the editor open. Each browser holds its own queue, and the
+node's comms message is broadcast to every connected editor, so each applies it
+locally.
+
+Node-RED already guards that case, at the point where it matters: the flows POST
+carries a revision, and a deploy against a stale one comes back `409` and raises the
+editor's own merge-conflict dialog. The queue is about the window *before* the
+deploy, which Node-RED has no view of.
+
+- Regression test: `test/apply_queue.test.js` — different flows do not wait,
+  the same flow waits for the deploy, arrival order is preserved, a failure holds
+  nothing, an unknown scope holds everything, and cancel / release both work.

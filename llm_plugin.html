@@ -24,6 +24,14 @@
     </div>
     <div class="llm-plugin-chat" id="llm-plugin-chat"></div>
     <div class="llm-plugin-input">
+        <div class="llm-queue-panel" id="llm-plugin-queue-panel" hidden>
+            <div class="llm-queue-head">
+                <span class="llm-queue-title">Waiting for a deploy</span>
+                <button type="button" class="llm-queue-release"
+                        title="Stop waiting without deploying. Use this when the edit was undone or restored instead of deployed.">Release</button>
+            </div>
+            <div class="llm-queue-list" id="llm-plugin-queue-list"></div>
+        </div>
         <details class="llm-session-config" open>
             <summary style="font-size: 12px; cursor: pointer; color: #666; margin-bottom: 8px; font-weight: bold;">Session Options</summary>
             <div class="flow-selector" id="llm-plugin-flow-selector">
@@ -87,6 +95,18 @@
      that holds their id; the Agent node's are not attached to any message,
      so this is how they are found at all. Same classes as the chat list so
      it looks like part of the sidebar rather than a second dialect. -->
+<!-- One waiting apply. `.llm-queue-why` is filled in with the reason it has
+     not run, so the panel answers "why is nothing happening" without the user
+     having to reason about it. -->
+<script type="text/html" id="llm-plugin-queue-item-template">
+    <div class="llm-queue-item">
+        <span class="llm-queue-source"></span>
+        <span class="llm-queue-label"></span>
+        <span class="llm-queue-why"></span>
+        <button type="button" class="llm-queue-cancel" title="Cancel this request">&times;</button>
+    </div>
+</script>
+
 <script type="text/html" id="llm-plugin-checkpoint-modal-template">
     <div class="chat-modal">
         <div class="chat-modal-content">

@@ -79,7 +79,8 @@
         function applyAgentResult(payload) {
             var ids = Array.isArray(payload.targetFlows) ? payload.targetFlows : [];
             var P = window.LLMPlugin;
-            if (!P || !P.Importer || typeof P.Importer.importFlowFromMessage !== 'function') {
+            if (!P || !P.Importer || typeof P.Importer.importFlowFromMessage !== 'function' ||
+                !P.ApplyQueue || typeof P.ApplyQueue.enqueue !== 'function') {
                 notify('LLM node: the LLM Plugin is still loading in this editor (or not installed) — wait a moment and retry.', 'warning');
                 return;
             }
@@ -88,71 +89,96 @@
             if (ids.length === 1 && RED.workspaces && typeof RED.workspaces.show === 'function') {
                 try { RED.workspaces.show(ids[0]); } catch (e) { /* tab may be gone */ }
             }
-            // A checkpoint BEFORE the import, the same as the sidebar's Import
-            // button takes. Without one this was the only way to change a flow
-            // that could not be undone — and with auto deploy the change
-            // reaches the running runtime unattended. If the save fails the
-            // import still runs; losing the undo is not a reason to drop the
-            // edit, and the notification says which happened.
-            var cpPromise = (P.ChatManager && typeof P.ChatManager.saveNodeApplyCheckpoint === 'function')
-                ? P.ChatManager.saveNodeApplyCheckpoint(
-                    { id: payload.nodeId, name: payload.nodeName }, ids)
-                : Promise.resolve(null);
+            // Through the plugin's apply queue, not straight to the importer.
+            // The node's reply lands whenever the model finishes, which may be
+            // in the middle of the user reviewing an edit of their own that is
+            // applied but not yet deployed. Merging on top of that would leave
+            // both changes tangled and neither cleanly undoable, so this waits
+            // for the deploy instead.
+            //
+            // The queue holds the flows it wrote until the NEXT deploy, and
+            // auto deploy below is a deploy like any other — so an unattended
+            // node releases its own hold, while one without auto deploy waits
+            // for the user, which is what was asked for.
+            P.ApplyQueue.enqueue({
+                source: 'node',
+                label: 'LLM node' + (payload.nodeName ? ' (' + payload.nodeName + ')' : ''),
+                targetFlowIds: ids,
+                apply: function () {
+                // A checkpoint BEFORE the import, the same as the sidebar's Import
+                // button takes. Without one this was the only way to change a flow
+                // that could not be undone — and with auto deploy the change
+                // reaches the running runtime unattended. If the save fails the
+                // import still runs; losing the undo is not a reason to drop the
+                // edit, and the notification says which happened.
+                //
+                // Inside the queued turn, so it snapshots the flow this edit will
+                // actually merge against rather than one an earlier apply is about
+                // to change.
+                var cpPromise = (P.ChatManager && typeof P.ChatManager.saveNodeApplyCheckpoint === 'function')
+                    ? P.ChatManager.saveNodeApplyCheckpoint(
+                        { id: payload.nodeId, name: payload.nodeName }, ids)
+                    : Promise.resolve(null);
 
-            cpPromise.then(function (checkpointId) {
-                return P.Importer.importFlowFromMessage(payload.response, {
-                    mode: 'agent',
-                    // The node's selected flows are what was sent to the model,
-                    // so they are also the only flows this edit may write to —
-                    // the same scope the sidebar passes as the message's
-                    // targetFlowIds, and the same scope the checkpoint above
-                    // covers, so the undo can always reach what the edit wrote.
-                    // Without it every write fell back to "unrestricted", and
-                    // an alias is unique only WITHIN a flow: `inject` on the
-                    // target tab can resolve against an unrelated one. An empty
-                    // selection means no flow context was sent, which keeps the
-                    // legacy active-tab behaviour.
-                    allowedWorkspaceIds: ids
-                })
-                .then(function (result) {
-                    if (result && result.ok) {
-                        var applied = 'LLM node applied changes to ' + flowNames(ids);
-                        // Say plainly whether this edit can be undone. A failed
-                        // checkpoint is not fatal, but it is the difference
-                        // between a recoverable change and a permanent one.
-                        if (!checkpointId) {
-                            applied += ' (no restore point could be saved)';
-                        }
-                        if (!payload.autoDeploy) {
-                            notify(applied + '. Review and Deploy.', 'success');
-                        } else if (RED.actions && typeof RED.actions.invoke === 'function') {
-                            // Auto deploy (developer feature): the editor's own
-                            // Deploy action, so dirty state clears like a manual
-                            // click. It runs ASYNC — the editor's own deploy
-                            // toast reports the actual outcome.
-                            // The extra `true` is save()'s skipValidation flag
-                            // (RED.actions.invoke forwards args to the handler):
-                            // without it, any invalid/unknown node anywhere in
-                            // the workspace pops a modal "confirm deploy" dialog
-                            // that stalls unattended loops. Same path as the
-                            // dialog's own Confirm button (save(true)).
-                            try {
-                                RED.actions.invoke('core:deploy-flows', true);
-                                notify(applied + '. Deploy triggered (auto deploy) — watch the deploy result notification.', 'success');
-                            } catch (e) {
-                                notify(applied + ', but auto deploy failed to start: ' + (e && e.message ? e.message : e), 'warning');
+                return cpPromise.then(function (checkpointId) {
+                    return P.Importer.importFlowFromMessage(payload.response, {
+                        mode: 'agent',
+                        // The node's selected flows are what was sent to the model,
+                        // so they are also the only flows this edit may write to —
+                        // the same scope the sidebar passes as the message's
+                        // targetFlowIds, and the same scope the checkpoint above
+                        // covers, so the undo can always reach what the edit wrote.
+                        // Without it every write fell back to "unrestricted", and
+                        // an alias is unique only WITHIN a flow: `inject` on the
+                        // target tab can resolve against an unrelated one. An empty
+                        // selection means no flow context was sent, which keeps the
+                        // legacy active-tab behaviour.
+                        allowedWorkspaceIds: ids
+                    })
+                    .then(function (result) {
+                        if (result && result.ok) {
+                            var applied = 'LLM node applied changes to ' + flowNames(ids);
+                            // Say plainly whether this edit can be undone. A failed
+                            // checkpoint is not fatal, but it is the difference
+                            // between a recoverable change and a permanent one.
+                            if (!checkpointId) {
+                                applied += ' (no restore point could be saved)';
                             }
-                        } else {
-                            notify(applied + ', but this editor does not support auto deploy — deploy manually.', 'warning');
+                            if (!payload.autoDeploy) {
+                                notify(applied + '. Review and Deploy.', 'success');
+                            } else if (RED.actions && typeof RED.actions.invoke === 'function') {
+                                // Auto deploy (developer feature): the editor's own
+                                // Deploy action, so dirty state clears like a manual
+                                // click. It runs ASYNC — the editor's own deploy
+                                // toast reports the actual outcome.
+                                // The extra `true` is save()'s skipValidation flag
+                                // (RED.actions.invoke forwards args to the handler):
+                                // without it, any invalid/unknown node anywhere in
+                                // the workspace pops a modal "confirm deploy" dialog
+                                // that stalls unattended loops. Same path as the
+                                // dialog's own Confirm button (save(true)).
+                                try {
+                                    RED.actions.invoke('core:deploy-flows', true);
+                                    notify(applied + '. Deploy triggered (auto deploy) — watch the deploy result notification.', 'success');
+                                } catch (e) {
+                                    notify(applied + ', but auto deploy failed to start: ' + (e && e.message ? e.message : e), 'warning');
+                                }
+                            } else {
+                                notify(applied + ', but this editor does not support auto deploy — deploy manually.', 'warning');
+                            }
+                        } else if (result && result.error) {
+                            notify('LLM node: ' + result.error, 'warning');
                         }
-                    } else if (result && result.error) {
-                        notify('LLM node: ' + result.error, 'warning');
-                    }
-                })
+                        // Back to the queue, which reads `ok` to decide whether
+                        // these flows are held until the next deploy.
+                        return result;
+                    });
+                });
+                }
+            })
                 .catch(function (e) {
                     notify('LLM node import error: ' + (e && e.message ? e.message : e), 'error');
                 });
-            });
         }
 
         RED.comms.subscribe('llm-plugin/agent-apply', function (topic, payload) {
@@ -254,6 +280,7 @@
         <li><b>Timeout</b> defaults to 3600&nbsp;seconds (local LLMs can be slow). 0 = no limit; <code>msg.timeout</code> overrides.</li>
         <li><b>Auto deploy (developer feature):</b> deploys right after applying, asynchronously and <b>without any confirmation dialog</b> (node-validation warnings are skipped). Development only. Keep one editor open (every open editor deploys) and prefer the Modified Nodes/Flows deploy type — a Full deploy restarts the flow driving this node.</li>
         <li><b>Agent runs what the model writes:</b> the reply is applied with no review step and there is no node-type restriction, so a generated flow may contain <code>function</code> nodes (arbitrary JavaScript in this process) or <code>exec</code> nodes (arbitrary shell commands). Whoever controls the model output controls this host. Use a trusted endpoint, and do <b>not</b> wire untrusted text (<code>http in</code> payloads, inbound messages, scraped content) into an Agent node — with Auto deploy that is remote input straight to code execution.</li>
+        <li><b>Applies are queued, not raced.</b> If a flow this node targets has an edit already applied and not yet deployed — yours from the sidebar, or an earlier reply from a node — this one waits for that deploy instead of merging on top of an uncommitted change. Edits to different flows never wait for each other. With <b>Auto deploy</b> on, the node releases its own hold; without it, the wait ends when you deploy. The sidebar shows what is waiting and why.</li>
         <li><b>Agent needs an open editor</b> with the LLM Plugin loaded; the reply is applied there via comms. It is not recorded in chat history, but a Restore Checkpoint of the target flows is saved immediately before each edit, so the change can be rolled back. Those checkpoints belong to no chat (they are tagged <code>node-apply</code>) and are kept to their own limit, so a node firing on a timer cannot crowd out the sidebar's restore points. If the checkpoint cannot be saved the edit still applies and the notification says so.</li>
         <li><b>API URL</b> is the Node-RED admin API base — normally the same URL the editor is served at (standalone: <code>http://localhost:1880</code>; embedded: the <code>httpAdminRoot</code> base, e.g. <code>http://localhost:8000/red</code>). Blank = auto-detect from the running instance (recommended). Accepts a string or a flow/global context variable; <code>msg.editorUrl</code> overrides. If the configured URL fails, the node falls back to auto-detection with a warning.</li>
         <li><b>Mind the trigger rate:</b> every message costs one LLM request (and one canvas edit in Agent mode).</li>

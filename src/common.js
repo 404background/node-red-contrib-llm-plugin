@@ -30,6 +30,25 @@
         return node;
     };
 
+    // Clone one of the markup templates in llm_plugin.html by id.
+    //
+    // The sidebar's markup lives in that file rather than in JS strings, and
+    // three modules now build pieces of the UI from it. Throwing on a missing
+    // template is deliberate: every caller is reachable only once the sidebar
+    // itself has rendered, and the sidebar comes from the same file — so an
+    // absent template is a packaging or editing mistake, not a runtime state
+    // to degrade around. Degrading would mean a control silently not
+    // appearing, which nobody notices until they need it.
+    Common.cloneTemplate = function(templateId) {
+        let tpl = document.getElementById(templateId);
+        if (!tpl) throw new Error('LLM Plugin: missing markup template #' + templateId);
+        let holder = document.createElement('div');
+        holder.innerHTML = tpl.innerHTML.trim();
+        let node = holder.firstElementChild;
+        if (!node) throw new Error('LLM Plugin: markup template #' + templateId + ' is empty');
+        return node;
+    };
+
     // Unique id: <prefix><epoch>_<random>. Used for chat / message ids.
     // Uses the WebCrypto RNG so ids aren't predictable from a known epoch;
     // Math.random is only a fallback for exotic/non-secure-context editors.

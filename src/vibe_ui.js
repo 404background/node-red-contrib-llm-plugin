@@ -13,6 +13,89 @@
             : '<div class="llm-settings-missing">' + missingText + '</div>';
     }
 
+
+    // ------------------------------------------------------------------ //
+    //  Apply queue panel                                                  //
+    // ------------------------------------------------------------------ //
+    //
+    // Sits above the prompt, and appears only when there is something to say.
+    // A request that is waiting has no other visible sign — the sidebar would
+    // simply look as though nothing happened — so the panel exists to answer
+    // "why has my edit not been applied" before the user has to ask it.
+
+    let QUEUE_REASONS = {
+        // Named for what the user does about it, not for the internal state.
+        deploy: 'waiting for a deploy',
+        queue:  'waiting for an earlier request'
+    };
+
+    function flowScopeText(targets) {
+        if (!targets || targets.length === 0) return '';
+        let names = Common.flowLabels(targets);
+        return names ? ' · ' + names : '';
+    }
+
+    function renderQueuePanel(panel, listEl, entries) {
+        while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+
+        // Hidden when idle. `hidden` rather than a style toggle so the panel
+        // takes no space at all and the prompt does not shift.
+        if (!entries || entries.length === 0) {
+            panel.hidden = true;
+            return;
+        }
+        panel.hidden = false;
+
+        entries.forEach(function(entry) {
+            let item = Common.cloneTemplate('llm-plugin-queue-item-template');
+
+            let badge = item.querySelector('.llm-queue-source');
+            badge.textContent = entry.source === 'node' ? 'Node' : 'Chat';
+            badge.classList.add('source-' + entry.source);
+
+            item.querySelector('.llm-queue-label').textContent =
+                entry.label + flowScopeText(entry.targets);
+            item.querySelector('.llm-queue-why').textContent =
+                entry.state === 'running'
+                    ? 'applying…'
+                    : (QUEUE_REASONS[entry.blockedBy] || 'queued');
+
+            let cancel = item.querySelector('.llm-queue-cancel');
+            if (entry.state === 'running') {
+                // An apply in flight cannot be abandoned part-way; that is
+                // exactly what leaves a half-changed canvas.
+                cancel.remove();
+            } else {
+                cancel.addEventListener('click', function() {
+                    LLMPlugin.ApplyQueue.cancel(entry.id);
+                });
+            }
+
+            listEl.appendChild(item);
+        });
+    }
+
+    function bindQueuePanel(container) {
+        let panel = container.querySelector('#llm-plugin-queue-panel');
+        let listEl = container.querySelector('#llm-plugin-queue-list');
+        if (!panel || !listEl) return;
+
+        panel.querySelector('.llm-queue-release').addEventListener('click', function() {
+            // The hold normally ends at the next deploy. It does not have to:
+            // the user may have restored a checkpoint or undone the edit by
+            // hand, in which case no deploy is coming and the queue would wait
+            // for one forever. This is the way out of that.
+            if (!confirm('Stop waiting for a deploy and apply the queued requests now?')) return;
+            LLMPlugin.ApplyQueue.releaseHold();
+        });
+
+        LLMPlugin.ApplyQueue.onChange(function(entries) {
+            renderQueuePanel(panel, listEl, entries);
+        });
+        renderQueuePanel(panel, listEl, LLMPlugin.ApplyQueue.list());
+        LLMPlugin.ApplyQueue.bindDeployListener();
+    }
+
     function createLLMPluginUI() {
         let container = document.createElement('div');
         container.className = 'llm-plugin-container';
@@ -33,6 +116,8 @@
         container.querySelector('[data-action="restore-points"]').addEventListener('click', function() {
             LLMPlugin.ChatManager.showCheckpointList();
         });
+
+        bindQueuePanel(container);
 
         // Settings manager (dialog controller defined in client.js)
         let settingsManager = null;

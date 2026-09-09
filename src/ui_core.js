@@ -284,26 +284,8 @@
         scheduleReannotate();
     })();
 
-    // Clone one of the per-message markup templates from llm_plugin.html.
-    //
-    // Reaching this code already proves that file loaded: addMessageToUI
-    // returns early when `#llm-plugin-chat` is missing, and the chat area
-    // comes from the same file. So a missing template is a packaging or
-    // editing mistake, not a runtime condition — it throws rather than
-    // quietly rendering a message with no Import or Retry button, which is
-    // the kind of failure nobody notices until they need the button.
-    function cloneTemplate(templateId) {
-        let tpl = document.getElementById(templateId);
-        if (!tpl) throw new Error('LLM Plugin: missing markup template #' + templateId);
-        let holder = document.createElement('div');
-        holder.innerHTML = tpl.innerHTML.trim();
-        let el = holder.firstElementChild;
-        if (!el) throw new Error('LLM Plugin: markup template #' + templateId + ' is empty');
-        return el;
-    }
-
     function createRestoreCheckpointButton(checkpointId) {
-        let btn = cloneTemplate('llm-plugin-restore-btn-template');
+        let btn = Common.cloneTemplate('llm-plugin-restore-btn-template');
         btn.dataset.checkpointId = checkpointId;
         btn.addEventListener('click', function() {
             let cpId = btn.dataset.checkpointId;
@@ -435,7 +417,7 @@
         }
 
         if (!isUser && showActions) {
-            let messageActions = cloneTemplate('llm-plugin-message-actions-template');
+            let messageActions = Common.cloneTemplate('llm-plugin-message-actions-template');
             messageActions.querySelector('.retry-btn')
                 .addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
             message.appendChild(messageActions);
@@ -447,11 +429,24 @@
                 let hasDirectivesOnly = (!flowNodes || flowNodes.length === 0) &&
                     LLMPlugin.Importer.hasFlowDirectives(content);
                 if ((flowNodes && flowNodes.length > 0) || hasDirectivesOnly) {
-                    let flowActions = cloneTemplate('llm-plugin-flow-actions-template');
+                    let flowActions = Common.cloneTemplate('llm-plugin-flow-actions-template');
                     let importBtn = flowActions.querySelector('.import-btn');
 
                     let isAgent = messageMeta && messageMeta.meta && messageMeta.meta.mode === 'agent';
                     if (isAgent) importBtn.style.display = 'none';
+
+                    // Show the Restore button for the checkpoint this import
+                    // took. Shared by the fresh-import path below and the
+                    // rebuild for an already-applied message further down.
+                    function showRestoreButton(checkpointId) {
+                        let preChatActions = message.querySelector('.pre-chat-actions');
+                        if (!preChatActions) {
+                            preChatActions = Common.cloneTemplate('llm-plugin-pre-chat-actions-template');
+                            message.insertBefore(preChatActions, message.firstChild);
+                        }
+                        preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
+                        preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
+                    }
 
                     importBtn.addEventListener('click', function() {
                         importBtn.disabled = true;
@@ -460,46 +455,63 @@
                             ? messageMeta.meta.targetFlowIds
                             : null;
 
-                        // Capture the checkpoint immediately before the
-                        // import so the Restore button always points at the
-                        // true pre-edit state. If the save fails we still
-                        // run the import (just with no Restore button).
-                        let checkpointPromise = LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds);
-
-                        checkpointPromise.then(function(checkpointId) {
-                            return LLMPlugin.Importer.importFlowFromMessage(content, {
-                                chatId: chatId,
-                                mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
-                                // Confine every write to the flows this turn
-                                // was given as context — the same set the
-                                // checkpoint above covers, so Restore can
-                                // always undo whatever the import did.
-                                allowedWorkspaceIds: targetFlowIds
-                            }).then(function(result) {
-                                return { result: result, checkpointId: checkpointId };
-                            });
-                        })
-                        .then(function(combined) {
-                            let result = combined.result;
-                            let checkpointId = combined.checkpointId;
-                            if (!result || !result.ok) return;
-                            if (checkpointId) {
-                                let preChatActions = message.querySelector('.pre-chat-actions');
-                                if (!preChatActions) {
-                                    preChatActions = cloneTemplate('llm-plugin-pre-chat-actions-template');
-                                    message.insertBefore(preChatActions, message.firstChild);
-                                }
-                                preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
-                                preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
-                                if (messageMeta && messageMeta.id) {
-                                    LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
-                                        pluginEdited: true,
-                                        checkpointId: checkpointId
+                        // Through the queue rather than straight to the
+                        // importer: if an earlier edit is on the canvas and
+                        // not deployed yet, this one waits for that deploy
+                        // instead of merging on top of an uncommitted change.
+                        LLMPlugin.ApplyQueue.enqueue({
+                            source: 'sidebar',
+                            label: 'Import Flow',
+                            targetFlowIds: targetFlowIds,
+                            // Everything below runs when this entry's turn
+                            // comes, INCLUDING the checkpoint. Taken at click
+                            // time it would snapshot a flow that the apply
+                            // ahead of this one is about to change, and
+                            // Restore would rewind to a state that never
+                            // existed. If the checkpoint fails to save the
+                            // import still runs, just with no Restore button.
+                            apply: function() {
+                                return LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
+                                    .then(function(checkpointId) {
+                                        return LLMPlugin.Importer.importFlowFromMessage(content, {
+                                            chatId: chatId,
+                                            mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
+                                            // Confine every write to the flows
+                                            // this turn was given as context —
+                                            // the same set the checkpoint above
+                                            // covers, so Restore can always undo
+                                            // whatever the import did, and the
+                                            // same set the queue holds until the
+                                            // next deploy.
+                                            allowedWorkspaceIds: targetFlowIds
+                                        }).then(function(result) {
+                                            if (result && result.ok && checkpointId) {
+                                                showRestoreButton(checkpointId);
+                                                if (messageMeta && messageMeta.id) {
+                                                    LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
+                                                        pluginEdited: true,
+                                                        checkpointId: checkpointId
+                                                    });
+                                                }
+                                            }
+                                            // The importer's result, not the
+                                            // UI's: the queue reads `ok` off
+                                            // this to decide whether to hold
+                                            // these flows until a deploy.
+                                            return result;
+                                        });
                                     });
-                                }
                             }
                         })
-                        .catch(function() { /* import errors already surfaced */ })
+                        .catch(function(err) {
+                            // An import error has already been reported by the
+                            // importer itself. A cancellation has not — it is
+                            // the queue's own outcome — so only that is
+                            // announced here, and nothing is said twice.
+                            if (err && /Cancelled/.test(err.message || '')) {
+                                Common.notify('Import cancelled', 'warning');
+                            }
+                        })
                         .finally(function() {
                             importBtn.disabled = false;
                         });
@@ -508,11 +520,7 @@
                     let existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
                         ? messageMeta.meta.checkpointId
                         : null;
-                    if (existingCheckpointId) {
-                        let preChatActions = cloneTemplate('llm-plugin-pre-chat-actions-template');
-                        preChatActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
-                        message.insertBefore(preChatActions, message.firstChild);
-                    }
+                    if (existingCheckpointId) showRestoreButton(existingCheckpointId);
 
                     message.appendChild(flowActions);
                 }

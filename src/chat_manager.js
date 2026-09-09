@@ -127,19 +127,6 @@
     // checkpoints were written and then unfindable — and a restore point
     // nobody can find is not a restore point.
 
-    // Same clone-from-HTML helper as ui_core.js, for the same reason: the
-    // markup is markup. Throwing on a missing template is safe here too —
-    // the button that opens this dialog comes from the same file.
-    function cloneTemplate(templateId) {
-        let tpl = document.getElementById(templateId);
-        if (!tpl) throw new Error('LLM Plugin: missing markup template #' + templateId);
-        let holder = document.createElement('div');
-        holder.innerHTML = tpl.innerHTML.trim();
-        let node = holder.firstElementChild;
-        if (!node) throw new Error('LLM Plugin: markup template #' + templateId + ' is empty');
-        return node;
-    }
-
     let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
 
     // What this restore point was taken before. The server stores enough to
@@ -187,7 +174,7 @@
                 return;
             }
             items.forEach(function(cp) {
-                let item = cloneTemplate('llm-plugin-checkpoint-item-template');
+                let item = Common.cloneTemplate('llm-plugin-checkpoint-item-template');
 
                 let badge = item.querySelector('.checkpoint-source');
                 let src = (cp.meta && cp.meta.source) || null;
@@ -234,7 +221,7 @@
         // Never stack dialogs — the chat list does the same.
         document.querySelectorAll('.chat-modal').forEach(function(m) { m.remove(); });
 
-        let modal = cloneTemplate('llm-plugin-checkpoint-modal-template');
+        let modal = Common.cloneTemplate('llm-plugin-checkpoint-modal-template');
         modal.querySelector('.close-btn')
             .addEventListener('click', function() { modal.remove(); });
 

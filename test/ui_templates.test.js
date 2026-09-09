@@ -21,9 +21,16 @@ const HTML = fs.readFileSync(path.join(ROOT, 'llm_plugin.html'), 'utf8');
 const UI_CORE = fs.readFileSync(path.join(ROOT, 'src', 'ui_core.js'), 'utf8');
 const VIBE_UI = fs.readFileSync(path.join(ROOT, 'src', 'vibe_ui.js'), 'utf8');
 const CHAT_MANAGER = fs.readFileSync(path.join(ROOT, 'src', 'chat_manager.js'), 'utf8');
+const COMMON = fs.readFileSync(path.join(ROOT, 'src', 'common.js'), 'utf8');
 
-// Both files clone templates, so both have the same seam to check.
-const CLONERS = [['ui_core.js', UI_CORE], ['chat_manager.js', CHAT_MANAGER]];
+// Every module that builds UI from a template has the same seam to check.
+// cloneTemplate itself lives in common.js — it was copied into two files
+// before a third needed it.
+const CLONERS = [
+  ['ui_core.js', UI_CORE],
+  ['chat_manager.js', CHAT_MANAGER],
+  ['vibe_ui.js', VIBE_UI],
+];
 const CSS = fs.readFileSync(path.join(ROOT, 'llm-plugin_styles.css'), 'utf8');
 
 // id -> inner markup, for every <script type="text/html"> block.
@@ -109,6 +116,10 @@ function scenarioSelectorsMatchTheMarkup() {
     ['llm-plugin-checkpoint-item-template', 'checkpoint-source', 'the source badge'],
     ['llm-plugin-checkpoint-item-template', 'checkpoint-what', 'the description line'],
     ['llm-plugin-checkpoint-item-template', 'restore-btn', 'the restore click handler'],
+    ['llm-plugin-queue-item-template', 'llm-queue-source', 'the producer badge'],
+    ['llm-plugin-queue-item-template', 'llm-queue-label', 'the request description'],
+    ['llm-plugin-queue-item-template', 'llm-queue-why', 'the reason it is waiting'],
+    ['llm-plugin-queue-item-template', 'llm-queue-cancel', 'the cancel handler'],
   ];
   cases.forEach(([id, cls, why]) => {
     const inner = templates[id] || '';
@@ -152,8 +163,10 @@ function scenarioMovedStylesAreInTheStylesheet() {
 // runtime state to degrade around.
 function scenarioMissingTemplateIsLoud() {
   console.log('\nA missing template fails loudly rather than silently');
-  ok(/function cloneTemplate[\s\S]{0,400}throw new Error/.test(UI_CORE),
+  ok(/Common\.cloneTemplate = function[\s\S]{0,500}throw new Error/.test(COMMON),
     'cloneTemplate throws when the template is absent');
+  ok(!/function cloneTemplate\(/.test(UI_CORE) && !/function cloneTemplate\(/.test(CHAT_MANAGER),
+    'and there is only the one definition, in common.js');
   ok(UI_CORE.indexOf('} catch (e) {}\n            } else') === -1 &&
      !/\} catch \(e\) \{\}\s*\n\s*\}\s*\n\s*chatArea\.appendChild/.test(UI_CORE),
     'the flow-actions block no longer swallows every error bare');
@@ -177,6 +190,26 @@ function scenarioRestorePointsButtonIsWired() {
   ok(/fa-history/.test(shell), 'using an icon that exists in FA 4.7');
 }
 
+// The queue panel is markup in the sidebar template and behaviour in
+// vibe_ui.js. It is the only sign that a request is waiting rather than
+// lost, so a broken seam here reads as "the plugin stopped responding".
+function scenarioQueuePanelIsWired() {
+  console.log('\nThe queue panel markup and its handlers agree');
+  const shell = templates['llm-plugin-sidebar-template'] || '';
+  ok(/id="llm-plugin-queue-panel"/.test(shell), 'the sidebar has the panel');
+  ok(/id="llm-plugin-queue-list"/.test(shell), 'and the list it renders into');
+  ok(/class="llm-queue-release"/.test(shell), 'and the release control');
+  ['#llm-plugin-queue-panel', '#llm-plugin-queue-list', '.llm-queue-release'].forEach((sel) => {
+    ok(VIBE_UI.indexOf("querySelector('" + sel + "')") !== -1,
+      'vibe_ui.js looks up ' + sel);
+  });
+  // Hidden via the `hidden` attribute, so an idle panel takes no space and
+  // the prompt below it does not shift when the queue empties.
+  ok(shell.indexOf('hidden>') !== -1 && VIBE_UI.indexOf('panel.hidden =') !== -1,
+    'and hides it with the hidden attribute rather than a style toggle');
+  ok(CSS.indexOf('.llm-queue-panel {') !== -1, 'the panel has a stylesheet rule');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
@@ -184,6 +217,7 @@ function run() {
   scenarioMovedStylesAreInTheStylesheet();
   scenarioMissingTemplateIsLoud();
   scenarioRestorePointsButtonIsWired();
+  scenarioQueuePanelIsWired();
   summary();
 }
 

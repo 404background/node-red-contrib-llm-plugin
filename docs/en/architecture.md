@@ -147,6 +147,22 @@ Token normalization, JSON repair (comment stripping, quote fixing,
 balanced-snippet scanning) and the Agent partial-schema merge are internal
 steps of those four entry points — they are not exported.
 
+### `apply_queue.js`
+
+Serialises flow-modifying applies against the flows they touch. The sidebar
+and the Agent node both write to the same canvas, and the node's reply
+arrives whenever the model finishes.
+
+| Function | Purpose |
+|----------|---------|
+| `enqueue({ targetFlowIds, source, label, apply })` | Run `apply` when its turn comes; resolves with whatever it returned. Waits if any target flow is applied-but-not-deployed, or if an earlier waiting entry wants an overlapping flow. An empty `targetFlowIds` means the scope is unknown and conflicts with everything. |
+| `list()` | The waiting entries, each with why it is blocked (`deploy` / `queue`) — what the sidebar panel renders. |
+| `cancel(id)` | Drop a waiting entry; its caller's promise rejects. An entry already running cannot be cancelled — abandoning an apply mid-flight is what leaves a half-changed canvas. |
+| `releaseHold()` | End the hold without a deploy, for when the edit was undone or restored instead. |
+| `onChange(fn)` | Subscribe to queue changes; returns an unsubscribe function. |
+| `bindDeployListener()` | Listen for the editor's `deploy` event, which Node-RED emits only on a successful deploy — the Deploy button and the node's auto deploy alike. |
+
+See [design.md](./design.md#13-ordering-two-producers-against-one-canvas).
 ### `chat_manager.js`
 
 Chat session lifecycle.
