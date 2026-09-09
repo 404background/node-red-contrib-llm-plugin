@@ -319,6 +319,18 @@ re-import cannot undo (it would not remove what was added). The error path there
 clears the tab and re-imports the "before" export — the same export used as the
 comparison baseline, so the two can never disagree about what "before" was.
 
+**Config nodes need their own undo.** They have no `z`, so they are not in the
+workspace export at all and restoring the canvas cannot reach them — a failed apply
+used to leave the flow looking untouched while the broker it talks to had already
+been repointed. `applyConfigNodeUpdates` therefore records, per config node it
+touches, either "this one was not live, remove it again" or the prior value of every
+key it overwrites (`hasOwnProperty`, so a key that was genuinely absent is deleted
+rather than written back as `undefined`). The undo runs newest-first, and after the
+canvas restore: removing the workspace's nodes de-registers them from the config
+nodes' `users` lists first. `changed` is restored along with the values, because
+that flag is what a deploy reads — leaving it set would restart a config node for an
+edit that never landed.
+
 - Regression tests: `test/incremental_apply.test.js` (what gets touched),
   `test/deploy_churn.test.js` (what gets restarted), `test/import_safety.test.js`
-  scenario B (rollback leaves the flow byte-identical).
+  scenario B (canvas rollback) and scenario D (config-node rollback).

@@ -8,6 +8,8 @@
 //     path deleted exactly what the import was not allowed to touch.
 // (C) Config nodes reach the flow context by reference, followed transitively
 //     and through array properties.
+// (D) A failed import restores the config nodes it had already rewritten.
+//     They have no `z`, so the workspace rollback cannot reach them.
 const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
 // The shared editor mock models links as their own registry, which is what
@@ -211,11 +213,67 @@ function scenarioSidebarConfigContextIsComplete() {
   ok(ids.indexOf('orphan') === -1, 'an unreferenced config node still does not leak');
 }
 
+// ------------------------------------------------------------------ //
+//  (D) A failed import restores the CONFIG nodes it rewrote           //
+// ------------------------------------------------------------------ //
+//
+// Config nodes have no `z`, so they are not in the workspace export the
+// rollback re-imports — restoring the canvas leaves them exactly as the
+// half-finished apply wrote them. That is the worst kind of residue: the
+// flow looks untouched while the broker it talks to has been repointed.
+//
+// Harness note: the type is `-config`-suffixed on purpose. Without the
+// editor's registry the converter falls back to that naming rule to decide
+// what is a config node, so a realistically named type (`mqtt-broker`)
+// would be classified as a canvas node here and miss this path entirely.
+async function scenarioRollbackRestoresConfigNodes() {
+  console.log('\nScenario D: a failed import rolls back config node edits too');
+  const nodes = [
+    { id: 'm1', type: 'sender', z: 'tab1', name: 'feed', broker: 'brk',
+      x: 100, y: 100, wires: [['d1']] },
+    { id: 'd1', type: 'debug', z: 'tab1', name: 'log', x: 400, y: 100, wires: [] },
+  ];
+  const configs = [{ id: 'brk', type: 'creds-config', name: 'prod broker',
+                     broker: 'prod.example.com', port: '1883' }];
+
+  // Repoints the config node AND adds a node, so the apply reaches the
+  // import — which is the step made to fail.
+  const msg = 'Point the broker at staging and add a logger.\n' + fence({
+    nodes: {
+      creds_config_prod_broker: { type: 'creds-config', props: { broker: 'staging.example.com' } },
+      debug_extra: { type: 'debug', name: 'extra' },
+    },
+    connections: [{ from: 'sender_feed', to: 'debug_extra' }],
+  });
+
+  const { LLMPlugin, RED } = loadSandbox({
+    tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }],
+    nodes: clone(nodes), configs: clone(configs), activeId: 'tab1',
+    failFirstImport: true,
+  });
+
+  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
+    mode: 'agent', allowedWorkspaceIds: ['tab1'],
+  });
+  const brk = RED.nodes.node('brk');
+
+  ok(res && res.ok === false, 'the import reports failure');
+  ok(!!brk, 'the config node still exists');
+  ok(brk.broker === 'prod.example.com',
+    'the repointed property is back to its original value (' + brk.broker + ')');
+  ok(brk.port === '1883' && brk.name === 'prod broker',
+    'the properties the edit never mentioned are untouched');
+  // `changed` is what a deploy reads. Leaving it set on a node whose values
+  // were restored would restart the config node for an edit that never landed.
+  ok(!brk.changed, 'the config node is not left marked as changed');
+}
+
 async function run() {
   await scenarioDeleteReachesItsOwnFlow();
   await scenarioNullAliasDeleteIsRoutedToo();
   await scenarioAmbiguousDeleteIsRefused();
   await scenarioRollbackRestoresCanvasExtras();
+  await scenarioRollbackRestoresConfigNodes();
   scenarioSidebarConfigContextIsComplete();
   summary();
 }

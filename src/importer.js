@@ -767,10 +767,14 @@
         });
 
         // Update existing config nodes in-place (properties only; no re-import)
+        //
+        // No `_autoStub` guard here: by this point rebuildWorkspaceFromSnapshot
+        // has already dropped every stub that stood in for a real config node,
+        // and its metadata sweep has removed every `_`-prefixed key from what
+        // is left. A test for one would never fire — Config Node Protection
+        // lives in the merge, not here.
         configNodesToUpdate.forEach(function(nn) {
             try {
-                // Auto-created stubs have no real props - skip to preserve existing settings
-                if (nn._autoStub) return;
                 let existing = RED.nodes.node(nn.id);
                 if (!existing) return;
 
@@ -987,24 +991,73 @@
 
     // Update existing config nodes in place; hand back the ones that are new
     // so they can be imported with the rest.
-    function applyConfigNodeUpdates(configs) {
+    //
+    // `undo` collects what it takes to put each touched config node back:
+    // config nodes live OUTSIDE the workspace, so restoreWorkspaceFromExport
+    // (which only re-imports entities whose `z` is the tab) cannot reach
+    // them. Without this a failed apply left the flow restored but the
+    // brokers and credentials it had already rewritten still rewritten.
+    function applyConfigNodeUpdates(configs, undo) {
         let toImport = [];
         (configs || []).forEach(function(nn) {
             let existing = RED.nodes.node(nn.id);
-            if (!existing) { toImport.push(nn); return; }
-            // Auto-created stubs carry no real properties - writing them would
-            // wipe the settings of the config node they stand in for.
-            if (nn._autoStub) return;
+            if (!existing) {
+                // Not live yet, so undoing means removing it again. Recorded
+                // before the import so a throw DURING the import still has it.
+                if (undo) undo.push({ action: 'remove', id: nn.id });
+                toImport.push(nn);
+                return;
+            }
             let changed = false;
+            let before = {};
             Object.keys(nn).forEach(function(key) {
                 if (key === 'id' || key === 'type') return;
                 if (JSON.stringify(existing[key]) === JSON.stringify(nn[key])) return;
+                if (!changed) {
+                    before.dirty = existing.dirty;
+                    before.changed = existing.changed;
+                }
+                // `hasOwnProperty`, not a truth test: recording `undefined`
+                // for a key that was genuinely absent is what lets the undo
+                // delete it rather than write undefined back.
+                before[key] = Object.prototype.hasOwnProperty.call(existing, key)
+                    ? JSON.parse(JSON.stringify(existing[key]))
+                    : undefined;
                 existing[key] = nn[key];
                 changed = true;
             });
-            if (changed) { existing.dirty = true; existing.changed = true; }
+            if (changed) {
+                existing.dirty = true;
+                existing.changed = true;
+                if (undo) undo.push({ action: 'restore', id: nn.id, before: before });
+            }
         });
         return toImport;
+    }
+
+    // Put the config nodes back the way applyConfigNodeUpdates found them.
+    // Runs newest-first so a node that was created and then edited is removed
+    // rather than half-restored. Best-effort by design: it runs on an error
+    // path that has already failed once.
+    function undoConfigNodeUpdates(undo) {
+        (undo || []).slice().reverse().forEach(function(entry) {
+            try {
+                if (entry.action === 'remove') {
+                    if (RED.nodes.node(entry.id)) RED.nodes.remove(entry.id);
+                    return;
+                }
+                let live = RED.nodes.node(entry.id);
+                if (!live) return;
+                Object.keys(entry.before).forEach(function(key) {
+                    if (entry.before[key] === undefined) {
+                        try { delete live[key]; } catch (e) { live[key] = undefined; }
+                    } else {
+                        live[key] = entry.before[key];
+                    }
+                });
+                live.dirty = true;
+            } catch (e) { /* best effort */ }
+        });
     }
 
     // The end state, applied as a diff. Returns { ok } on success,
@@ -1096,6 +1149,10 @@
         let touched = removed.length + added.length + updates.length +
                       moves.length + rewires.length;
 
+        // Config nodes are not part of `beforeExport` (they have no `z`),
+        // so they need their own undo log to be rollback-able.
+        let configUndo = [];
+
         // --- Apply ----------------------------------------------------- //
         try {
             removed.forEach(function(id) {
@@ -1114,7 +1171,7 @@
             // ends to exist. Their own `wires` are turned into links by the
             // import; wires pointing AT them from untouched nodes are not, and
             // that is what the rewire pass below is for.
-            let configImports = applyConfigNodeUpdates(split.configs);
+            let configImports = applyConfigNodeUpdates(split.configs, configUndo);
             let importSet = added.concat(configImports);
             if (importSet.length > 0) {
                 // Bypass RED.history - rewind via the plugin's checkpoints.
@@ -1142,7 +1199,13 @@
                 'Incremental apply threw; rolling the workspace back', {
                     error: e && e.message ? e.message : String(e)
                 });
+            // Canvas first, then configs: restoreWorkspaceFromExport removes
+            // the workspace's nodes, and that de-registers them from the
+            // config nodes' `users` lists — so a config node this undo is
+            // about to delete is no longer claimed by a node that is going
+            // away anyway.
             try { restoreWorkspaceFromExport(beforeExport, wsId); } catch (e2) { /* ignore */ }
+            try { undoConfigNodeUpdates(configUndo); } catch (e3) { /* ignore */ }
             return { ok: false, error: 'Failed to apply flow changes: ' + (e.message || e) };
         }
     }
