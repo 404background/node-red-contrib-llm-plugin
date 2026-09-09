@@ -342,7 +342,7 @@ sidebar — there is only one settings + credentials store.
 
 | Section | Key functions |
 |---------|---------------|
-| Storage resolution | `chatsDir` / `checkpointsDir` / `persistenceEnabled` (first writable of userDir → tmpdir → memory), `writeFileAtomic` |
+| Storage resolution | `chatsDir` / `checkpointsDir` / `persistenceEnabled` (`<userDir>/llm-plugin`, else memory only), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-GCM), legacy-key migration, `maskApiKey`, `redactSecrets` |
 | Prompt construction | `buildMessages` (loads `prompt_system.txt`, `FlowConverterCore.toIntermediate`), `buildChatMessages` (plain Ask-mode chat) |
 | LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
@@ -501,11 +501,24 @@ than exact, and it exits 2 when no endpoint is configured.
 - **Module communication**: `window.LLMPlugin` namespace
   (`CanvasLayout`, `FlowConverterCore`,
   `LLMJsonParser`, `ChatManager`, `UI`, `Importer`).
-- **Chat / checkpoint storage**: server-side, resolved by `llm_core.js`
-  (storage resolution above). The plugin never writes to its own install
-  directory, so it installs cleanly on sandboxed cloud Node-RED hosts
-  (enebular, etc.) where that directory is read-only; if nothing on disk
-  is writable it degrades to memory-only and logs a warning.
+- **Chat / checkpoint storage**: server-side, resolved by `llm_core.js`.
+  There is exactly one location — `<userDir>/llm-plugin` — and memory-only
+  if that is not writable (logged once; nothing survives a restart, API keys
+  included).
+
+  Two places it deliberately does **not** fall back to. The OS temp dir used
+  to be second in line, which is where the encrypted `credentials.json`
+  landed on any host with a read-only userDir: world-readable on some
+  systems, cleared on no schedule the plugin controls, and left behind after
+  an uninstall. The plugin's own install directory is not a candidate either
+  — npm replaces that whole tree on a version upgrade, so it would lose the
+  history on precisely the event that has to preserve it.
+
+  What userDir buys is the intended lifecycle: **a plugin update keeps the
+  chat history; removing `<userDir>/llm-plugin` resets it.** It is also
+  where the rest of the plugin's state already is — the non-secret settings
+  and the credential secret both go through `RED.settings`, i.e.
+  `<userDir>/.config.runtime.json`.
 - **`prompt_system.txt`** is read from the plugin install dir at module
   load. There is no embedded fallback: the file ships in the package and
   sits beside the module that reads it, so a failure is a packaging bug,

@@ -10,7 +10,6 @@
 // Usage:  const core = require('./llm_core.js')(RED);
 const fs = require('fs-extra');
 const path = require('path');
-const os = require('os');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -30,19 +29,31 @@ let sharedInstance = null;
 function createLLMCore(RED) {
     if (sharedInstance) return sharedInstance;
 
-    // First writable of userDir → tmpdir → memory only. tmpdir matters on
-    // sandboxed cloud hosts (enebular) where userDir is read-only.
+    // `userDir/llm-plugin`, or memory only. There is deliberately no second
+    // location to fall back to:
+    //
+    //  - The OS temp dir was one, and should not have been. It is where the
+    //    encrypted `credentials.json` ended up on any host with a read-only
+    //    userDir — a world-readable directory on some systems, cleared by the
+    //    OS on no schedule this plugin controls, and left behind on uninstall.
+    //  - The plugin's own install directory is not one either, however
+    //    tempting: npm replaces that whole tree on a version upgrade, so it
+    //    would lose the history on exactly the event that must preserve it.
+    //
+    // userDir is what gives the intended lifecycle — history survives a
+    // plugin update, and removing `userDir/llm-plugin` resets it — and it is
+    // where Node-RED keeps its own settings and credentials, so the plugin's
+    // non-secret settings and the credential secret (both in RED.settings,
+    // i.e. `userDir/.config.runtime.json`) already live alongside it.
     let baseDir = null;
     let chatsDir = null;
     let checkpointsDir = null;
     let persistenceEnabled = false;
 
     (function setupStorage() {
-        let candidates = [];
-        if (RED.settings && RED.settings.userDir) candidates.push({ root: RED.settings.userDir, label: 'userDir' });
-        try { candidates.push({ root: os.tmpdir(), label: 'tmpdir' }); } catch (e) {}
-        for (let i = 0; i < candidates.length; i++) {
-            let base = path.join(candidates[i].root, 'llm-plugin');
+        let root = RED.settings && RED.settings.userDir;
+        if (root) {
+            let base = path.join(root, 'llm-plugin');
             try {
                 fs.ensureDirSync(base);
                 fs.ensureDirSync(path.join(base, 'chats'));
@@ -51,11 +62,17 @@ function createLLMCore(RED) {
                 chatsDir = path.join(base, 'chats');
                 checkpointsDir = path.join(base, 'checkpoints');
                 persistenceEnabled = true;
-                RED.log.info('[LLM Plugin] Storage: ' + base + ' (' + candidates[i].label + ')');
+                RED.log.info('[LLM Plugin] Storage: ' + base);
                 return;
-            } catch (e) { /* try next */ }
+            } catch (e) {
+                RED.log.warn('[LLM Plugin] Could not use ' + base + ': ' + (e && e.message ? e.message : e));
+            }
         }
-        RED.log.warn('[LLM Plugin] No writable storage; chat history and checkpoints will be kept in memory only.');
+        // Everything still works from here — chats and checkpoints are held
+        // in memory and API keys stay in the process — but none of it
+        // outlives a restart, so say so once rather than failing later.
+        RED.log.warn('[LLM Plugin] No writable storage under userDir; chat history, ' +
+            'checkpoints and API keys will be kept in memory only and lost on restart.');
     })();
 
     // Write-then-rename so a reader never sees a half-written file. The temp
