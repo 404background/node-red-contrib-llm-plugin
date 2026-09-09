@@ -270,8 +270,11 @@ Full import workflow with these guarantees:
    only added / removed / changed entities are touched, wiring changes go
    through `RED.nodes.addLink` / `removeLink` (the editor's links are
    objects in their own registry, and `wires` is derived from them), and
-   untouched nodes are never handed to Node-RED at all. Falls back to the
-   destructive rebuild for group membership and type changes. See
+   untouched nodes are never handed to Node-RED at all. Deleting a grouped
+   node goes through `RED.group.removeFromGroup` before the removal, so the
+   group never names a node that is gone. Falls back to the destructive
+   rebuild for group membership and type changes, and for a grouped-node
+   deletion when the group API is unusable (a locked workspace). See
    [design.md](./design.md#12-applying-as-a-diff-not-a-rebuild).
 11. **Reposition without ID churn** — a top-level `reposition: [alias…]`
    directive (see [vibe-schema.md](./vibe-schema.md#reposition-directive))

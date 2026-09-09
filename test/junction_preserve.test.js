@@ -11,14 +11,14 @@ const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = requir
 // `byId` / `imported` read the flow AS IT NOW STANDS, not import()'s payload:
 // the apply is a diff, so an untouched junction or an unmentioned wire is
 // never handed to import() at all — which is exactly the guarantee here.
-async function runImport(nodesArr, junctionsArr, groupsArr, message) {
-  const mock = buildEditorMock({
+async function runImport(nodesArr, junctionsArr, groupsArr, message, extraOpts) {
+  const mock = buildEditorMock(Object.assign({
     tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }],
     nodes: nodesArr,
     junctions: junctionsArr || [],
     groups: groupsArr || [],
     activeId: 'tab1',
-  });
+  }, extraOpts || {}));
   const Importer = loadPluginSandbox(mock.RED).Importer;
   const res = await Importer.importFlowFromMessage(message, { mode: 'agent' });
   const flow = mock.snapshot('tab1');
@@ -124,7 +124,7 @@ async function scenarioDeleteLeavesNoDanglingMember() {
               func: 'return msg;', wires: [[]] };
   const G = { id: 'grp', type: 'group', z: 'tab1', name: 'Box', style: {}, nodes: ['a', 'b'] };
   const msg = 'Drop the function.\n' + fence({ nodes: { function_b: null } });
-  const { res, byId } = await runImport([A, B], [], [G], msg);
+  const { res, byId, captured } = await runImport([A, B], [], [G], msg);
 
   ok(res && res.ok, 'import returned ok');
   ok(!byId['b'], 'the node is gone');
@@ -134,6 +134,34 @@ async function scenarioDeleteLeavesNoDanglingMember() {
       JSON.stringify(byId['grp'] && byId['grp'].nodes) + ')');
   ok(byId['grp'] && byId['grp'].nodes.indexOf('a') !== -1,
     'the surviving member is still a member');
+  // It gets there through RED.group.removeFromGroup rather than by rebuilding
+  // the tab, so nothing but the deleted node is touched.
+  ok(captured.removed.length === 1 && captured.removed[0] === 'b',
+    'only the deleted node was removed (' + captured.removed.join(',') + ')');
+  ok([].concat.apply([], captured.imports).length === 0,
+    'and no survivor was destroyed and re-imported');
+}
+
+// The group API is a no-op on a locked workspace, and a no-op here is the
+// worst outcome available: the node would go while the group went on naming
+// it. So the diff checks first and declines, and the destructive rebuild —
+// which does not need the API, because it re-imports the group wholesale —
+// produces the same consistent end state.
+async function scenarioLockedWorkspaceFallsBackSafely() {
+  console.log('\nScenario 6: a locked workspace falls back rather than half-detaching');
+  const A = { id: 'a', type: 'inject', z: 'tab1', g: 'grp', name: 'A', x: 100, y: 100, wires: [['b']] };
+  const B = { id: 'b', type: 'function', z: 'tab1', g: 'grp', name: 'B', x: 300, y: 100,
+              func: 'return msg;', wires: [[]] };
+  const G = { id: 'grp', type: 'group', z: 'tab1', name: 'Box', style: {}, nodes: ['a', 'b'] };
+  const msg = 'Drop the function.\n' + fence({ nodes: { function_b: null } });
+  const { res, byId } = await runImport([A, B], [], [G], msg, { workspaceLocked: true });
+
+  ok(res && res.ok, 'the edit still applies');
+  ok(!byId['b'], 'the node is gone');
+  ok(byId['grp'] && byId['grp'].nodes.indexOf('b') === -1,
+    'and the group does not name it either (' +
+      JSON.stringify(byId['grp'] && byId['grp'].nodes) + ')');
+  ok(byId['a'] && byId['a'].g === 'grp', 'the surviving member kept its membership');
 }
 
 async function run() {
@@ -142,6 +170,7 @@ async function run() {
   await scenarioExplicitRemoveDoesCut();
   await scenarioEditKeepsGroupMembership();
   await scenarioDeleteLeavesNoDanglingMember();
+  await scenarioLockedWorkspaceFallsBackSafely();
   summary();
 }
 

@@ -307,7 +307,8 @@ Two ordering details follow from this:
 The diff hands back `fallback: true` and the caller runs `replaceWorkspaceFlow`
 instead when it meets something it cannot express safely:
 - a group changed, was added, or was removed
-- a node's group membership (`g`) changed, or a grouped node was removed
+- a node's group membership (`g`) changed
+- a grouped node was removed **and the group API is unavailable** (see below)
 - an existing id changed `type`
 - a live entity that does not round-trip through an export
 
@@ -323,10 +324,29 @@ there can be.
 
 The other half of that relationship is the group's own `nodes` list, and Node-RED
 does not maintain it for us — `RED.nodes.remove` has no group bookkeeping at all
-(the editor's delete action calls `RED.group.removeFromGroup` first). So the
-deletion phase prunes removed ids out of every group's `nodes`, the same way it
-prunes wires. Deleting a grouped node still falls back, because doing it on the live
-canvas needs the group API; the fallback now at least produces a consistent group.
+(the editor's delete action calls `RED.group.removeFromGroup` first). Both halves
+have to be kept in step, in two different places:
+
+- **In the merged end state.** The deletion phase prunes removed ids out of every
+  group's `nodes`, the same way it prunes wires, so the flow the applier is handed
+  is already consistent.
+- **On the live canvas.** Before removing a node the diff calls
+  `RED.group.removeFromGroup`, which is the only correct way to do it: a group holds
+  its members as node **objects**, so the list cannot be edited through the exported
+  id form. Removing the node first would leave the group naming something that no
+  longer exists.
+
+That is why the group's `nodes` is excluded from the property comparison alongside
+`w`/`h`. All three are derived from the members; the authoritative half of
+membership is each node's `g`, which **is** compared. Comparing the list as well
+would report every membership change twice, and the second report has no safe way to
+be applied.
+
+`removeFromGroup` is a silent no-op on a locked workspace, and a silent no-op is the
+worst outcome available here — the node would go while the group went on naming it.
+So the diff checks for a usable group API first and declines if it has none. The
+destructive rebuild does not need the API (it re-imports the group wholesale) and
+reaches the same consistent end state, just by the broader route.
 
 Groups own their members as live **objects** and `g` is only half of that
 relationship, so that bookkeeping belongs to `RED.group`'s own API. None of it is

@@ -864,7 +864,13 @@
     // entity. A group's `w`/`h` are derived from its members.
     function comparableKeys(before, after) {
         let skip = { id: 1, type: 1, z: 1, wires: 1, x: 1, y: 1 };
-        if (after && after.type === 'group') { skip.w = 1; skip.h = 1; }
+        // A group's `w`/`h` follow its members, and so does `nodes`: the
+        // authoritative half of membership is each node's `g`, which IS
+        // compared, and the list is kept in step through RED.group rather
+        // than by assigning to it. Comparing it here would report every
+        // membership change twice — once on the node, once on the group —
+        // and the second report has no safe way to be applied.
+        if (after && after.type === 'group') { skip.w = 1; skip.h = 1; skip.nodes = 1; }
         let keys = {};
         Object.keys(before || {}).forEach(function(k) { if (!skip[k]) keys[k] = true; });
         Object.keys(after || {}).forEach(function(k) { if (!skip[k]) keys[k] = true; });
@@ -961,6 +967,39 @@
         }
         liveNode.changed = true;
         liveNode.dirty = true;
+    }
+
+    // Can group membership be maintained on the live canvas?
+    //
+    // `RED.group.removeFromGroup` is the only correct way: a group holds its
+    // members as node OBJECTS, so the list cannot be edited through the
+    // exported id form, and the editor's own delete action calls this before
+    // removing anything. It is a silent no-op on a locked workspace, which is
+    // exactly the case that must NOT proceed — a node removed while the group
+    // still lists it leaves the group naming something that no longer exists.
+    function canMaintainGroups() {
+        return !!(RED.group && typeof RED.group.removeFromGroup === 'function' &&
+                  typeof RED.nodes.group === 'function' &&
+                  !(RED.workspaces && typeof RED.workspaces.isLocked === 'function' &&
+                    RED.workspaces.isLocked()));
+    }
+
+    // Take a node out of its group, so removing it next does not leave the
+    // group holding a member that is gone. Reports whether membership is
+    // actually consistent afterwards; the caller treats false as a failure
+    // rather than carrying on, because the alternative is a dangling member.
+    function detachFromGroup(liveNode) {
+        if (!liveNode || !liveNode.g) return true;
+        let group = RED.nodes.group(liveNode.g);
+        if (!group) {
+            // The group is already gone; the node's own `g` is all that is
+            // left to clean up.
+            try { delete liveNode.g; } catch (e) { liveNode.g = undefined; }
+            return true;
+        }
+        RED.group.removeFromGroup(group, liveNode, false);
+        return !liveNode.g &&
+               (!Array.isArray(group.nodes) || group.nodes.indexOf(liveNode) === -1);
     }
 
     function applyMove(liveNode, after) {
@@ -1157,7 +1196,9 @@
         });
         removed.forEach(function(id) {
             if (liveKind[id] === 'group') bail = bail || 'a group was removed';
-            else if (beforeById[id] && beforeById[id].g) bail = bail || 'a grouped node was removed';
+            else if (beforeById[id] && beforeById[id].g && !canMaintainGroups()) {
+                bail = bail || 'a grouped node was removed and the group API is unavailable';
+            }
         });
         added.forEach(function(n) {
             if (n.type === 'group') bail = bail || 'a group was added';
@@ -1178,7 +1219,15 @@
                 let obj = liveById[id];
                 if (liveKind[id] === 'junction') RED.nodes.removeJunction(obj);
                 else if (liveKind[id] === 'group') RED.nodes.removeGroup(obj);
-                else RED.nodes.remove(id);   // takes its links with it
+                else {
+                    // Out of the group first: RED.nodes.remove has no group
+                    // bookkeeping, so the order is what keeps the two halves
+                    // of membership in step.
+                    if (!detachFromGroup(obj)) {
+                        throw new Error('could not remove ' + id + ' from its group');
+                    }
+                    RED.nodes.remove(id);   // takes its links with it
+                }
             });
 
             updates.forEach(function(u) {

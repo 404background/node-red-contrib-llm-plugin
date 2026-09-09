@@ -203,6 +203,19 @@ function buildEditorMock(opts) {
   // a snapshot would make every in-place update look like a config change to
   // anything comparing exports, Node-RED's deploy diff included.
   const EDITOR_INTERNAL = ['dirty', 'changed', 'moved', 'selected', 'resize', 'l', '_ports', '_def', '_'];
+  // Fixtures list group members as ids; the editor holds the node objects
+  // themselves. Swapping them in here is what makes RED.group.removeFromGroup
+  // below behave like the real one — it finds a member with indexOf on the
+  // object, so an array of ids would silently match nothing.
+  (function resolveGroupMembers() {
+    Object.values(groupsById).forEach((g) => {
+      if (!Array.isArray(g.nodes)) { g.nodes = []; return; }
+      g.nodes = g.nodes
+        .map((m) => (typeof m === 'string' ? anyEntity(m) : m))
+        .filter(Boolean);
+    });
+  })();
+
   function exportOne(entity) {
     const out = clone(entity);
     EDITOR_INTERNAL.forEach((k) => { delete out[k]; });
@@ -280,10 +293,27 @@ function buildEditorMock(opts) {
     },
     view: { redraw: () => {} },
     actions: { invoke: () => {} },
+    // Mirrors @node-red/editor-client's RED.group on the points the importer
+    // depends on: members are matched by object identity, a node whose `g`
+    // does not name this group is refused outright, and a successful removal
+    // clears `g` as well as splicing the list. Both halves, or neither —
+    // that pairing is the whole reason the API exists.
+    group: {
+      removeFromGroup: function (group, nodes, reparent) {
+        if (!Array.isArray(nodes)) nodes = [nodes];
+        for (const n of nodes) { if (n.g !== group.id) return; }
+        nodes.forEach((n) => {
+          const i = group.nodes.indexOf(n);
+          if (i !== -1) group.nodes.splice(i, 1);
+          if (reparent && group.g) { n.g = group.g; } else { delete n.g; }
+        });
+      },
+    },
     workspaces: {
       active: () => opts.activeId,
       refresh: () => {},
       show: () => {},
+      isLocked: () => !!opts.workspaceLocked,
     },
   };
 
