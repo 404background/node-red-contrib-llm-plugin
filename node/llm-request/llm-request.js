@@ -225,6 +225,10 @@ module.exports = function(RED) {
                             targetFlows: targetFlows,
                             autoDeploy: autoDeploy,
                             nodeId: node.id,
+                            // Named so the checkpoint the editor takes before
+                            // applying says WHICH node changed the flow, not
+                            // just that some node did.
+                            nodeName: node.name || null,
                             ts: Date.now()
                         }, false);
                         msg.flow = { targetFlows: targetFlows, dispatchedToEditor: true, autoDeploy: autoDeploy };

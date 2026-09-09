@@ -37,7 +37,8 @@
      * POST a flow snapshot to the checkpoint endpoint.
      * Resolves to the checkpoint ID on success, or null on any failure.
      */
-    function postCheckpointSave(chatId, label, flow, source) {
+    function postCheckpointSave(chatId, label, flow, source, extraMeta) {
+        let meta = Object.assign({ source: source }, extraMeta || {});
         return Common.apiFetch('llm-plugin/checkpoint/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -45,7 +46,7 @@
                 chatId: chatId,
                 label: label,
                 flow: flow,
-                meta: { source: source }
+                meta: meta
             })
         })
         .then(function(res) { return res.json(); })
@@ -83,6 +84,36 @@
         let flow = snapshotCurrentFlow(targetFlowIds);
         if (!flow) return Promise.resolve(null);
         return postCheckpointSave(id, 'pre-import-' + new Date().toISOString(), flow, 'pre-import');
+    };
+
+    /**
+     * The same snapshot, for an edit the Agent NODE is about to apply.
+     *
+     * The node path used to take none at all, which made it the one way to
+     * change a flow that could not be undone — worse with auto deploy, where
+     * the edit reaches the running runtime without anyone looking at it.
+     *
+     * It is deliberately not `saveImportCheckpoint`: there is no chat here,
+     * and borrowing the "current" chat id would file the node's edit under
+     * whatever conversation happens to be open in the sidebar and delete it
+     * when that chat is deleted. `chatId` stays null; `meta.source` is what
+     * tells the two apart, and `meta.node` records which node did it.
+     */
+    ChatManager.saveNodeApplyCheckpoint = function(nodeInfo, targetFlowIds) {
+        let flow = snapshotCurrentFlow(targetFlowIds);
+        if (!flow) return Promise.resolve(null);
+        let info = nodeInfo || {};
+        let who = info.name || info.id || 'llm-request';
+        return postCheckpointSave(
+            null,
+            'pre-node-apply-' + who + '-' + new Date().toISOString(),
+            flow,
+            'node-apply',
+            {
+                node: { id: info.id || null, name: info.name || null },
+                targetFlowIds: Array.isArray(targetFlowIds) ? targetFlowIds : []
+            }
+        );
     };
 
     ChatManager.saveChatToServer = function(chatId) {

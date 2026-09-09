@@ -49,6 +49,13 @@ function createLLMPluginServer(RED) {
     const MAX_EVENT_FIELD_CHARS = 4096;
     // Checkpoints are pruned oldest-first past this count.
     const MAX_CHECKPOINT_FILES = 200;
+    // Node-driven checkpoints get their own, smaller budget. They
+    // accumulate unattended (a timer-driven Agent node), so they are the
+    // ones that must not grow into the chat checkpoints' space.
+    const MAX_NODE_CHECKPOINT_FILES = 50;
+    // One definition of what a checkpoint file is named, shared by the
+    // pruner and the listing so they can never disagree about it.
+    const CHECKPOINT_FILE_RE = /^cp_(\d+)_[a-z0-9]+\.json$/i;
 
     // RED.log takes ONE message, unlike console.error(a, b, c).
     function errText(e) {
@@ -217,16 +224,52 @@ function createLLMPluginServer(RED) {
 
     // Prune oldest-first so an automated Agent loop cannot grow the
     // checkpoint directory without bound.
+    // Read just enough of a checkpoint to classify and list it. The `flow`
+    // is the bulk of the file and no caller here needs it.
+    function readCheckpointHeader(file) {
+        try {
+            const cp = JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8'));
+            return {
+                id: cp.id, chatId: cp.chatId || null, label: cp.label,
+                created: cp.created, meta: cp.meta || {},
+                nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
+            };
+        } catch (e) { return null; }
+    }
+
+    // Oldest-first, but per SOURCE rather than across the whole directory.
+    //
+    // A node-driven apply takes a checkpoint like any other, and an Agent
+    // node on a timer with auto deploy takes one every time it fires.
+    // Pruning the globally-oldest would let that stream evict every chat
+    // checkpoint the sidebar's Restore buttons point at, turning those
+    // buttons into 404s while the flow they would have restored is gone.
+    // Each source gets its own budget instead, so a busy node can only
+    // ever crowd out itself.
     function pruneCheckpoints() {
         try {
-            const entries = fs.readdirSync(checkpointsDir)
-                .map(f => /^cp_(\d+)_[a-z0-9]+\.json$/i.exec(f))
+            const buckets = {};
+            fs.readdirSync(checkpointsDir)
+                .map((name) => CHECKPOINT_FILE_RE.exec(name))
                 .filter(Boolean)
-                .map(m => ({ file: m[0], ts: parseInt(m[1], 10) }))
-                .sort((a, b) => a.ts - b.ts);
-            if (entries.length <= MAX_CHECKPOINT_FILES) return;
-            entries.slice(0, entries.length - MAX_CHECKPOINT_FILES).forEach(e => {
-                try { fs.unlinkSync(path.join(checkpointsDir, e.file)); } catch (err) { /* best effort */ }
+                .map((m) => ({ file: m[0], ts: parseInt(m[1], 10) }))
+                .sort((a, b) => a.ts - b.ts)
+                .forEach((e) => {
+                    // Classified by source, falling back to "chat": an
+                    // unreadable or older checkpoint gets the protected
+                    // budget rather than the disposable one.
+                    const head = readCheckpointHeader(e.file);
+                    const src = (head && head.meta && head.meta.source === 'node-apply')
+                        ? 'node' : 'chat';
+                    (buckets[src] = buckets[src] || []).push(e);
+                });
+            Object.keys(buckets).forEach((src) => {
+                const list = buckets[src];
+                const cap = (src === 'node') ? MAX_NODE_CHECKPOINT_FILES : MAX_CHECKPOINT_FILES;
+                if (list.length <= cap) return;
+                list.slice(0, list.length - cap).forEach((e) => {
+                    try { fs.unlinkSync(path.join(checkpointsDir, e.file)); } catch (err) { /* best effort */ }
+                });
             });
         } catch (e) { /* pruning must never block a save */ }
     }
@@ -558,6 +601,48 @@ function createLLMPluginServer(RED) {
         }
     });
 
+    // List checkpoint HEADERS (no flow bodies).
+    //
+    // A chat checkpoint is reachable without this: the sidebar stores its id
+    // on the message and the Restore button fetches it by id. A node-driven
+    // one has no message and no chat to hang off, so without a listing it
+    // would be written and then be unreachable — a restore point nobody can
+    // find is not a restore point. `?source=node-apply` narrows to those.
+    //
+    // Newest first, because the one worth restoring is nearly always the
+    // edit that just landed.
+    RED.httpAdmin.get('/llm-plugin/checkpoints', guard(PERM_READ), function(req, res) {
+        try {
+            const wanted = req.query && req.query.source ? String(req.query.source) : null;
+            let heads;
+            if (!persistenceEnabled) {
+                heads = Object.keys(memCheckpoints).map(function(k) {
+                    const cp = memCheckpoints[k];
+                    return {
+                        id: cp.id, chatId: cp.chatId || null, label: cp.label,
+                        created: cp.created, meta: cp.meta || {},
+                        nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
+                    };
+                });
+            } else {
+                heads = fs.readdirSync(checkpointsDir)
+                    .filter(function(name) { return CHECKPOINT_FILE_RE.test(name); })
+                    .map(readCheckpointHeader)
+                    .filter(Boolean);
+            }
+            if (wanted) {
+                heads = heads.filter(function(h) { return h.meta && h.meta.source === wanted; });
+            }
+            heads.sort(function(a, b) {
+                return String(b.created || "").localeCompare(String(a.created || ""));
+            });
+            return res.json({ checkpoints: heads });
+        } catch (error) {
+            return res.status(500).json({
+                error: redactSecrets(error.message || 'Failed to list checkpoints')
+            });
+        }
+    });
     RED.httpAdmin.get('/llm-plugin/checkpoint/:id', guard(PERM_READ), function(req, res) {
         try {
             const id = path.basename(String(req.params.id || ''));

@@ -60,8 +60,9 @@
     // reply over comms (topic "llm-plugin/agent-apply"); here we apply it to the
     // canvas with the plugin's importer — the same path as the sidebar's Agent
     // import — so changes appear live in the open editor. Bound once per session.
-    // Node interactions are NOT recorded in chat history and create no Restore
-    // Checkpoint (see the node's help).
+    // Node interactions are NOT recorded in chat history, but they DO create a
+    // Restore Checkpoint (source "node-apply", filed under no chat) so the
+    // change can be undone. See the node's help.
     (function () {
         if (typeof RED === 'undefined' || !RED.comms || typeof RED.comms.subscribe !== 'function') return;
         if (window.__llmPluginAgentApplyBound) return;
@@ -87,22 +88,41 @@
             if (ids.length === 1 && RED.workspaces && typeof RED.workspaces.show === 'function') {
                 try { RED.workspaces.show(ids[0]); } catch (e) { /* tab may be gone */ }
             }
-            P.Importer.importFlowFromMessage(payload.response, {
-                mode: 'agent',
-                // The node's selected flows are what was sent to the model, so
-                // they are also the only flows this edit may write to — the
-                // same scope the sidebar passes as the message's targetFlowIds.
-                // Without it every write fell back to "unrestricted", and an
-                // alias is unique only WITHIN a flow: `inject` on the target
-                // tab can resolve against an unrelated one and the rebuild
-                // clears its target's canvas before re-importing. An empty
-                // selection means no flow context was sent, which keeps the
-                // legacy active-tab behaviour.
-                allowedWorkspaceIds: ids
-            })
+            // A checkpoint BEFORE the import, the same as the sidebar's Import
+            // button takes. Without one this was the only way to change a flow
+            // that could not be undone — and with auto deploy the change
+            // reaches the running runtime unattended. If the save fails the
+            // import still runs; losing the undo is not a reason to drop the
+            // edit, and the notification says which happened.
+            var cpPromise = (P.ChatManager && typeof P.ChatManager.saveNodeApplyCheckpoint === 'function')
+                ? P.ChatManager.saveNodeApplyCheckpoint(
+                    { id: payload.nodeId, name: payload.nodeName }, ids)
+                : Promise.resolve(null);
+
+            cpPromise.then(function (checkpointId) {
+                return P.Importer.importFlowFromMessage(payload.response, {
+                    mode: 'agent',
+                    // The node's selected flows are what was sent to the model,
+                    // so they are also the only flows this edit may write to —
+                    // the same scope the sidebar passes as the message's
+                    // targetFlowIds, and the same scope the checkpoint above
+                    // covers, so the undo can always reach what the edit wrote.
+                    // Without it every write fell back to "unrestricted", and
+                    // an alias is unique only WITHIN a flow: `inject` on the
+                    // target tab can resolve against an unrelated one. An empty
+                    // selection means no flow context was sent, which keeps the
+                    // legacy active-tab behaviour.
+                    allowedWorkspaceIds: ids
+                })
                 .then(function (result) {
                     if (result && result.ok) {
                         var applied = 'LLM node applied changes to ' + flowNames(ids);
+                        // Say plainly whether this edit can be undone. A failed
+                        // checkpoint is not fatal, but it is the difference
+                        // between a recoverable change and a permanent one.
+                        if (!checkpointId) {
+                            applied += ' (no restore point could be saved)';
+                        }
                         if (!payload.autoDeploy) {
                             notify(applied + '. Review and Deploy.', 'success');
                         } else if (RED.actions && typeof RED.actions.invoke === 'function') {
@@ -132,6 +152,7 @@
                 .catch(function (e) {
                     notify('LLM node import error: ' + (e && e.message ? e.message : e), 'error');
                 });
+            });
         }
 
         RED.comms.subscribe('llm-plugin/agent-apply', function (topic, payload) {
@@ -187,7 +208,7 @@
         <i class="fa fa-info-circle"></i> API keys & provider URLs come from the LLM Plugin sidebar. Selected flows are sent as context. API URL: blank = auto-detect (recommended).
     </div>
     <div class="form-tips llm-request-agent-only" style="margin-top:6px;">
-        <i class="fa fa-exclamation-triangle"></i> Agent edits the open editor live (no chat history, no plugin undo). <b>Auto deploy</b> deploys immediately without confirmation — development only; keep one editor open, use the Modified Nodes/Flows deploy type. Generated flows may contain <code>function</code>/<code>exec</code> nodes, so never feed untrusted input into an Agent node.
+        <i class="fa fa-exclamation-triangle"></i> Agent edits the open editor live (no chat history; a restore point is saved before each edit). <b>Auto deploy</b> deploys immediately without confirmation — development only; keep one editor open, use the Modified Nodes/Flows deploy type. Generated flows may contain <code>function</code>/<code>exec</code> nodes, so never feed untrusted input into an Agent node.
     </div>
 </script>
 
@@ -233,7 +254,7 @@
         <li><b>Timeout</b> defaults to 3600&nbsp;seconds (local LLMs can be slow). 0 = no limit; <code>msg.timeout</code> overrides.</li>
         <li><b>Auto deploy (developer feature):</b> deploys right after applying, asynchronously and <b>without any confirmation dialog</b> (node-validation warnings are skipped). Development only. Keep one editor open (every open editor deploys) and prefer the Modified Nodes/Flows deploy type — a Full deploy restarts the flow driving this node.</li>
         <li><b>Agent runs what the model writes:</b> the reply is applied with no review step and there is no node-type restriction, so a generated flow may contain <code>function</code> nodes (arbitrary JavaScript in this process) or <code>exec</code> nodes (arbitrary shell commands). Whoever controls the model output controls this host. Use a trusted endpoint, and do <b>not</b> wire untrusted text (<code>http in</code> payloads, inbound messages, scraped content) into an Agent node — with Auto deploy that is remote input straight to code execution.</li>
-        <li><b>Agent needs an open editor</b> with the LLM Plugin loaded; the reply is applied there via comms. Not recorded in chat history and not rewindable by the plugin — use the editor's undo.</li>
+        <li><b>Agent needs an open editor</b> with the LLM Plugin loaded; the reply is applied there via comms. It is not recorded in chat history, but a Restore Checkpoint of the target flows is saved immediately before each edit, so the change can be rolled back. Those checkpoints belong to no chat (they are tagged <code>node-apply</code>) and are kept to their own limit, so a node firing on a timer cannot crowd out the sidebar's restore points. If the checkpoint cannot be saved the edit still applies and the notification says so.</li>
         <li><b>API URL</b> is the Node-RED admin API base — normally the same URL the editor is served at (standalone: <code>http://localhost:1880</code>; embedded: the <code>httpAdminRoot</code> base, e.g. <code>http://localhost:8000/red</code>). Blank = auto-detect from the running instance (recommended). Accepts a string or a flow/global context variable; <code>msg.editorUrl</code> overrides. If the configured URL fails, the node falls back to auto-detection with a warning.</li>
         <li><b>Mind the trigger rate:</b> every message costs one LLM request (and one canvas edit in Agent mode).</li>
     </ul>
