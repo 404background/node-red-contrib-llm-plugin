@@ -813,6 +813,341 @@
     }
 
     // ================================================================== //
+    //  Incremental Workspace Apply                                        //
+    // ================================================================== //
+    //
+    // `rebuildWorkspaceFromSnapshot` already produces the COMPLETE desired end
+    // state for the workspace, so applying it by clearing the tab and
+    // re-importing all of it was correct but far broader than the edit: every
+    // node in the flow was destroyed and recreated, taking the selection, the
+    // editor's own undo history, and anything missing from the snapshot with
+    // it. This applies the same end state as a diff — only what was added,
+    // removed, moved or actually changed is touched; the rest is never handed
+    // to Node-RED at all.
+    //
+    // Wires are why this is not simply "import the changed nodes". In the
+    // editor `node.wires` is NOT the source of truth: links are separate
+    // objects (`{ source, sourcePort, target }`) in their own registry, and
+    // `createExportableNodeSet` derives `wires` from them. Assigning to
+    // `node.wires` changes nothing. A changed connection therefore has to go
+    // through addLink / removeLink against the live node objects.
+    //
+    // Anything the diff cannot express safely hands back `fallback: true` and
+    // the caller runs the destructive path instead, so correctness never
+    // depends on this covering every case.
+
+    // Handled by other means, so they take no part in the property compare:
+    // `wires` becomes link surgery, `x`/`y` a move, and id/type/z identify the
+    // entity. A group's `w`/`h` are derived from its members.
+    function comparableKeys(before, after) {
+        let skip = { id: 1, type: 1, z: 1, wires: 1, x: 1, y: 1 };
+        if (after && after.type === 'group') { skip.w = 1; skip.h = 1; }
+        let keys = {};
+        Object.keys(before || {}).forEach(function(k) { if (!skip[k]) keys[k] = true; });
+        Object.keys(after || {}).forEach(function(k) { if (!skip[k]) keys[k] = true; });
+        return Object.keys(keys);
+    }
+
+    // The property keys that actually differ. Empty means Node-RED would not
+    // consider this node changed either (its own diff ignores x/y/wires too).
+    function changedPropertyKeys(before, after) {
+        return comparableKeys(before, after).filter(function(k) {
+            return JSON.stringify(before[k]) !== JSON.stringify(after[k]);
+        });
+    }
+
+    // `port::targetId` keys, so wiring is compared as a set — the order Node-RED
+    // happens to list a port's targets in is not a change.
+    function wireKeySet(node) {
+        let out = {};
+        ((node && node.wires) || []).forEach(function(port, i) {
+            (Array.isArray(port) ? port : []).forEach(function(targetId) {
+                if (typeof targetId === 'string' && targetId) out[i + '::' + targetId] = true;
+            });
+        });
+        return out;
+    }
+
+    function sameWiring(before, after) {
+        let a = wireKeySet(before), b = wireKeySet(after);
+        let ak = Object.keys(a), bk = Object.keys(b);
+        return ak.length === bk.length && ak.every(function(k) { return b[k]; });
+    }
+
+    // A live entity by id, whichever registry it lives in. Junctions are NOT
+    // in RED.nodes.node()'s lookup — they have their own — and a wire may
+    // perfectly well end at one.
+    function liveEntity(id) {
+        let n = RED.nodes.node(id);
+        if (n) return n;
+        if (typeof RED.nodes.junction === 'function') {
+            try { return RED.nodes.junction(id) || null; } catch (e) { /* ignore */ }
+        }
+        return null;
+    }
+
+    // Bring one node's outgoing links in line with its desired `wires`.
+    // removeLink matches by object identity, so the links to drop must come
+    // from getNodeLinks — a reconstructed `{source, sourcePort, target}` would
+    // silently match nothing.
+    function applyWireDiff(liveNode, desiredWires) {
+        let want = wireKeySet({ wires: desiredWires });
+        let existing = [];
+        if (typeof RED.nodes.getNodeLinks === 'function') {
+            existing = RED.nodes.getNodeLinks(liveNode.id, 0) || [];
+        }
+        existing.forEach(function(l) {
+            if (!l || !l.target) return;
+            let key = (l.sourcePort || 0) + '::' + l.target.id;
+            if (want[key]) { delete want[key]; return; } // already correct - leave it
+            RED.nodes.removeLink(l);
+        });
+        Object.keys(want).forEach(function(key) {
+            let sep = key.indexOf('::');
+            let port = parseInt(key.substring(0, sep), 10);
+            let target = liveEntity(key.substring(sep + 2));
+            // A dangling target is not an error here: rebuildWorkspaceFromSnapshot
+            // already pruned wires to deleted nodes, and a wire leaving the
+            // workspace is not this applier's to make.
+            if (!target) return;
+            RED.nodes.addLink({ source: liveNode, sourcePort: port, target: target });
+        });
+    }
+
+    // Write changed properties onto the live node the way the edit dialog
+    // does. Repointing a config reference has to be de-registered against the
+    // OLD value first, or the config node's `users` list keeps a node that no
+    // longer uses it (and its "N nodes use this" count drifts forever).
+    function applyPropertyUpdate(liveNode, after, changedKeys) {
+        let tracksConfig = typeof RED.nodes.updateConfigNodeUsers === 'function';
+        if (tracksConfig) {
+            try { RED.nodes.updateConfigNodeUsers(liveNode, { action: 'remove' }); } catch (e) { /* ignore */ }
+        }
+        changedKeys.forEach(function(key) {
+            if (Object.prototype.hasOwnProperty.call(after, key)) {
+                liveNode[key] = after[key];
+            } else {
+                // The key is gone, not blanked — `d: false` is written by
+                // dropping `d`, and an assignment of undefined would export
+                // as a key the runtime then sees as a change.
+                try { delete liveNode[key]; } catch (e) { liveNode[key] = undefined; }
+            }
+        });
+        if (tracksConfig) {
+            try { RED.nodes.updateConfigNodeUsers(liveNode, { action: 'add' }); } catch (e) { /* ignore */ }
+        }
+        liveNode.changed = true;
+        liveNode.dirty = true;
+    }
+
+    function applyMove(liveNode, after) {
+        if (typeof after.x === 'number') liveNode.x = after.x;
+        if (typeof after.y === 'number') liveNode.y = after.y;
+        liveNode.moved = true;
+        liveNode.dirty = true;
+    }
+
+    // Clear the tab and re-import an export of it. Only the rollback path uses
+    // this now — the destructive rebuild it mirrors is what the diff exists to
+    // avoid, but on a half-applied failure it is the only way back to a known
+    // state.
+    function restoreWorkspaceFromExport(exportedFlow, wsId) {
+        let ents = collectWorkspaceEntities(wsId);
+        ents.nodes.forEach(function(n) { try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ } });
+        (ents.junctions || []).forEach(function(j) { try { RED.nodes.removeJunction(j); } catch (e) { /* ignore */ } });
+        (ents.groups || []).forEach(function(g) { try { RED.nodes.removeGroup(g); } catch (e) { /* ignore */ } });
+        try { RED.view.redraw(true, true); } catch (e) { /* ignore */ }
+        let restore = (exportedFlow || []).filter(function(n) {
+            return n && n.type !== 'tab' && n.z === wsId;
+        });
+        if (restore.length > 0) {
+            RED.nodes.import(restore, { generateIds: false, reimport: true, addFlow: false });
+        }
+        try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
+        refreshCanvasView([wsId]);
+    }
+
+    // Split the desired end state into the entities that belong on this
+    // canvas and the config nodes that ride along with it.
+    function partitionDesired(desired, wsId) {
+        let canvas = [];
+        let configs = [];
+        (desired || []).forEach(function(n) {
+            if (!n || !n.type || n.type === 'tab') return;
+            let copy = JSON.parse(JSON.stringify(n));
+            if (isCanvasNode(copy)) copy.z = wsId;
+            // `z` rather than isCanvasNode: a subflow INSTANCE sits on the
+            // canvas but is not a canvas node by that test, and treating it as
+            // a config node would leave it out of the diff entirely.
+            if (copy.z === wsId) canvas.push(copy);
+            else configs.push(copy);
+        });
+        return { canvas: canvas, configs: configs };
+    }
+
+    // Update existing config nodes in place; hand back the ones that are new
+    // so they can be imported with the rest.
+    function applyConfigNodeUpdates(configs) {
+        let toImport = [];
+        (configs || []).forEach(function(nn) {
+            let existing = RED.nodes.node(nn.id);
+            if (!existing) { toImport.push(nn); return; }
+            // Auto-created stubs carry no real properties - writing them would
+            // wipe the settings of the config node they stand in for.
+            if (nn._autoStub) return;
+            let changed = false;
+            Object.keys(nn).forEach(function(key) {
+                if (key === 'id' || key === 'type') return;
+                if (JSON.stringify(existing[key]) === JSON.stringify(nn[key])) return;
+                existing[key] = nn[key];
+                changed = true;
+            });
+            if (changed) { existing.dirty = true; existing.changed = true; }
+        });
+        return toImport;
+    }
+
+    // The end state, applied as a diff. Returns { ok } on success,
+    // { ok: false, fallback: true } when the caller should use the
+    // destructive path instead, or { ok: false, error } on a real failure
+    // (the workspace is rolled back first).
+    function applyWorkspaceDiff(desired, targetWorkspaceId) {
+        let wsId = (targetWorkspaceId && typeof targetWorkspaceId === 'string')
+            ? targetWorkspaceId
+            : getActiveWorkspaceId();
+        if (!wsId) return { ok: false, error: 'Active workspace not found' };
+
+        let ents = collectWorkspaceEntities(wsId);
+        let liveEntities = ents.nodes.concat(ents.junctions || [], ents.groups || []);
+
+        // One export serves as BOTH the comparison baseline and the rollback
+        // snapshot, so the two can never disagree about what "before" was.
+        let beforeExport;
+        try {
+            beforeExport = exportEntities(liveEntities);
+        } catch (e) {
+            return { ok: false, fallback: true, error: 'could not snapshot the workspace' };
+        }
+
+        let beforeById = {};
+        beforeExport.forEach(function(n) { if (n && n.id) beforeById[n.id] = n; });
+
+        let liveById = {};
+        let liveKind = {};
+        ents.nodes.forEach(function(n) { if (n && n.id) { liveById[n.id] = n; liveKind[n.id] = 'node'; } });
+        (ents.junctions || []).forEach(function(j) { if (j && j.id) { liveById[j.id] = j; liveKind[j.id] = 'junction'; } });
+        (ents.groups || []).forEach(function(g) { if (g && g.id) { liveById[g.id] = g; liveKind[g.id] = 'group'; } });
+
+        // An entity that does not round-trip through an export cannot be
+        // compared. Guessing is how a rebuild loses things.
+        let unexportable = Object.keys(liveById).some(function(id) { return !beforeById[id]; });
+        if (unexportable) {
+            return { ok: false, fallback: true, error: 'workspace holds entities that do not export' };
+        }
+
+        let split = partitionDesired(desired, wsId);
+        let afterById = {};
+        split.canvas.forEach(function(n) { if (n && n.id) afterById[n.id] = n; });
+
+        // --- Classify -------------------------------------------------- //
+        let removed = [];   // live ids no longer wanted
+        let added = [];     // desired entities with no live counterpart
+        let updates = [];   // { id, keys } - a real property change
+        let moves = [];     // ids whose x/y moved
+        let rewires = [];   // ids whose outgoing links changed
+
+        Object.keys(liveById).forEach(function(id) {
+            if (!afterById[id]) removed.push(id);
+        });
+        split.canvas.forEach(function(n) {
+            if (!liveById[n.id]) { added.push(n); return; }
+            let before = beforeById[n.id];
+            let keys = changedPropertyKeys(before, n);
+            if (keys.length > 0) updates.push({ id: n.id, keys: keys });
+            // A group's position follows its members; assigning to it would
+            // fight the bounds the editor derives on redraw.
+            if (n.type !== 'group' && (before.x !== n.x || before.y !== n.y)) moves.push(n.id);
+            if (!sameWiring(before, n)) rewires.push(n.id);
+        });
+
+        // --- Refuse what the diff cannot express ----------------------- //
+        // Groups own their members as live OBJECTS and a node's `g` is only
+        // half of that relationship, so any change to either has to go through
+        // RED.group's own add/remove. None of this is reachable from the
+        // schema (it has no notion of groups), so falling back costs nothing
+        // and keeps the group bookkeeping in one place.
+        let bail = null;
+        updates.forEach(function(u) {
+            let before = beforeById[u.id], after = afterById[u.id];
+            if (before.type !== after.type) bail = bail || 'a node changed type';
+            if (liveKind[u.id] === 'group') bail = bail || 'a group changed';
+            if (u.keys.indexOf('g') !== -1) bail = bail || 'group membership changed';
+        });
+        removed.forEach(function(id) {
+            if (liveKind[id] === 'group') bail = bail || 'a group was removed';
+            else if (beforeById[id] && beforeById[id].g) bail = bail || 'a grouped node was removed';
+        });
+        added.forEach(function(n) {
+            if (n.type === 'group') bail = bail || 'a group was added';
+            else if (n.g) bail = bail || 'a node was added into a group';
+        });
+        if (bail) return { ok: false, fallback: true, error: bail };
+
+        let touched = removed.length + added.length + updates.length +
+                      moves.length + rewires.length;
+
+        // --- Apply ----------------------------------------------------- //
+        try {
+            removed.forEach(function(id) {
+                let obj = liveById[id];
+                if (liveKind[id] === 'junction') RED.nodes.removeJunction(obj);
+                else if (liveKind[id] === 'group') RED.nodes.removeGroup(obj);
+                else RED.nodes.remove(id);   // takes its links with it
+            });
+
+            updates.forEach(function(u) {
+                applyPropertyUpdate(liveById[u.id], afterById[u.id], u.keys);
+            });
+            moves.forEach(function(id) { applyMove(liveById[id], afterById[id]); });
+
+            // Added nodes go in BEFORE the wire pass: a new link needs both
+            // ends to exist. Their own `wires` are turned into links by the
+            // import; wires pointing AT them from untouched nodes are not, and
+            // that is what the rewire pass below is for.
+            let configImports = applyConfigNodeUpdates(split.configs);
+            let importSet = added.concat(configImports);
+            if (importSet.length > 0) {
+                // Bypass RED.history - rewind via the plugin's checkpoints.
+                RED.nodes.import(importSet, { generateIds: false, reimport: true, addFlow: false });
+            }
+
+            rewires.forEach(function(id) {
+                let live = liveById[id] || liveEntity(id);
+                if (live) applyWireDiff(live, afterById[id].wires);
+            });
+
+            try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
+            refreshCanvasView([wsId]);
+            return {
+                ok: true,
+                touched: touched,
+                added: added.length,
+                removed: removed.length,
+                updated: updates.length,
+                rewired: rewires.length,
+                moved: moves.length
+            };
+        } catch (e) {
+            postTerminalLog('error', 'incremental-apply-error',
+                'Incremental apply threw; rolling the workspace back', {
+                    error: e && e.message ? e.message : String(e)
+                });
+            try { restoreWorkspaceFromExport(beforeExport, wsId); } catch (e2) { /* ignore */ }
+            return { ok: false, error: 'Failed to apply flow changes: ' + (e.message || e) };
+        }
+    }
+
+    // ================================================================== //
     //  Multi-flow Dispatch Helpers                                        //
     // ================================================================== //
 
@@ -1487,7 +1822,18 @@
             }
 
             let rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives);
-            let rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
+            // Apply the end state as a diff, touching only what the edit
+            // actually changes. `fallback` means the diff found something it
+            // cannot express (group membership, a type change) — the
+            // destructive rebuild still applies the same end state, just
+            // wholesale, so it stays as the backstop rather than as the norm.
+            let rebuiltResult = applyWorkspaceDiff(rebuiltFlow, currentWorkspace);
+            if (rebuiltResult && rebuiltResult.fallback) {
+                postTerminalLog('warn', 'incremental-apply-fallback',
+                    'Incremental apply declined; rebuilding the workspace instead',
+                    { workspace: currentWorkspace, reason: rebuiltResult.error || null });
+                rebuiltResult = replaceWorkspaceFlow(rebuiltFlow, currentWorkspace);
+            }
             if (!rebuiltResult || !rebuiltResult.ok) {
                 let errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
                 notify('Import failed: ' + errMsg, 'error');

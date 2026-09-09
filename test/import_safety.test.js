@@ -8,63 +8,16 @@
 //     path deleted exactly what the import was not allowed to touch.
 // (C) Config nodes reach the flow context by reference, followed transitively
 //     and through array properties.
-const { ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
-// Mocked editor registries: filterNodes returns ONLY regular canvas nodes;
-// junctions, groups and config nodes each live in their own lookup, exactly
-// as in the real editor.
-function buildRED(opts) {
-  const tabs = opts.tabs || [];
-  const regularById = {};
-  (opts.nodes || []).forEach((n) => { regularById[n.id] = n; });
-  const configById = {};
-  (opts.configs || []).forEach((c) => { configById[c.id] = c; });
-  const junctions = opts.junctions || [];
-  const groups = opts.groups || [];
-  const captured = { imports: [], removed: [], removedJunctions: [], removedGroups: [] };
-  let importCalls = 0;
-
-  const RED = {
-    notify: function () {},
-    nodes: {
-      filterNodes: (f) => Object.values(regularById).filter((n) => n.z === f.z),
-      junctions: (z) => junctions.filter((j) => j.z === z),
-      groups: (z) => groups.filter((g) => g.z === z),
-      workspace: (id) => tabs.find((t) => t.id === id) || null,
-      eachWorkspace: (cb) => tabs.forEach(cb),
-      eachNode: (cb) => Object.values(regularById).forEach(cb),
-      eachConfig: (cb) => Object.values(configById).forEach(cb),
-      node: (id) => regularById[id] || configById[id] || null,
-      getType: () => undefined,
-      createExportableNodeSet: (set) => set.filter(Boolean).map(clone),
-      import: function (nodes) {
-        importCalls++;
-        // `failFirstImport` reproduces a mid-import failure (a malformed
-        // node, a registry that rejects the set) so the rollback runs.
-        if (opts.failFirstImport && importCalls === 1) {
-          throw new Error('simulated import failure');
-        }
-        captured.imports.push(clone(nodes));
-        clone(nodes).forEach((n) => { if (n && n.id) regularById[n.id] = n; });
-        return { nodes: nodes };
-      },
-      remove: function (id) { captured.removed.push(id); delete regularById[id]; },
-      removeJunction: function (j) { captured.removedJunctions.push(j.id); },
-      removeGroup: function (g) { captured.removedGroups.push(g.id); },
-      dirty: () => {},
-    },
-    view: { redraw: () => {} },
-    actions: { invoke: () => {} },
-    workspaces: { active: () => opts.activeId, refresh: () => {}, show: () => {} },
-  };
-  return { RED, captured };
-}
-
-// Fresh sandbox + module load per scenario (modules hold singletons).
+// The shared editor mock models links as their own registry, which is what
+// lets these scenarios read the flow as it NOW STANDS (`idsIn` / `snapshot`)
+// rather than the payload handed to import(). Under an incremental apply most
+// of an edit never goes through import() at all.
 function loadSandbox(opts) {
-  const { RED, captured } = buildRED(opts);
-  const LLMPlugin = loadPluginSandbox(RED);
-  return { RED, captured, LLMPlugin };
+  const mock = buildEditorMock(opts);
+  const LLMPlugin = loadPluginSandbox(mock.RED);
+  return { RED: mock.RED, captured: mock.captured, snapshot: mock.snapshot, idsIn: mock.idsIn, LLMPlugin };
 }
 
 
@@ -97,13 +50,12 @@ async function scenarioDeleteReachesItsOwnFlow() {
     remove: ['debug_beta_log'],
   });
 
-  const { LLMPlugin, captured } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tabA' });
+  const { LLMPlugin, idsIn } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tabA' });
   const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
     mode: 'agent',
     allowedWorkspaceIds: ['tabA', 'tabB'],
   });
-  const imported = [].concat(...captured.imports);
-  const survivingIds = imported.map((n) => n.id);
+  const survivingIds = idsIn('tabA').concat(idsIn('tabB'));
 
   ok(res && res.ok, 'import returned ok');
   ok(res && res.multiFlow, 'the edit fanned out across both flows');
@@ -129,12 +81,12 @@ async function scenarioNullAliasDeleteIsRoutedToo() {
     },
   });
 
-  const { LLMPlugin, captured } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tabB' });
+  const { LLMPlugin, idsIn } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tabB' });
   const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
     mode: 'agent',
     allowedWorkspaceIds: ['tabA', 'tabB'],
   });
-  const survivingIds = [].concat(...captured.imports).map((n) => n.id);
+  const survivingIds = idsIn('tabA').concat(idsIn('tabB'));
 
   ok(res && res.ok, 'import returned ok');
   ok(survivingIds.indexOf('a2') === -1, "Alpha's debug node was deleted as asked");
@@ -160,12 +112,12 @@ async function scenarioAmbiguousDeleteIsRefused() {
     remove: ['debug'],
   });
 
-  const { LLMPlugin, captured } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tabA' });
+  const { LLMPlugin, idsIn } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tabA' });
   const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
     mode: 'agent',
     allowedWorkspaceIds: ['tabA', 'tabB'],
   });
-  const survivingIds = [].concat(...captured.imports).map((n) => n.id);
+  const survivingIds = idsIn('tabA').concat(idsIn('tabB'));
 
   ok(res && res.ok, 'import returned ok');
   ok(survivingIds.indexOf('a2') !== -1 && survivingIds.indexOf('b2') !== -1,
@@ -185,7 +137,7 @@ async function scenarioRollbackRestoresCanvasExtras() {
   const junctions = [{ id: 'j1', type: 'junction', z: 'tab1', x: 250, y: 100, wires: [[]] }];
   const groups = [{ id: 'g1', type: 'group', z: 'tab1', name: 'Box', style: {}, nodes: ['n1', 'n2'] }];
 
-  const { LLMPlugin, captured } = loadSandbox({
+  const { LLMPlugin, snapshot } = loadSandbox({
     tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }],
     nodes: clone(nodes),
     junctions: clone(junctions),
@@ -197,24 +149,30 @@ async function scenarioRollbackRestoresCanvasExtras() {
     nodes: { function_x: { type: 'function', props: { func: 'return msg;' } } },
     connections: [{ from: 'inject_tick', to: 'function_x' }],
   });
+
+  // Compared as the FLOW, before and after — not as the payload of whichever
+  // call happened to run. The guarantee is "a failed import leaves the canvas
+  // as it was", and that has to hold whether the apply was incremental or a
+  // wholesale rebuild.
+  const before = snapshot('tab1');
   const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
     mode: 'agent',
     allowedWorkspaceIds: ['tab1'],
   });
+  const after = snapshot('tab1');
+  const byId = (list) => { const m = {}; list.forEach((n) => { m[n.id] = n; }); return m; };
+  const b = byId(before), a = byId(after);
 
   ok(res && res.ok === false, 'the import reports failure rather than partial success');
-  ok(captured.removedJunctions.indexOf('j1') !== -1 && captured.removedGroups.indexOf('g1') !== -1,
-    'the junction and group really were cleared (so the rollback has work to do)');
-  const rollback = captured.imports[0] || [];
-  const rolledBackIds = rollback.map((n) => n.id);
-  ok(rolledBackIds.indexOf('j1') !== -1, 'the junction is restored by the rollback');
-  ok(rolledBackIds.indexOf('g1') !== -1, 'the group is restored by the rollback');
-  ok(rolledBackIds.indexOf('n1') !== -1 && rolledBackIds.indexOf('n2') !== -1,
-    'the regular nodes are restored too');
-  const restoredGroup = rollback.find((n) => n.id === 'g1');
-  ok(!!restoredGroup && Array.isArray(restoredGroup.nodes) &&
-     restoredGroup.nodes.every((m) => typeof m === 'string'),
-    'the restored group keeps its export shape (member ids, not node objects)');
+  ok(!!a.j1, 'the junction is still there');
+  ok(!!a.g1, 'the group is still there');
+  ok(!!a.n1 && !!a.n2, 'the regular nodes are still there');
+  ok(Object.keys(a).length === Object.keys(b).length,
+    'nothing was added either (' + Object.keys(a).sort().join(',') + ')');
+  ok(JSON.stringify(a.n1) === JSON.stringify(b.n1) && JSON.stringify(a.n2) === JSON.stringify(b.n2),
+    'the surviving nodes are byte-identical, wires included');
+  ok(!!a.g1 && Array.isArray(a.g1.nodes) && a.g1.nodes.every((m) => typeof m === 'string'),
+    'the group keeps its export shape (member ids, not node objects)');
 }
 
 // ------------------------------------------------------------------ //

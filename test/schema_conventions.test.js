@@ -12,7 +12,7 @@
 //     `d`, and the merge must not restore the node's previous `d: true`.
 //     docs/{en,jp}/vibe-schema.md "Editor flags".
 
-const { ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 const Cfg = require('../src/core/flow_converter_core.js');
 
 function metaKeysOf(obj) {
@@ -171,45 +171,18 @@ function inboundMapsFlagsBack() {
 //  (C) End-to-end: disable / re-enable / edit through the importer    //
 // ------------------------------------------------------------------ //
 
-function buildRED(nodesArr) {
-  const regularById = {};
-  nodesArr.forEach((n) => { regularById[n.id] = n; });
-  const TAB = { id: 'tab1', type: 'tab', label: 'Flow 1' };
-  const captured = { import: null };
-  const RED = {
-    notify: function () {},
-    nodes: {
-      filterNodes: function (filter) {
-        return Object.values(regularById).filter((n) => n.z === filter.z);
-      },
-      junctions: function () { return []; },
-      groups: function () { return []; },
-      workspace: function (id) { return id === 'tab1' ? TAB : null; },
-      eachWorkspace: function (cb) { cb(TAB); },
-      eachNode: function (cb) { Object.values(regularById).forEach(cb); },
-      eachConfig: function () {},
-      node: function (id) { return regularById[id] || null; },
-      getType: function () { return undefined; },
-      createExportableNodeSet: function (set) { return set.filter(Boolean).map(clone); },
-      import: function (nodes) { captured.import = clone(nodes); return { nodes: nodes }; },
-      remove: function (id) { delete regularById[id]; },
-      removeJunction: function () {},
-      removeGroup: function () {},
-      dirty: function () {},
-    },
-    view: { redraw: function () {} },
-    actions: { invoke: function () {} },
-    workspaces: { active: function () { return 'tab1'; }, refresh: function () {}, show: function () {} },
-  };
-  return { RED, captured };
-}
-
+// `imported` is the flow as it now stands. Under an incremental apply a
+// property edit is written straight onto the live node and never reaches
+// import(), so reading that payload would see nothing at all.
 async function runImport(nodesArr, message) {
-  const { RED, captured } = buildRED(nodesArr);
-  const LLMPlugin = loadPluginSandbox(RED);
-  const Importer = LLMPlugin.Importer;
-  const res = await Importer.importFlowFromMessage(message, { mode: 'agent' });
-  return { res, imported: captured.import || [] };
+  const mock = buildEditorMock({
+    tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }],
+    nodes: nodesArr,
+    activeId: 'tab1',
+  });
+  const LLMPlugin = loadPluginSandbox(mock.RED);
+  const res = await LLMPlugin.Importer.importFlowFromMessage(message, { mode: 'agent' });
+  return { res, imported: mock.snapshot('tab1'), captured: mock.captured };
 }
 
 

@@ -19,7 +19,10 @@ Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/generate  ──►  
         ├── extractFlowNodes  (LLMJsonParser → Vibe Schema → FlowConverterCore.toNodeRed)
         ├── rebuildWorkspaceFromSnapshot (additive wires + property preservation
         │                                 + CanvasLayout positions x / y)
-        └── replaceWorkspaceFlow → RED.nodes.import (canvas already laid out)
+        └── applyWorkspaceDiff → remove / update-in-place / addLink-removeLink
+                               → RED.nodes.import for the ADDED nodes only
+                               (falls back to replaceWorkspaceFlow = clear +
+                                re-import, when the diff cannot express it)
 ```
 
 Three independent core modules under `src/core/` form the conversion +
@@ -189,12 +192,13 @@ Full import workflow with these guarantees:
    flows. `resolveFlowLabelToWorkspace`, `inferImplicitFlowTagging` and
    `dispatchMultiFlowImport` all skip out-of-scope tabs, the default
    target falls back to a context flow when the active tab is not one,
-   and a final check before `replaceWorkspaceFlow` aborts the import
+   and a final check before the apply aborts the import
    rather than writing outside the scope. This is a correctness
    requirement, not a nicety: auto-generated aliases (`inject`,
-   `debug_1`, …) are unique only *within* a flow, and the rebuild clears
-   its target's canvas before re-importing — so an unscoped resolution
-   can destructively rewrite a flow the conversation never saw. An empty
+   `debug_1`, …) are unique only *within* a flow, and an apply deletes
+   what the merged end state does not contain — so an unscoped
+   resolution can destructively rewrite a flow the conversation never
+   saw. An empty
    / absent scope means "no flow context was selected" and keeps the
    legacy active-tab behaviour. Regression test:
    `test/cross_flow_isolation.test.js`.
@@ -256,21 +260,31 @@ Full import workflow with these guarantees:
    order". See [layout.md](./layout.md#comment-placement).
 8. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
-9. **Junction / group preservation** — the rebuild snapshot includes the
-   workspace's junctions and groups (`includeCanvasExtras`), so the
-   remove-then-reimport cycle never deletes them and wires that target a
-   junction are not pruned. See [design.md](./design.md#7-snapshot-completeness--junction--group).
-10. **Reposition without ID churn** — a top-level `reposition: [alias…]`
+9. **Junction / group preservation** — the snapshot includes the
+   workspace's junctions and groups (`includeCanvasExtras`), so they are
+   never deleted and wires that target a junction are not pruned. An
+   incremental apply leaves an unmentioned junction or group alone
+   outright; the fallback rebuild still needs them in the snapshot. See
+   [design.md](./design.md#7-snapshot-completeness--junction--group).
+10. **Incremental apply** — the merged end state is applied as a DIFF:
+   only added / removed / changed entities are touched, wiring changes go
+   through `RED.nodes.addLink` / `removeLink` (the editor's links are
+   objects in their own registry, and `wires` is derived from them), and
+   untouched nodes are never handed to Node-RED at all. Falls back to the
+   destructive rebuild for group membership and type changes. See
+   [design.md](./design.md#12-applying-as-a-diff-not-a-rebuild).
+11. **Reposition without ID churn** — a top-level `reposition: [alias…]`
    directive (see [vibe-schema.md](./vibe-schema.md#reposition-directive))
    reflows just the named canvas-node subset while keeping IDs, props,
    and wires. The subset is anchored to its previous top-left so the
    rest of the canvas doesn't visibly shift.
-11. **Metadata sweep** — every `_`-prefixed property the converter added
+12. **Metadata sweep** — every `_`-prefixed property the converter added
    is stripped before the nodes reach the canvas: once right after the
    merge (keeping only `_llmOrder` / `_llmAboveId`, which the layout
    passes still consume) and once after layout. Nothing metadata-shaped
    is ever imported. See [design.md](./design.md) §0.1.
-12. Replace the target workspace atomically; layout is delegated to
+13. Apply the end state to the target workspace as a diff (with the
+   destructive rebuild as the fallback); layout is delegated to
    `CanvasLayout`.
 
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and

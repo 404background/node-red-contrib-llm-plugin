@@ -940,7 +940,15 @@
         let hasConnectionsArr = Array.isArray(obj.connections);
         if (hasNodesObj || hasConnectionsArr) return true;
         let repo = obj.reposition || obj.relayout || obj.reflow;
-        return Array.isArray(repo);
+        if (Array.isArray(repo)) return true;
+        // A deletion-only reply. The prompt asks for the `nodes: {alias: null}`
+        // form, which always carries `nodes` — but the directive extractor also
+        // accepts a top-level remove array, and a model that uses it for a pure
+        // "delete this node" edit emits a schema with no other key. Without this
+        // that tolerance is unreachable and the edit is rejected outright as
+        // "No JSON flow found in message".
+        let removals = obj.remove || obj.delete || obj.removeNodes || obj.deleted;
+        return Array.isArray(removals);
     }
 
     // ------------------------------------------------------------------ //

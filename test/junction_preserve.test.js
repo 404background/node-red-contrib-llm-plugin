@@ -4,54 +4,25 @@
 //       asks (a `remove` directive) — omitting wires means "keep them".
 // Loads the real client modules in a mocked RED/browser sandbox and drives
 // Importer.importFlowFromMessage end to end.
-const { ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
-// Build a mocked RED whose registries mirror the real editor: filterNodes
-// returns ONLY regular nodes; junctions/groups live in separate lookups.
-function buildRED(nodesArr, junctionsArr, groupsArr) {
-  const regularById = {};
-  nodesArr.forEach((n) => { regularById[n.id] = n; });
-  const juncById = {};
-  (junctionsArr || []).forEach((j) => { juncById[j.id] = j; });
-  const TAB = { id: 'tab1', type: 'tab', label: 'Flow 1' };
-  const captured = { import: null, removed: [], removedJunctions: [], removedGroups: [] };
-
-  const RED = {
-    notify: function () {},
-    nodes: {
-      filterNodes: function (filter) {
-        return Object.values(regularById).filter((n) => n.z === filter.z);
-      },
-      junctions: function (z) { return (junctionsArr || []).filter((j) => j.z === z); },
-      groups: function (z) { return (groupsArr || []).filter((g) => g.z === z); },
-      workspace: function (id) { return id === 'tab1' ? TAB : null; },
-      eachWorkspace: function (cb) { cb(TAB); },
-      eachNode: function (cb) { Object.values(regularById).forEach(cb); },
-      eachConfig: function (cb) {},
-      node: function (id) { return regularById[id] || juncById[id] || null; },
-      getType: function () { return undefined; },
-      createExportableNodeSet: function (set) { return set.filter(Boolean).map(clone); },
-      import: function (nodes) { captured.import = clone(nodes); return { nodes: nodes }; },
-      remove: function (id) { captured.removed.push(id); delete regularById[id]; },
-      removeJunction: function (j) { captured.removedJunctions.push(j.id); },
-      removeGroup: function (g) { captured.removedGroups.push(g.id); },
-      dirty: function () {},
-    },
-    view: { redraw: function () {} },
-    actions: { invoke: function () {} },
-    workspaces: { active: function () { return 'tab1'; }, refresh: function () {}, show: function () {} },
-  };
-  return { RED, captured };
-}
-
-// Fresh sandbox + module load per scenario (modules hold singletons).
+// `byId` / `imported` read the flow AS IT NOW STANDS, not import()'s payload:
+// the apply is a diff, so an untouched junction or an unmentioned wire is
+// never handed to import() at all — which is exactly the guarantee here.
 async function runImport(nodesArr, junctionsArr, groupsArr, message) {
-  const { RED, captured } = buildRED(nodesArr, junctionsArr, groupsArr);
-  const Importer = loadPluginSandbox(RED).Importer;
+  const mock = buildEditorMock({
+    tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }],
+    nodes: nodesArr,
+    junctions: junctionsArr || [],
+    groups: groupsArr || [],
+    activeId: 'tab1',
+  });
+  const Importer = loadPluginSandbox(mock.RED).Importer;
   const res = await Importer.importFlowFromMessage(message, { mode: 'agent' });
+  const flow = mock.snapshot('tab1');
   const byId = {};
-  (captured.import || []).forEach((n) => { byId[n.id] = n; });
-  return { res, imported: captured.import || [], byId, captured };
+  flow.forEach((n) => { byId[n.id] = n; });
+  return { res, imported: flow, byId, captured: mock.captured };
 }
 
 

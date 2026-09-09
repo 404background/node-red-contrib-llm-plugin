@@ -24,7 +24,7 @@ decisions and priorities**.
 | **Applying is always a "merge"** | The LLM does not return the whole flow every time (partial edits are the norm). Fixing the rule to "only add/update what is listed, delete what maps to `null`, leave the unmentioned as-is" keeps an incomplete LLM response from breaking the existing flow. There is no branch that lets the model choose how to apply — a misfire there falls on the side of destroying the existing flow. |
 | **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser (both sidebar and Agent node). |
 | **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
-| **The snapshot must be the "complete flow"** | Applying is a "clear the target workspace and rebuild it" approach, so any canvas entity not in the snapshot disappears. → junctions / groups must be included (§7). |
+| **The snapshot must be the "complete flow"** | The snapshot is both the merge base and the rollback state, and the fallback apply still clears the target workspace, so any canvas entity missing from it can still disappear. → junctions / groups must be included (§7). |
 
 ### 0.1 The metadata boundary (`_`-prefixed properties)
 
@@ -72,7 +72,9 @@ Importer.importFlowFromMessage(response, {mode})   ← the heart of applying
    ├─ 2) Parse the response (extractFlowNodes / connectionHints / flowDirectives)
    ├─ 3) Take the snapshot (safeGetCurrentFlow, includeCanvasExtras)
    ├─ 4) rebuildWorkspaceFromSnapshot (3 phases: delete → add → connect, §3)
-   └─ 5) replaceWorkspaceFlow (clear the target workspace and import, §7)
+   └─ 5) applyWorkspaceDiff (apply the end state as a diff, §12)
+        └─ falls back to replaceWorkspaceFlow (clear + re-import) only when
+           the diff cannot express the change (§12)
 ```
 
 The Agent node (`node/llm-request`) also publishes the response to the editor via
@@ -159,10 +161,10 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
 
 Inference, label resolution, and dispatch all scan **only the flows sent to the LLM as context** (`options.allowedWorkspaceIds` ← the message's `targetFlowIds`). Never every workspace.
 
-- **Reason**: auto-generated aliases (`inject`, `debug_1`, `function_2`, …) are unique only *within* a flow and collide freely across tabs. The alias→tab map is first-wins, so a global scan lets an unrelated flow that merely sits earlier in the tab bar claim `inject` and take the whole edit with it. And `replaceWorkspaceFlow` **clears** its target's canvas before re-importing, so a misroute is destructive rather than additive. The checkpoint only covers the context flows, so Restore cannot undo it either.
+- **Reason**: auto-generated aliases (`inject`, `debug_1`, `function_2`, …) are unique only *within* a flow and collide freely across tabs. The alias→tab map is first-wins, so a global scan lets an unrelated flow that merely sits earlier in the tab bar claim `inject` and take the whole edit with it. And an apply **deletes** whatever the merged end state does not contain (and the fallback path clears the target's canvas outright), so a misroute is destructive rather than additive. The checkpoint only covers the context flows, so Restore cannot undo it either.
 - Scoping makes "flows written ⊆ flows checkpointed" hold, which is what keeps Restore meaningful.
 - When the active tab is out of scope (the user switched tabs after Send), the target is a context flow, not the active tab. Only an empty scope (no flow selected) keeps the legacy active-tab behaviour.
-- A final check right before `replaceWorkspaceFlow` **aborts** the import if the target escaped the scope.
+- A final check right before the apply **aborts** the import if the target escaped the scope.
 - Regression test: `test/cross_flow_isolation.test.js` (alias collision / tab switch / fan-out / out-of-scope `flow` tag / unscoped backwards compatibility).
 
 ---
@@ -171,7 +173,7 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 
 ### Premises (Node-RED editor internals)
 - `RED.nodes.filterNodes({z})` **returns regular nodes only**. In the editor, junctions live in `junctionsByZ` and groups in `groupsByZ`, **separate registries**, reachable only via `RED.nodes.junctions(z)` / `RED.nodes.groups(z)` (verified in the Node-RED 4.1.7 editor-client).
-- `replaceWorkspaceFlow` (apply) and `restoreMultiFlowCheckpoint` (restore) **remove all** junctions / groups of the target workspace before re-importing, so anything missing from the snapshot is gone. On top of that, Phase 3's wire prune drops wires "targeting an ID not in rebuilt", so a missing junction also gets its `node→junction` wires cut as dangling.
+- `restoreMultiFlowCheckpoint` (restore), and `replaceWorkspaceFlow` when the diff falls back to it, **remove all** junctions / groups of the target workspace before re-importing, so anything missing from the snapshot is gone. On top of that, Phase 3's wire prune drops wires "targeting an ID not in rebuilt", so a missing junction also gets its `node→junction` wires cut as dangling.
 
 ### Design (opt-in inclusion)
 - Added **`opts.includeCanvasExtras`** to `getFlowsByIds(flowIds, opts)` / `getCurrentFlow(flowIds, opts)`. Only when enabled, junctions / groups are included in the snapshot (`createExportableNodeSet` emits junctions correctly, with their wires).
@@ -188,7 +190,7 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 - Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive.
 
 ### The rollback snapshot is subject to the same rule
-- `replaceWorkspaceFlow` takes its own backup before clearing the workspace, so a failing `RED.nodes.import` can put the flow back. That backup used to hold **regular nodes only** — so the error path, the one case that is supposed to change nothing, deleted the workspace's junctions and groups for good.
+- Both appliers take their own backup before touching the workspace, so a failing `RED.nodes.import` can put the flow back. That backup used to hold **regular nodes only** — so the error path, the one case that is supposed to change nothing, deleted the workspace's junctions and groups for good.
 - The backup now covers junctions and groups too, and is produced with `createExportableNodeSet` rather than a plain JSON clone: a *live* group's `nodes` array holds node **objects**, which a naive clone would serialise into the backup where the import format expects ids.
 - Regression test: `test/import_safety.test.js` scenario B.
 
@@ -238,3 +240,85 @@ exact ID → exact alias → normalized alias → node name
    → loose alias → fuzzy approximate (minLen default 8, only when unique)
 ```
 - `exactOnly` is used in node matching (§4.3) and hint/directive pre-resolution to prevent a weak match from stealing another node's ID.
+
+---
+
+## 12. Applying as a diff, not a rebuild
+
+### The problem with rebuilding
+`rebuildWorkspaceFromSnapshot` produces the **complete desired end state** for the
+workspace, and the original applier realised it the blunt way: remove every node,
+junction and group in the tab, then `RED.nodes.import` the whole merged set back with
+the same ids. The end state was right, but the route there destroyed and recreated
+every node in the flow — including the ones the edit never mentioned. That made the
+editor's own undo incoherent and turned any gap in the snapshot into a silent
+deletion (which is how junctions and groups were lost, §7).
+
+(The canvas selection is cleared either way: `refreshCanvasView` invokes
+`core:select-none` before redrawing, on both paths, because a removed node must not
+stay in the selection. The diff narrows what is destroyed, not what is deselected.)
+
+### What is NOT the problem
+The deployed runtime was never restarted by this. `diffNodes` in
+`@node-red/runtime/lib/flows/util.js` decides what a deploy stops and starts, and it
+compares node configs by id while deliberately ignoring `x`, `y` and `wires` (and, for
+a group, `nodes` / `style` / `w` / `h`). Since the rebuild preserves ids and carries
+untouched nodes through from the snapshot unchanged, they never land in
+`diff.changed`. Pinned by `test/deploy_churn.test.js`, which re-implements that exact
+criterion. (A **Full** deploy restarts everything regardless, and the **Modified
+Flows** deploy type also restarts `linked` and `rewired` nodes — both are the deploy
+type's doing, not the applier's.)
+
+### `applyWorkspaceDiff`
+Same end state, applied as a diff against the live workspace:
+
+| Class | Action |
+| --- | --- |
+| live, no longer wanted | `RED.nodes.remove` / `removeJunction` / `removeGroup` |
+| wanted, not yet live | collected and handed to one `RED.nodes.import` |
+| in both, properties differ | written onto the live node in place |
+| in both, only x/y differ | position assigned, `moved` set |
+| in both, wiring differs | link surgery (below) |
+| in both, identical | **not touched at all** |
+
+### Wires are links, not an array
+`node.wires` is not the source of truth in the editor. Links are separate objects
+(`{ source, sourcePort, target }`) in their own registry, and `createExportableNodeSet`
+*derives* `wires` from them — assigning to `node.wires` changes nothing. So a wiring
+change goes through `RED.nodes.addLink` / `removeLink` against the live node objects.
+`removeLink` matches by object **identity**, so the links to cut have to come from
+`RED.nodes.getNodeLinks(id, 0)`; a reconstructed link object silently matches nothing.
+Added nodes are imported **before** the wire pass, because a new link needs both ends
+to exist.
+
+Two ordering details follow from this:
+- An added node's own `wires` become links during the import. Wires pointing **at** it
+  from nodes that were not re-imported do not — that is what the rewire pass covers.
+- A property update that repoints a config reference de-registers against the **old**
+  value (`updateConfigNodeUsers(node, {action:'remove'})`) before writing and
+  re-registers after, or the config node's `users` list keeps a node that no longer
+  uses it.
+
+### Where it declines
+The diff hands back `fallback: true` and the caller runs `replaceWorkspaceFlow`
+instead when it meets something it cannot express safely:
+- a group changed, was added, or was removed
+- a node's group membership (`g`) changed, or a grouped node was removed
+- an existing id changed `type`
+- a live entity that does not round-trip through an export
+
+Groups own their members as live **objects** and `g` is only half of that
+relationship, so that bookkeeping belongs to `RED.group`'s own API. None of it is
+reachable from the Vibe Schema (which has no notion of groups), so the fallback
+costs nothing in practice — and correctness never depends on the diff covering
+every case.
+
+### Rollback
+A throw part-way through a diff leaves a half-applied workspace, which a plain
+re-import cannot undo (it would not remove what was added). The error path therefore
+clears the tab and re-imports the "before" export — the same export used as the
+comparison baseline, so the two can never disagree about what "before" was.
+
+- Regression tests: `test/incremental_apply.test.js` (what gets touched),
+  `test/deploy_churn.test.js` (what gets restarted), `test/import_safety.test.js`
+  scenario B (rollback leaves the flow byte-identical).

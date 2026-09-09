@@ -10,71 +10,34 @@
 // shipped every broker and endpoint definition to the provider.
 const path = require('path');
 
-const { ROOT, ok, summary, clone, fence, loadPluginSandbox } = require('./helpers.js');
+const { ROOT, ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
-// Two-tab editor. `filterNodes` mirrors the real registry (regular nodes
-// only, filtered by z); every workspace is visible to eachWorkspace, which
-// is exactly what makes an unscoped scan dangerous.
-function buildRED(tabs, nodesArr, activeId) {
-  const regularById = {};
-  nodesArr.forEach((n) => { regularById[n.id] = n; });
-  const captured = { imports: [], removedFrom: [] };
-
-  const RED = {
-    notify: function () {},
-    nodes: {
-      filterNodes: (f) => Object.values(regularById).filter((n) => n.z === f.z),
-      junctions: () => [],
-      groups: () => [],
-      workspace: (id) => tabs.find((t) => t.id === id) || null,
-      eachWorkspace: (cb) => tabs.forEach(cb),
-      eachNode: (cb) => Object.values(regularById).forEach(cb),
-      eachConfig: () => {},
-      node: (id) => regularById[id] || null,
-      getType: () => undefined,
-      createExportableNodeSet: (set) => set.filter(Boolean).map(clone),
-      import: function (nodes) {
-        captured.imports.push(clone(nodes));
-        clone(nodes).forEach((n) => { if (n && n.id) regularById[n.id] = n; });
-        return { nodes: nodes };
-      },
-      remove: function (id) {
-        if (regularById[id]) captured.removedFrom.push(regularById[id].z);
-        delete regularById[id];
-      },
-      removeJunction: () => {},
-      removeGroup: () => {},
-      dirty: () => {},
-    },
-    view: { redraw: () => {} },
-    actions: { invoke: () => {} },
-    workspaces: { active: () => activeId, refresh: () => {}, show: () => {} },
-  };
-  return { RED, captured };
-}
-
-// Fresh sandbox + module load per scenario (modules hold singletons).
+// `imported` is still the raw import() payload, because scenario 1-7 ask
+// "which workspaces did this edit WRITE to" — and under an incremental apply
+// that payload is now only the genuinely new nodes, which makes the isolation
+// question sharper, not weaker. `after` is the resulting flow, for assertions
+// about nodes the edit left in place.
 async function runImport(tabs, nodesArr, activeId, message, importOpts) {
-  const { RED, captured } = buildRED(tabs, nodesArr, activeId);
-  const LLMPlugin = loadPluginSandbox(RED);
+  const mock = buildEditorMock({ tabs: tabs, nodes: nodesArr, activeId: activeId });
+  const LLMPlugin = loadPluginSandbox(mock.RED);
   const Importer = LLMPlugin.Importer;
   const res = await Importer.importFlowFromMessage(message, Object.assign({ mode: 'agent' }, importOpts));
-  const imported = [].concat(...captured.imports);
-  // Post-run editor state, so a scenario can assert what a specific node
-  // looks like after the import rather than inferring it from the payload.
+  const imported = [].concat(...mock.captured.imports);
   const after = {};
-  ['tabA', 'tabB'].forEach((z) => {
-    RED.nodes.filterNodes({ z: z }).forEach((n) => { after[n.id] = n; });
-  });
-  return { res, imported, captured, after };
+  tabs.forEach((t) => { mock.snapshot(t.id).forEach((n) => { after[n.id] = n; }); });
+  return { res, imported, captured: mock.captured, after, snapshot: mock.snapshot };
 }
 
 
 // Which workspaces did the import actually write to / clear?
-function writtenWorkspaces(imported, captured) {
+function writtenWorkspaces(imported, captured, before) {
   const zs = {};
   imported.forEach((n) => { if (n && n.z) zs[n.z] = true; });
-  (captured.removedFrom || []).forEach((z) => { if (z) zs[z] = true; });
+  // A removal counts as writing to the flow that owned the node.
+  (captured.removed || []).forEach((id) => {
+    const owner = before && before[id] && before[id].z;
+    if (owner) zs[owner] = true;
+  });
   return Object.keys(zs);
 }
 
@@ -95,17 +58,20 @@ async function scenarioAliasCollision() {
     nodes: { debug_1: { type: 'debug' } },
     connections: [{ from: 'inject', to: 'debug_1' }],
   });
-  const { res, imported, captured } = await runImport(TABS, nodes, 'tabB', msg, {
+  const before = {}; nodes.forEach((n) => { before[n.id] = n; });
+  const { res, imported, captured, after } = await runImport(TABS, nodes, 'tabB', msg, {
     allowedWorkspaceIds: ['tabB'],
   });
-  const written = writtenWorkspaces(imported, captured);
+  const written = writtenWorkspaces(imported, captured, before);
   ok(res && res.ok, 'import returned ok');
   ok(written.indexOf('tabA') === -1, 'unrelated flow Alpha was never written to or cleared');
   ok(written.indexOf('tabB') !== -1, 'context flow Beta was the one rebuilt');
   const debug = imported.find((n) => n.type === 'debug');
   ok(!!debug && debug.z === 'tabB', 'new debug node landed on Beta');
-  const injB = imported.find((n) => n.id === 'b1');
-  ok(!!injB && !!debug && injB.wires[0].indexOf(debug.id) !== -1, "Beta's inject is the node that got wired");
+  // Read from the resulting flow: b1 itself was never re-imported, only rewired.
+  ok(!!after.b1 && !!debug && after.b1.wires[0].indexOf(debug.id) !== -1,
+    "Beta's inject is the node that got wired");
+  ok(!!after.a1 && after.a1.wires[0].length === 0, "Alpha's inject was left unwired");
 }
 
 async function scenarioTabSwitchedBeforeImport() {
@@ -207,15 +173,17 @@ async function scenarioMultiFlowContextStillFansOut() {
     },
     connections: [{ from: 'inject_tick', to: 'debug_1' }],
   });
-  const { res, imported, captured } = await runImport(TABS, nodes, 'tabB', msg, {
+  const { res, after } = await runImport(TABS, nodes, 'tabB', msg, {
     allowedWorkspaceIds: ['tabA', 'tabB'],
   });
-  const written = writtenWorkspaces(imported, captured);
   ok(res && res.ok, 'import returned ok');
-  ok(written.indexOf('tabA') !== -1 && written.indexOf('tabB') !== -1,
-     'both in-scope flows were updated');
-  const mqtt = imported.find((n) => n.type === 'mqtt in');
-  ok(!!mqtt && mqtt.topic === 'changed/by/llm', 'the in-scope Alpha edit was applied');
+  // Alpha's half of this edit is a property change, which an incremental
+  // apply makes in place — it never reaches import(). The question is what
+  // the flows now HOLD, so both halves are read from the resulting state.
+  const alphaChanged = !!after.a1 && after.a1.topic === 'changed/by/llm';
+  const betaGrew = Object.values(after).some((n) => n.z === 'tabB' && n.type === 'debug');
+  ok(alphaChanged && betaGrew, 'both in-scope flows were updated');
+  ok(alphaChanged, 'the in-scope Alpha edit was applied');
 }
 
 async function scenarioUntaggedNodesFollowTheContextFlow() {

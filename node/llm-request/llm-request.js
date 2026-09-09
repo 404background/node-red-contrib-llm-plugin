@@ -19,6 +19,27 @@ module.exports = function(RED) {
     // Comms topic shared with the editor-side subscriber in llm-request.html.
     const AGENT_APPLY_TOPIC = 'llm-plugin/agent-apply';
 
+    // Strip `user:pass@` out of any URL in a log line. The API URL is
+    // operator- or flow-supplied and may carry userinfo; the Node-RED log is
+    // not the place for it. Everything else in the URL stays readable, which
+    // is the point of the warning.
+    function scrubUrlCredentials(text) {
+        return String(text).replace(/(\bhttps?:\/\/)[^\s/@"']*@/gi, '$1');
+    }
+
+    // The error a provider hands back can carry the API key straight back out:
+    // an endpoint that echoes the Authorization header puts it in the message,
+    // and `done(err)` is a flow-visible exit — the Node-RED log, `msg.error`
+    // on the Catch route, and from there any debug or http response node. The
+    // sidebar's /generate handler already redacts its equivalent; this is the
+    // one exit from the shared engine that did not. `code` is preserved so
+    // callers keep detecting timeouts without parsing the message.
+    function redactedError(err) {
+        const safe = new Error(core.redactSecrets(err && err.message ? err.message : err));
+        if (err && err.code) safe.code = err.code;
+        return safe;
+    }
+
     // Normalise line endings so multi-line prompts behave consistently
     // regardless of source (Windows CRLF, lone CR). Interior newlines kept.
     function normaliseText(text) {
@@ -169,16 +190,17 @@ module.exports = function(RED) {
                             if (!editorUrl) throw e;
                             // A configured URL that doesn't serve the admin API
                             // (e.g. the httpNodeRoot base) — retry auto-detection.
-                            node.warn('[llm-request] Flow context fetch failed for "' + editorUrl + '" (' +
-                                (e && e.message ? e.message : e) + '); retrying with auto-detection.');
+                            node.warn(scrubUrlCredentials('[llm-request] Flow context fetch failed for "' +
+                                editorUrl + '" (' + (e && e.message ? e.message : e) +
+                                '); retrying with auto-detection.'));
                             current = await adminApi.getFlows();
                         }
                         if (current && Array.isArray(current.flows)) {
                             context = flowContextFor(current.flows, targetFlows);
                         }
                     } catch (e) {
-                        node.warn('[llm-request] Could not fetch flow context (' +
-                            (e && e.message ? e.message : e) + '); continuing without it.');
+                        node.warn(scrubUrlCredentials('[llm-request] Could not fetch flow context (' +
+                            (e && e.message ? e.message : e) + '); continuing without it.'));
                     }
                 }
 
@@ -227,7 +249,7 @@ module.exports = function(RED) {
                 // The engine tags timeouts with code ETIMEDOUT (both adapters).
                 const text = (err && err.code === 'ETIMEDOUT') ? 'timeout' : 'error';
                 node.status({ fill: 'red', shape: 'ring', text: text });
-                done(err);
+                done(redactedError(err));
             }
         });
     }
@@ -237,4 +259,6 @@ module.exports = function(RED) {
     // Exposed for test/cross_flow_isolation.test.js — what this returns is what
     // leaves the machine, so it is covered by a regression test.
     module.exports._flowContextFor = flowContextFor;
+    // Exposed for test/node_secret_exit.test.js.
+    module.exports._scrubUrlCredentials = scrubUrlCredentials;
 };
