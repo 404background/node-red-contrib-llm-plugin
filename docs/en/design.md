@@ -307,6 +307,23 @@ instead when it meets something it cannot express safely:
 - an existing id changed `type`
 - a live entity that does not round-trip through an export
 
+**`g` has to survive the merge for any of this to mean anything.** It is not in
+`MERGE_SKIP_KEYS`, and must not be: nothing else restores it, so skipping it made
+every edited node come back without its group. That was a silent data loss on its
+own (the node left the group while the group went on listing it), and it also made
+the "group membership changed" test fire on every ordinary property edit — so on any
+flow that uses groups, the diff declined every time and the destructive rebuild ran
+instead. Carrying `g` blindly is safe because it is a `META_KEY` in the converter:
+the schema can neither read nor write it, so the existing value is the only value
+there can be.
+
+The other half of that relationship is the group's own `nodes` list, and Node-RED
+does not maintain it for us — `RED.nodes.remove` has no group bookkeeping at all
+(the editor's delete action calls `RED.group.removeFromGroup` first). So the
+deletion phase prunes removed ids out of every group's `nodes`, the same way it
+prunes wires. Deleting a grouped node still falls back, because doing it on the live
+canvas needs the group API; the fallback now at least produces a consistent group.
+
 Groups own their members as live **objects** and `g` is only half of that
 relationship, so that bookkeeping belongs to `RED.group`'s own API. None of it is
 reachable from the Vibe Schema (which has no notion of groups), so the fallback

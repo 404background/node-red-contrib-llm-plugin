@@ -413,6 +413,16 @@
                     return port.filter(function(tid) { return !removedRealIds[tid]; });
                 });
             });
+            // A group's `nodes` is the other half of a member's `g`, and
+            // deleting the member does not update it — RED.nodes.remove has
+            // no group bookkeeping at all (verified in the 4.1 editor client;
+            // the editor's own delete action calls RED.group.removeFromGroup
+            // first). Left alone, the group keeps naming a node that no
+            // longer exists, in the rebuilt flow and on the canvas after it.
+            nodes.forEach(function(n) {
+                if (!n || n.type !== 'group' || !Array.isArray(n.nodes)) return;
+                n.nodes = n.nodes.filter(function(mid) { return !removedRealIds[mid]; });
+            });
             return { remainingNodes: nodes, removedIdSet: removedIdSet };
         }
 
@@ -427,9 +437,18 @@
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
 
         // Identity / placement / editor-state keys never carried over from
-        // existing to proposed during the merge.
+        // existing to proposed during the merge. Each is supplied by
+        // something else: `z` is assigned explicitly, `x`/`y` by the layout
+        // passes, `wires` by the additive wire merge.
+        //
+        // `g` is NOT in this list, and must not be: nothing else restores it,
+        // so skipping it silently dropped an edited node out of its group —
+        // and left the group still listing it as a member. It is safe to
+        // carry blindly because `g` is a META_KEY in the converter, so the
+        // schema can neither read nor write it; the existing value is the
+        // only value there can be.
         let MERGE_SKIP_KEYS = {
-            id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1, g: 1,
+            id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1,
             dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
         };
 
