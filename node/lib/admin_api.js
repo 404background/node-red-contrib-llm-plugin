@@ -8,8 +8,14 @@
 // (correct even when embedded in Express) → uiPort → 1880, root from
 // settings.httpAdminRoot. No auth: this local read assumes adminAuth is off.
 // Docs: https://nodered.org/docs/api/admin/methods/get/flows/
-const http = require('http');
-const https = require('https');
+//
+// Built on global `fetch` (the package requires Node >= 18), which speaks
+// both schemes through one code path. The previous version picked between
+// the `http` and `https` modules by hand and carried the consequences of
+// that choice everywhere: a `useHttps` flag, default ports written out as
+// 443/80, and host/port/path passed around separately instead of a URL.
+// None of that was ever a decision about behaviour — only about which
+// module to call.
 
 function createAdminApi(RED) {
 
@@ -37,12 +43,14 @@ function createAdminApi(RED) {
         return RED.settings.uiPort || 1880;
     }
 
-    // Resolve { host, port, root, useHttps } from an optional explicit editor
-    // URL, falling back to live auto-detection.
-    // The override URL can come from msg.editorUrl, i.e. from flow data,
-    // so it is not necessarily operator-authored. Restrict it to the schemes
-    // this client can actually speak; anything else would just be pointing
-    // the runtime at something it has no business opening.
+    // Resolve the admin API base as a URL string ending in `/`, from an
+    // optional explicit editor URL or by auto-detection.
+    //
+    // The override URL can come from msg.editorUrl, i.e. from flow data, so it
+    // is not necessarily operator-authored. Restrict it to the schemes this
+    // client can actually speak; anything else would just be pointing the
+    // runtime at something it has no business opening. That check stays —
+    // it is an allowlist, not a protocol branch.
     const ALLOWED_PROTOCOLS = { 'http:': 1, 'https:': 1 };
 
     function resolveBase(overrideUrl) {
@@ -64,65 +72,63 @@ function createAdminApi(RED) {
             if (idx !== -1) p = p.slice(0, idx + 1);
             const flowsIdx = p.indexOf('/flows');
             if (flowsIdx !== -1) p = p.slice(0, flowsIdx + 1);
-            return {
-                host: u.hostname,
-                port: u.port || (u.protocol === 'https:' ? 443 : 80),
-                root: normaliseRoot(p),
-                useHttps: u.protocol === 'https:'
-            };
+            // `u.origin` already carries the default port for the scheme, so
+            // there is nothing to fill in by hand.
+            return u.origin + normaliseRoot(p);
         }
 
         const root = RED.settings.httpAdminRoot;
         if (root === false) {
             throw new Error('Node-RED admin API is disabled (httpAdminRoot=false); set an API URL on the node.');
         }
-        return {
-            host: '127.0.0.1',
-            port: detectPort(),
-            root: normaliseRoot(root),
-            useHttps: isHttpsServer(RED.server) || !!RED.settings.https
-        };
+        // Still a scheme decision, but only to build a URL — the runtime we
+        // are calling is our own, and it may be serving TLS.
+        const scheme = (isHttpsServer(RED.server) || !!RED.settings.https) ? 'https' : 'http';
+        return scheme + '://127.0.0.1:' + detectPort() + normaliseRoot(root);
     }
 
-    // Promise-based JSON GET against the resolved admin API.
-    function request(pathSuffix, extraHeaders, opts) {
-        opts = opts || {};
-        return new Promise(function(resolve, reject) {
-            let base;
-            try { base = resolveBase(opts.url); } catch (e) { return reject(e); }
+    const REQUEST_TIMEOUT_MS = 30000;
 
-            const options = {
-                host: base.host,
-                port: base.port,
+    // Promise-based JSON GET against the resolved admin API.
+    async function request(pathSuffix, extraHeaders, opts) {
+        opts = opts || {};
+        const base = resolveBase(opts.url);   // throws → rejects, as before
+
+        let res;
+        try {
+            res = await fetch(base + pathSuffix, {
                 method: 'GET',
-                path: base.root + pathSuffix,
                 headers: Object.assign({ 'Accept': 'application/json' }, extraHeaders || {}),
-                timeout: 30000
-            };
-            const mod = base.useHttps ? https : http;
-            const req = mod.request(options, function(res) {
-                const chunks = [];
-                res.on('data', function(c) { chunks.push(c); });
-                res.on('end', function() {
-                    const text = Buffer.concat(chunks).toString('utf8');
-                    const status = res.statusCode || 0;
-                    if (status === 401) {
-                        return reject(new Error('Admin API returned 401 Unauthorized (adminAuth is enabled). ' +
-                            'Flow context needs an unauthenticated admin API; clear the node\'s Flows selection or disable adminAuth.'));
-                    }
-                    if (status >= 400) {
-                        return reject(new Error('Admin API GET ' + base.root + pathSuffix +
-                            ' failed (' + status + '): ' + text.substring(0, 200)));
-                    }
-                    if (!text) return resolve({});
-                    try { resolve(JSON.parse(text)); }
-                    catch (e) { resolve({ raw: text }); }
-                });
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
             });
-            req.on('error', reject);
-            req.on('timeout', function() { req.destroy(); reject(new Error('Admin API request timed out')); });
-            req.end();
-        });
+        } catch (e) {
+            // An aborted fetch throws a TimeoutError, not the ETIMEDOUT-ish
+            // shape the http module produced. Callers only ever matched on
+            // this message, so keep saying the same thing.
+            if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+                throw new Error('Admin API request timed out');
+            }
+            throw e;
+        }
+
+        const text = await res.text();
+        const status = res.status || 0;
+        if (status === 401) {
+            throw new Error('Admin API returned 401 Unauthorized (adminAuth is enabled). ' +
+                'Flow context needs an unauthenticated admin API; clear the node\'s Flows selection or disable adminAuth.');
+        }
+        if (status >= 400) {
+            // The PATH, not the full URL. The base can carry `user:pass@`
+            // (it may come from msg.editorUrl), and this message travels out
+            // through done(err) to the Node-RED log and msg.error.
+            let where = base + pathSuffix;
+            try { where = new URL(where).pathname; } catch (e) { /* keep as-is */ }
+            throw new Error('Admin API GET ' + where +
+                ' failed (' + status + '): ' + text.substring(0, 200));
+        }
+        if (!text) return {};
+        try { return JSON.parse(text); }
+        catch (e) { return { raw: text }; }
     }
 
     // GET the full flow configuration (all tabs + config nodes) plus its rev.

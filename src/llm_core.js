@@ -10,8 +10,6 @@
 // Usage:  const core = require('./llm_core.js')(RED);
 const fs = require('fs-extra');
 const path = require('path');
-const http = require('http');
-const https = require('https');
 const crypto = require('crypto');
 const { OpenAI } = require('openai');
 const FlowConverterCore = require('./core/flow_converter_core');
@@ -546,11 +544,13 @@ function createLLMCore(RED) {
     }
 
     // Ollama chat generation (timeout 0 = wait indefinitely).
-    // `timeout` maps to http.request's socket-inactivity timer; since the
-    // non-streaming /api/chat sends nothing until generation completes,
-    // it effectively bounds the total wait. `settings` is passed in like
-    // the other adapters (single settings read per generation).
-    function generateWithOllamaChat(settings, model, messages, timeout = 0) {
+    //
+    // `fetch` rather than the http/https modules: it speaks both schemes
+    // through one code path, so there is no scheme flag to thread through,
+    // no 443/80 default to write out by hand, and no manual chunk
+    // collection. `settings` is passed in like the other adapters (single
+    // settings read per generation).
+    async function generateWithOllamaChat(settings, model, messages, timeout = 0) {
         const ollamaUrlStr = (settings && settings.ollamaUrl) || 'http://localhost:11434';
         // No try/catch fallback to localhost: the settings endpoint already
         // rejects anything that is not a parseable http(s) URL, and quietly
@@ -558,70 +558,55 @@ function createLLMCore(RED) {
         // remote Ollama not being used?" with silence.
         const ollamaUrl = new URL(ollamaUrlStr);
 
-        return new Promise((resolve, reject) => {
-            const data = JSON.stringify({
-                model: model,
-                messages: Array.isArray(messages) ? messages : [],
-                stream: false
-            });
-            const isHttps = ollamaUrl.protocol === 'https:';
-            let basePath = ollamaUrl.pathname === '/' ? '' : ollamaUrl.pathname;
-            if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
-            const options = {
-                hostname: ollamaUrl.hostname,
-                port: ollamaUrl.port || (isHttps ? 443 : 80),
-                path: basePath + '/api/chat',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json; charset=utf-8',
-                    'Content-Length': Buffer.byteLength(data)
-                }
-            };
-            if (timeout && timeout > 0) {
-                options.timeout = timeout;
-            }
-            const httpModule = isHttps ? https : http;
-            const req = httpModule.request(options, (res) => {
-                const chunks = [];
-                res.on('data', (chunk) => {
-                    chunks.push(chunk);
-                });
-                res.on('end', () => {
-                    const responseData = Buffer.concat(chunks).toString('utf8');
-                    if (res.statusCode && res.statusCode >= 400) {
-                        return reject(new Error(`Ollama API error (${res.statusCode}): ${responseData.substring(0, 200)}`));
-                    }
-                    try {
-                        const response = JSON.parse(responseData);
-                        const content = response && response.message && typeof response.message.content === 'string'
-                            ? response.message.content
-                            : null;
-                        if (content !== null) {
-                            resolve(content);
-                        } else {
-                            reject(new Error('No response from model'));
-                        }
-                    } catch (parseError) {
-                        reject(new Error('Invalid response format'));
-                    }
-                });
-            });
-            req.on('error', (error) => {
-                reject(error);
-            });
-            if (timeout && timeout > 0) {
-                req.on('timeout', () => {
-                    req.destroy();
-                    // code ETIMEDOUT lets callers detect timeouts without
-                    // parsing the message (llm-request's status display).
-                    const e = new Error('Request timed out');
-                    e.code = 'ETIMEDOUT';
-                    reject(e);
-                });
-            }
-            req.write(data);
-            req.end();
+        let basePath = ollamaUrl.pathname;
+        if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
+        const endpoint = ollamaUrl.origin + basePath + '/api/chat';
+
+        const body = JSON.stringify({
+            model: model,
+            messages: Array.isArray(messages) ? messages : [],
+            stream: false
         });
+
+        let res;
+        try {
+            res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                body: body,
+                // The old socket-inactivity timer effectively bounded the
+                // total wait, because the non-streaming /api/chat sends
+                // nothing until generation completes. AbortSignal.timeout
+                // bounds the total wait outright, which is what was meant.
+                signal: (timeout && timeout > 0) ? AbortSignal.timeout(timeout) : undefined
+            });
+        } catch (e) {
+            // Callers detect a timeout by `err.code === 'ETIMEDOUT'` rather
+            // than by parsing the message (llm-request's status display),
+            // and an aborted fetch carries no such code. Put it back.
+            if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+                const timedOut = new Error('Request timed out');
+                timedOut.code = 'ETIMEDOUT';
+                throw timedOut;
+            }
+            throw e;
+        }
+
+        const responseData = await res.text();
+        if (res.status >= 400) {
+            throw new Error(`Ollama API error (${res.status}): ${responseData.substring(0, 200)}`);
+        }
+        let response;
+        try {
+            response = JSON.parse(responseData);
+        } catch (parseError) {
+            throw new Error('Invalid response format');
+        }
+        const content = response && response.message && typeof response.message.content === 'string'
+            ? response.message.content
+            : null;
+        if (content === null) throw new Error('No response from model');
+        return content;
     }
 
     // Re-label the OpenAI SDK's cryptic "… is not valid JSON" error (an
