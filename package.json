@@ -13,7 +13,7 @@
     "images/"
   ],
   "scripts": {
-    "test": "node test/canvas_layout.test.js && node test/flow_converter_core.test.js && node test/llm_core.test.js && node test/schema_conventions.test.js && node test/junction_preserve.test.js && node test/cross_flow_isolation.test.js && node test/import_safety.test.js && node test/node_secret_exit.test.js && node test/deploy_churn.test.js && node test/incremental_apply.test.js && node test/node_checkpoint.test.js && node test/http_transport.test.js",
+    "test": "node test/canvas_layout.test.js && node test/flow_converter_core.test.js && node test/llm_core.test.js && node test/schema_conventions.test.js && node test/junction_preserve.test.js && node test/cross_flow_isolation.test.js && node test/import_safety.test.js && node test/node_secret_exit.test.js && node test/deploy_churn.test.js && node test/incremental_apply.test.js && node test/node_checkpoint.test.js && node test/http_transport.test.js && node test/ui_templates.test.js",
     "test:llm": "node test/llm_roundtrip.test.js"
   },
   "node-red": {

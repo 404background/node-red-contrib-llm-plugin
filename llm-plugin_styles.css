@@ -293,6 +293,11 @@
     cursor: pointer;
     font-size: 12px;
 }
+/* Above the message rather than below it, so the two margins swap. */
+.pre-chat-actions {
+    margin-top: 0;
+    margin-bottom: 10px;
+}
 .restore-btn:hover {
     background: #d97706;
 }

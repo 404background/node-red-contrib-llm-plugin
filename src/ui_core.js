@@ -284,10 +284,26 @@
         scheduleReannotate();
     })();
 
+    // Clone one of the per-message markup templates from llm_plugin.html.
+    //
+    // Reaching this code already proves that file loaded: addMessageToUI
+    // returns early when `#llm-plugin-chat` is missing, and the chat area
+    // comes from the same file. So a missing template is a packaging or
+    // editing mistake, not a runtime condition — it throws rather than
+    // quietly rendering a message with no Import or Retry button, which is
+    // the kind of failure nobody notices until they need the button.
+    function cloneTemplate(templateId) {
+        let tpl = document.getElementById(templateId);
+        if (!tpl) throw new Error('LLM Plugin: missing markup template #' + templateId);
+        let holder = document.createElement('div');
+        holder.innerHTML = tpl.innerHTML.trim();
+        let el = holder.firstElementChild;
+        if (!el) throw new Error('LLM Plugin: markup template #' + templateId + ' is empty');
+        return el;
+    }
+
     function createRestoreCheckpointButton(checkpointId) {
-        let btn = document.createElement('button');
-        btn.className = 'restore-btn';
-        btn.textContent = 'Restore Checkpoint';
+        let btn = cloneTemplate('llm-plugin-restore-btn-template');
         btn.dataset.checkpointId = checkpointId;
         btn.addEventListener('click', function() {
             let cpId = btn.dataset.checkpointId;
@@ -419,20 +435,9 @@
         }
 
         if (!isUser && showActions) {
-            let messageActions = document.createElement('div');
-            messageActions.className = 'message-actions';
-            let retryBtn = document.createElement('button');
-            retryBtn.className = 'retry-btn';
-            let retryIcon = document.createElement('i');
-            // fa-refresh, not fa-redo: the editor bundles Font Awesome 4.7
-            // (offline) and fa-redo only exists in FA 5.
-            retryIcon.className = 'fa fa-refresh';
-            retryIcon.setAttribute('aria-hidden', 'true');
-            retryIcon.style.color = '#222';
-            retryBtn.appendChild(retryIcon);
-            retryBtn.title = 'Retry message';
-            retryBtn.addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
-            messageActions.appendChild(retryBtn);
+            let messageActions = cloneTemplate('llm-plugin-message-actions-template');
+            messageActions.querySelector('.retry-btn')
+                .addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
             message.appendChild(messageActions);
         }
 
@@ -442,12 +447,9 @@
                 let hasDirectivesOnly = (!flowNodes || flowNodes.length === 0) &&
                     LLMPlugin.Importer.hasFlowDirectives(content);
                 if ((flowNodes && flowNodes.length > 0) || hasDirectivesOnly) {
-                    let flowActions = document.createElement('div');
-                    flowActions.className = 'flow-actions';
-                    let importBtn = document.createElement('button');
-                    importBtn.className = 'import-btn';
-                    importBtn.textContent = 'Import Flow';
-                    
+                    let flowActions = cloneTemplate('llm-plugin-flow-actions-template');
+                    let importBtn = flowActions.querySelector('.import-btn');
+
                     let isAgent = messageMeta && messageMeta.meta && messageMeta.meta.mode === 'agent';
                     if (isAgent) importBtn.style.display = 'none';
 
@@ -484,10 +486,7 @@
                             if (checkpointId) {
                                 let preChatActions = message.querySelector('.pre-chat-actions');
                                 if (!preChatActions) {
-                                    preChatActions = document.createElement('div');
-                                    preChatActions.className = 'flow-actions pre-chat-actions';
-                                    preChatActions.style.marginTop = '0';
-                                    preChatActions.style.marginBottom = '10px';
+                                    preChatActions = cloneTemplate('llm-plugin-pre-chat-actions-template');
                                     message.insertBefore(preChatActions, message.firstChild);
                                 }
                                 preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
@@ -505,24 +504,25 @@
                             importBtn.disabled = false;
                         });
                     });
-                    flowActions.appendChild(importBtn);
-
                     // Rebuild restore button for previously edited plugin messages.
                     let existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
                         ? messageMeta.meta.checkpointId
                         : null;
                     if (existingCheckpointId) {
-                        let preChatActions = document.createElement('div');
-                        preChatActions.className = 'flow-actions pre-chat-actions';
-                        preChatActions.style.marginTop = '0';
-                        preChatActions.style.marginBottom = '10px';
+                        let preChatActions = cloneTemplate('llm-plugin-pre-chat-actions-template');
                         preChatActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
                         message.insertBefore(preChatActions, message.firstChild);
                     }
 
                     message.appendChild(flowActions);
                 }
-            } catch (e) {}
+            } catch (e) {
+                // Was a bare swallow. The parse below it can legitimately
+                // fail on a malformed reply, but a missing markup template
+                // throws here too, and that must not vanish silently — it
+                // would present as "the Import button stopped appearing".
+                if (window.console) console.error('[LLM Plugin] flow actions not rendered:', e);
+            }
         }
 
         chatArea.appendChild(message);

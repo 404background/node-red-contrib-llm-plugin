@@ -49,6 +49,37 @@
     </div>
 </script>
 
+<!-- Per-message controls, cloned by ui_core.js (cloneTemplate) for every
+     assistant message. Here rather than as JS strings for the same reason
+     the sidebar itself is: this is markup, and it reads as markup. Only the
+     fixed shapes live here — which controls a message gets, and what the
+     Import button does with the parsed reply, stay in JS because they are
+     decisions, not layout. -->
+<script type="text/html" id="llm-plugin-message-actions-template">
+    <div class="message-actions">
+        <!-- fa-refresh, not fa-redo: the editor bundles Font Awesome 4.7
+             (offline) and fa-redo only exists in FA 5. -->
+        <button class="retry-btn" title="Retry message">
+            <i class="fa fa-refresh" aria-hidden="true"></i>
+        </button>
+    </div>
+</script>
+
+<script type="text/html" id="llm-plugin-flow-actions-template">
+    <div class="flow-actions">
+        <button class="import-btn">Import Flow</button>
+    </div>
+</script>
+
+<!-- Sits ABOVE the message: it rewinds to before this reply was applied. -->
+<script type="text/html" id="llm-plugin-pre-chat-actions-template">
+    <div class="flow-actions pre-chat-actions"></div>
+</script>
+
+<script type="text/html" id="llm-plugin-restore-btn-template">
+    <button class="restore-btn">Restore Checkpoint</button>
+</script>
+
 <script type="text/html" id="llm-plugin-settings-template" data-template-name="llm-plugin-settings-template">
     <div class="form-row">
         <label for="llm-provider"><i class="fa fa-cogs"></i> LLM Provider</label>
