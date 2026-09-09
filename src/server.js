@@ -299,8 +299,14 @@ function createLLMPluginServer(RED) {
             return record;
         }
         try {
-            pruneCheckpoints();
+            // Prune AFTER the write, not before. Pruning first left the
+            // directory at cap+1 once this record landed, so the limit never
+            // meant what it said — and the memory-only branch above already
+            // inserts and then trims, so the two disagreed about the same
+            // constant. A failed write now prunes nothing, which is right:
+            // there is no new record to make room for.
             writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
+            pruneCheckpoints();
         } catch (e) {
             RED.log.error('[LLM Plugin] Failed to save checkpoint: ' + errText(e));
             throw e;

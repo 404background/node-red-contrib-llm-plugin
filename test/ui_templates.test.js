@@ -20,6 +20,10 @@ const { ok, summary, ROOT } = require('./helpers.js');
 const HTML = fs.readFileSync(path.join(ROOT, 'llm_plugin.html'), 'utf8');
 const UI_CORE = fs.readFileSync(path.join(ROOT, 'src', 'ui_core.js'), 'utf8');
 const VIBE_UI = fs.readFileSync(path.join(ROOT, 'src', 'vibe_ui.js'), 'utf8');
+const CHAT_MANAGER = fs.readFileSync(path.join(ROOT, 'src', 'chat_manager.js'), 'utf8');
+
+// Both files clone templates, so both have the same seam to check.
+const CLONERS = [['ui_core.js', UI_CORE], ['chat_manager.js', CHAT_MANAGER]];
 const CSS = fs.readFileSync(path.join(ROOT, 'llm-plugin_styles.css'), 'utf8');
 
 // id -> inner markup, for every <script type="text/html"> block.
@@ -51,12 +55,14 @@ function idsFromTemplateHelper(src) {
 
 function scenarioEveryClonedIdExists() {
   console.log('Every template the JS clones is present in llm_plugin.html');
-  const cloned = idsClonedBy(UI_CORE);
-  ok(cloned.length >= 4,
-    'ui_core.js clones templates at all (' + cloned.length + ' call sites)');
-  const missing = cloned.filter((id) => !templates[id]);
-  ok(missing.length === 0,
-    'no cloned id is missing from the HTML (' + (missing.join(', ') || 'none missing') + ')');
+  CLONERS.forEach(([name, src]) => {
+    const cloned = idsClonedBy(src);
+    ok(cloned.length > 0, name + ' clones templates (' + cloned.length + ' call sites)');
+    const missing = cloned.filter((id) => !templates[id]);
+    ok(missing.length === 0,
+      name + ': no cloned id is missing from the HTML (' +
+        (missing.join(', ') || 'none missing') + ')');
+  });
 
   // vibe_ui.js builds the sidebar shell the same way, through its own helper.
   const shell = idsFromTemplateHelper(VIBE_UI);
@@ -70,7 +76,11 @@ function scenarioEveryClonedIdExists() {
 // lose it with no error at all.
 function scenarioTemplatesHaveOneRoot() {
   console.log('\nEach cloned template has exactly one root element');
-  idsClonedBy(UI_CORE).forEach((id) => {
+  const everyId = [];
+  CLONERS.forEach(([, src]) => idsClonedBy(src).forEach((id) => {
+    if (everyId.indexOf(id) === -1) everyId.push(id);
+  }));
+  everyId.forEach((id) => {
     const inner = (templates[id] || '').trim();
     // Count top-level tags by tracking depth across the markup.
     let depth = 0;
@@ -94,14 +104,21 @@ function scenarioSelectorsMatchTheMarkup() {
   const cases = [
     ['llm-plugin-message-actions-template', 'retry-btn', 'the retry click handler'],
     ['llm-plugin-flow-actions-template', 'import-btn', 'the import click handler'],
+    ['llm-plugin-checkpoint-modal-template', 'checkpoint-list', 'the restore-point rows'],
+    ['llm-plugin-checkpoint-modal-template', 'close-btn', 'the dialog close handler'],
+    ['llm-plugin-checkpoint-item-template', 'checkpoint-source', 'the source badge'],
+    ['llm-plugin-checkpoint-item-template', 'checkpoint-what', 'the description line'],
+    ['llm-plugin-checkpoint-item-template', 'restore-btn', 'the restore click handler'],
   ];
   cases.forEach(([id, cls, why]) => {
     const inner = templates[id] || '';
     ok(inner.indexOf('class="' + cls + '"') !== -1 ||
        new RegExp('class="[^"]*\\b' + cls + '\\b[^"]*"').test(inner),
       id + ' contains .' + cls + ' — ' + why + ' binds to it');
-    ok(UI_CORE.indexOf("querySelector('." + cls + "')") !== -1,
-      'and ui_core.js looks it up by that exact class');
+    const usedSomewhere = CLONERS.some(([, src]) =>
+      src.indexOf("querySelector('." + cls + "')") !== -1 ||
+      src.indexOf("querySelectorAll('." + cls + "')") !== -1);
+    ok(usedSomewhere, 'and the JS looks it up by that exact class');
   });
 
   // The restore button is cloned whole rather than looked up, and the code
@@ -144,12 +161,29 @@ function scenarioMissingTemplateIsLoud() {
     'it logs what failed instead');
 }
 
+// The dialog is only reachable through a header button, and the button is
+// markup while the handler is JS — the same split, one more seam.
+function scenarioRestorePointsButtonIsWired() {
+  console.log('\nThe restore-points button and its handler agree');
+  const shell = templates['llm-plugin-sidebar-template'] || '';
+  ok(/data-action="restore-points"/.test(shell),
+    'the sidebar template has the button');
+  ok(VIBE_UI.indexOf('[data-action="restore-points"]') !== -1,
+    'and vibe_ui.js binds that exact action');
+  ok(/showCheckpointList/.test(VIBE_UI) && /ChatManager\.showCheckpointList = function/.test(CHAT_MANAGER),
+    'to a handler ChatManager actually defines');
+  // fa-history exists in Font Awesome 4.7, which is what the editor bundles;
+  // an FA5-only icon renders as an empty box with no error.
+  ok(/fa-history/.test(shell), 'using an icon that exists in FA 4.7');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
   scenarioSelectorsMatchTheMarkup();
   scenarioMovedStylesAreInTheStylesheet();
   scenarioMissingTemplateIsLoud();
+  scenarioRestorePointsButtonIsWired();
   summary();
 }
 

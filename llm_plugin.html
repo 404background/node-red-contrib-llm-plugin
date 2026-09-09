@@ -16,6 +16,9 @@
         <div class="header-buttons">
             <button class="header-btn" data-action="new-chat">New Chat</button>
             <button class="header-btn" data-action="chat-list">Chats</button>
+            <button class="header-btn" data-action="restore-points" title="Restore points">
+                <i class="fa fa-history" aria-hidden="true"></i>
+            </button>
             <button class="header-btn" id="llm-plugin-settings-button"><i class="fa fa-cog"></i></button>
         </div>
     </div>
@@ -78,6 +81,43 @@
 
 <script type="text/html" id="llm-plugin-restore-btn-template">
     <button class="restore-btn">Restore Checkpoint</button>
+</script>
+
+<!-- Restore-point browser. Chat checkpoints are reachable from the message
+     that holds their id; the Agent node's are not attached to any message,
+     so this is how they are found at all. Same classes as the chat list so
+     it looks like part of the sidebar rather than a second dialect. -->
+<script type="text/html" id="llm-plugin-checkpoint-modal-template">
+    <div class="chat-modal">
+        <div class="chat-modal-content">
+            <div class="modal-header">
+                <h3>Restore Points</h3>
+                <button class="close-btn" title="Close">&times;</button>
+            </div>
+            <div class="checkpoint-filter">
+                <label><input type="radio" name="cp-source" value="" checked> All</label>
+                <label><input type="radio" name="cp-source" value="pre-import"> Chat</label>
+                <label><input type="radio" name="cp-source" value="node-apply"> Node</label>
+            </div>
+            <div class="chat-list checkpoint-list"></div>
+        </div>
+    </div>
+</script>
+
+<script type="text/html" id="llm-plugin-checkpoint-item-template">
+    <div class="chat-item">
+        <div class="chat-info">
+            <div class="chat-title">
+                <span class="checkpoint-source"></span>
+                <span class="checkpoint-what"></span>
+            </div>
+            <div class="chat-date"></div>
+            <div class="message-count"></div>
+        </div>
+        <div class="chat-actions">
+            <button class="restore-btn">Restore</button>
+        </div>
+    </div>
 </script>
 
 <script type="text/html" id="llm-plugin-settings-template" data-template-name="llm-plugin-settings-template">

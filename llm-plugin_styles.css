@@ -301,6 +301,41 @@
 .restore-btn:hover {
     background: #d97706;
 }
+/* Restore-point browser */
+.checkpoint-filter {
+    display: flex;
+    gap: 12px;
+    padding: 8px 4px;
+    font-size: 12px;
+    color: #555;
+    border-bottom: 1px solid #eee;
+}
+.checkpoint-filter label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+/* Which producer a restore point came from. Node-driven ones accumulate
+   unattended, so the badge is what tells them apart at a glance. */
+.checkpoint-source {
+    display: inline-block;
+    font-size: 10px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
+    color: #fff;
+    background: #6c757d;
+}
+.checkpoint-source.source-node-apply { background: #7048e8; }
+.checkpoint-source.source-pre-import { background: #1c7ed6; }
+.checkpoint-empty {
+    padding: 12px 4px;
+    color: #777;
+    font-size: 12px;
+}
 /* Collapsible JSON blocks */
 .json-collapsible {
     margin: 10px 0;

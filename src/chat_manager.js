@@ -116,6 +116,140 @@
         );
     };
 
+
+    // ------------------------------------------------------------------ //
+    //  Restore points                                                     //
+    // ------------------------------------------------------------------ //
+    //
+    // A chat checkpoint is reachable without any of this: the sidebar keeps
+    // its id on the message and the message's own Restore button uses it.
+    // The Agent node has no message to hang one off, so before this its
+    // checkpoints were written and then unfindable — and a restore point
+    // nobody can find is not a restore point.
+
+    // Same clone-from-HTML helper as ui_core.js, for the same reason: the
+    // markup is markup. Throwing on a missing template is safe here too —
+    // the button that opens this dialog comes from the same file.
+    function cloneTemplate(templateId) {
+        let tpl = document.getElementById(templateId);
+        if (!tpl) throw new Error('LLM Plugin: missing markup template #' + templateId);
+        let holder = document.createElement('div');
+        holder.innerHTML = tpl.innerHTML.trim();
+        let node = holder.firstElementChild;
+        if (!node) throw new Error('LLM Plugin: markup template #' + templateId + ' is empty');
+        return node;
+    }
+
+    let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
+
+    // What this restore point was taken before. The server stores enough to
+    // say so without guessing: which node, and which flows were in scope.
+    function describeCheckpoint(cp) {
+        let meta = (cp && cp.meta) || {};
+        if (meta.source === 'node-apply') {
+            let node = meta.node || {};
+            return 'before ' + (node.name || node.id || 'an LLM node') + ' edited the flow';
+        }
+        return 'before an import from the sidebar';
+    }
+
+    // Flow NAMES, not ids — the ids mean nothing to the person deciding
+    // whether this is the restore point they want. A tab that has since
+    // been deleted falls back to its id rather than disappearing.
+    function describeScope(cp) {
+        let ids = (cp && cp.meta && Array.isArray(cp.meta.targetFlowIds))
+            ? cp.meta.targetFlowIds : [];
+        if (ids.length === 0) return '';
+        try {
+            let names = Common.flowLabels(ids);
+            if (names) return ' · ' + names;
+        } catch (e) { /* fall through to ids */ }
+        return ' · ' + ids.join(', ');
+    }
+
+    function fetchCheckpoints(source) {
+        let url = 'llm-plugin/checkpoints';
+        if (source) url += '?source=' + encodeURIComponent(source);
+        return Common.apiFetch(url)
+            .then(function(res) { return res.json(); })
+            .then(function(data) { return (data && data.checkpoints) || []; });
+    }
+
+    function renderCheckpointList(listEl, source) {
+        while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+        listEl.appendChild(el('div', 'checkpoint-empty', 'Loading…'));
+
+        return fetchCheckpoints(source).then(function(items) {
+            while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+            if (items.length === 0) {
+                listEl.appendChild(el('div', 'checkpoint-empty',
+                    'No restore points yet. One is saved automatically before each flow edit.'));
+                return;
+            }
+            items.forEach(function(cp) {
+                let item = cloneTemplate('llm-plugin-checkpoint-item-template');
+
+                let badge = item.querySelector('.checkpoint-source');
+                let src = (cp.meta && cp.meta.source) || null;
+                badge.textContent = SOURCE_LABELS[src] || 'Other';
+                if (src) badge.classList.add('source-' + src);
+
+                item.querySelector('.checkpoint-what').textContent = describeCheckpoint(cp);
+                item.querySelector('.chat-date').textContent =
+                    cp.created ? new Date(cp.created).toLocaleString() : '';
+                item.querySelector('.message-count').textContent =
+                    (cp.nodes || 0) + ' nodes' + describeScope(cp);
+
+                let btn = item.querySelector('.restore-btn');
+                btn.addEventListener('click', function() {
+                    // Same confirmation as the per-message Restore button:
+                    // this replaces the flow, and from here the user may be
+                    // looking at a restore point they didn't create.
+                    if (!confirm('Restore the flow from this restore point? The current flow will be replaced.')) return;
+                    btn.disabled = true;
+                    LLMPlugin.Importer.restoreCheckpoint(cp.id)
+                        .then(function(result) {
+                            if (result && result.ok) {
+                                Common.notify('Restore point applied', 'success');
+                            } else {
+                                Common.notify((result && result.error) || 'Failed to restore', 'error');
+                            }
+                        })
+                        .catch(function(err) {
+                            Common.notify((err && err.message) || 'Failed to restore', 'error');
+                        })
+                        .finally(function() { btn.disabled = false; });
+                });
+
+                listEl.appendChild(item);
+            });
+        }).catch(function(err) {
+            while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+            listEl.appendChild(el('div', 'checkpoint-empty',
+                'Could not load restore points: ' + ((err && err.message) || 'request failed')));
+        });
+    }
+
+    ChatManager.showCheckpointList = function() {
+        // Never stack dialogs — the chat list does the same.
+        document.querySelectorAll('.chat-modal').forEach(function(m) { m.remove(); });
+
+        let modal = cloneTemplate('llm-plugin-checkpoint-modal-template');
+        modal.querySelector('.close-btn')
+            .addEventListener('click', function() { modal.remove(); });
+
+        let listEl = modal.querySelector('.checkpoint-list');
+        modal.querySelectorAll('input[name="cp-source"]').forEach(function(radio) {
+            radio.addEventListener('change', function() {
+                if (radio.checked) renderCheckpointList(listEl, radio.value || null);
+            });
+        });
+
+        document.body.appendChild(modal);
+        renderCheckpointList(listEl, null);
+        return modal;
+    };
+
     ChatManager.saveChatToServer = function(chatId) {
         let chat = chatHistory[chatId];
         if (!chat) return;
