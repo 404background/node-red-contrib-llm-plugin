@@ -147,20 +147,34 @@ Token normalization, JSON repair (comment stripping, quote fixing,
 balanced-snippet scanning) and the Agent partial-schema merge are internal
 steps of those four entry points — they are not exported.
 
-### `apply_queue.js`
+### `apply_queue_server.js` (server) + `apply_queue.js` (client)
 
-Serialises flow-modifying applies against the flows they touch. The sidebar
-and the Agent node both write to the same canvas, and the node's reply
-arrives whenever the model finishes.
+Orders every flow-modifying apply against the flows it touches, so two never
+merge into each other's uncommitted work. The rules are on the **server** —
+one queue for all editors, and the release signal is the runtime's own deploy
+event. The apply itself stays in the browser, because writing back through the
+Admin API cannot clear the open editor's unsaved state.
+
+**Server** (`createApplyQueue(RED)`, wired up in `server.js`):
 
 | Function | Purpose |
 |----------|---------|
-| `enqueue({ targetFlowIds, source, label, apply })` | Run `apply` when its turn comes; resolves with whatever it returned. Waits if any target flow is applied-but-not-deployed, or if an earlier waiting entry wants an overlapping flow. An empty `targetFlowIds` means the scope is unknown and conflicts with everything. |
-| `list()` | The waiting entries, each with why it is blocked (`deploy` / `queue`) — what the sidebar panel renders. |
-| `cancel(id)` | Drop a waiting entry; its caller's promise rejects. An entry already running cannot be cancelled — abandoning an apply mid-flight is what leaves a half-changed canvas. |
-| `releaseHold()` | End the hold without a deploy, for when the edit was undone or restored instead. |
-| `onChange(fn)` | Subscribe to queue changes; returns an unsubscribe function. |
-| `bindDeployListener()` | Listen for the editor's `deploy` event, which Node-RED emits only on a successful deploy — the Deploy button and the node's auto deploy alike. |
+| `request({ clientId, targetFlowIds, source, label })` | Take a place in the queue. Granted straight away unless a target flow is applied-but-not-deployed, or an earlier waiting entry wants an overlapping flow. An empty `targetFlowIds` means the scope is unknown and conflicts with everything, both ways. |
+| `complete(entryId, ok)` | The client has applied (or failed). On success its flows are held until the next deploy; on failure nothing is held, because the importer rolled back and waiting for a deploy that has no reason to happen would wedge the queue. |
+| `cancel(entryId)` | Drop a waiting entry. An entry already granted is mid-apply and is left alone. |
+| `releaseHold()` | End the hold without a deploy, for an edit undone by hand or a restored checkpoint. |
+| `state()` | The queue plus the held flows. Also sweeps expired grants and stale holds. |
+| `bindDeployListener()` | Release every hold on `runtime-event` / `runtime-deploy` — emitted by the flow engine, so it covers a Deploy from any editor, the node's auto deploy, and a deploy made through the Admin API. |
+
+Routes: `GET /llm-plugin/apply-queue`, and `POST .../request`, `.../complete`,
+`.../cancel`, `.../release`. Every change is published to
+`llm-plugin/apply-queue` over comms, retained.
+
+**Client** — same `enqueue` / `list` / `cancel` / `releaseHold` / `onChange`
+surface as before, plus `connect()` to subscribe. `enqueue` asks for a turn,
+waits to be granted it (a grant arrives in a pushed state), runs `apply`, and
+reports the outcome. Entries carry the client that asked, so the panel can tell
+this editor's requests from another's.
 
 See [design.md](./design.md#13-ordering-two-producers-against-one-canvas).
 ### `chat_manager.js`

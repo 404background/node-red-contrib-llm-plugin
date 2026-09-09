@@ -10,9 +10,17 @@ const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
 const createLLMCore = require('./llm_core');
+const createApplyQueue = require('./apply_queue_server');
 
 function createLLMPluginServer(RED) {
     const core = createLLMCore(RED);
+
+    // Orders the editors' flow applies against each other. Server-side so
+    // that two open editors share one queue, and so the deploy that
+    // releases a hold can be observed directly rather than reported by
+    // whichever browser happened to make it.
+    const applyQueue = createApplyQueue(RED);
+    applyQueue.bindDeployListener();
 
     // Storage locations resolved once by the shared core.
     const chatsDir = core.chatsDir;
@@ -617,6 +625,67 @@ function createLLMPluginServer(RED) {
     //
     // Newest first, because the one worth restoring is nearly always the
     // edit that just landed.
+    // ------------------------------------------------------------------ //
+    //  Apply queue                                                        //
+    // ------------------------------------------------------------------ //
+    //
+    // The apply itself stays in the browser (writing back through the Admin
+    // API cannot clear the open editor's unsaved state); only the ordering
+    // is here. A client asks for its turn, waits to be granted it, applies,
+    // and reports back. State changes are pushed to every editor over comms
+    // rather than polled.
+
+    RED.httpAdmin.get('/llm-plugin/apply-queue', guard(PERM_READ), function(req, res) {
+        try {
+            return res.json(applyQueue.state());
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to read the apply queue') });
+        }
+    });
+
+    // PERM_WRITE: taking a turn is a claim on the flows, even though the
+    // write itself happens in the browser.
+    RED.httpAdmin.post('/llm-plugin/apply-queue/request', guard(PERM_WRITE), function(req, res) {
+        try {
+            const body = req.body || {};
+            return res.json(applyQueue.request({
+                clientId: body.clientId,
+                source: body.source,
+                label: body.label,
+                targetFlowIds: body.targetFlowIds
+            }));
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to queue the apply') });
+        }
+    });
+
+    RED.httpAdmin.post('/llm-plugin/apply-queue/complete', guard(PERM_WRITE), function(req, res) {
+        try {
+            const body = req.body || {};
+            const out = applyQueue.complete(String(body.entryId || ""), !!body.ok);
+            return res.status(out.ok ? 200 : 404).json(out);
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to complete the apply') });
+        }
+    });
+
+    RED.httpAdmin.post('/llm-plugin/apply-queue/cancel', guard(PERM_WRITE), function(req, res) {
+        try {
+            const body = req.body || {};
+            const out = applyQueue.cancel(String(body.entryId || ""));
+            return res.status(out.ok ? 200 : 404).json(out);
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to cancel the request') });
+        }
+    });
+
+    RED.httpAdmin.post('/llm-plugin/apply-queue/release', guard(PERM_WRITE), function(req, res) {
+        try {
+            return res.json(applyQueue.releaseHold());
+        } catch (error) {
+            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to release the hold') });
+        }
+    });
     RED.httpAdmin.get('/llm-plugin/checkpoints', guard(PERM_READ), function(req, res) {
         try {
             const wanted = req.query && req.query.source ? String(req.query.source) : null;

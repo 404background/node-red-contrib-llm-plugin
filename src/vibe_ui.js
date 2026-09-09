@@ -53,8 +53,13 @@
             badge.textContent = entry.source === 'node' ? 'Node' : 'Chat';
             badge.classList.add('source-' + entry.source);
 
+            // The queue is shared, so an entry may belong to another open
+            // editor. Saying so is the difference between "my request is
+            // waiting" and "someone else is holding this flow", which call for
+            // different actions.
             item.querySelector('.llm-queue-label').textContent =
-                entry.label + flowScopeText(entry.targets);
+                entry.label + flowScopeText(entry.targets) +
+                (entry.mine === false ? ' · another editor' : '');
             item.querySelector('.llm-queue-why').textContent =
                 entry.state === 'running'
                     ? 'applying…'
@@ -93,7 +98,10 @@
             renderQueuePanel(panel, listEl, entries);
         });
         renderQueuePanel(panel, listEl, LLMPlugin.ApplyQueue.list());
-        LLMPlugin.ApplyQueue.bindDeployListener();
+        // Subscribes to the server's pushes. The deploy that releases a hold
+        // is detected by the runtime, not here — so a deploy from another
+        // editor releases this one's queue too.
+        LLMPlugin.ApplyQueue.connect();
     }
 
     function createLLMPluginUI() {

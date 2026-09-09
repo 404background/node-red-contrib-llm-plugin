@@ -403,12 +403,38 @@ to review, undo, or restore, and a second edit merging into it takes that decisi
 away. After a deploy it is simply the flow, and the next edit merging into it is
 what merging is for.
 
+### Where the queue lives
+On the **server**, in `apply_queue_server.js`. The apply itself cannot move there —
+writing flows back through the Admin API cannot clear the open editor's unsaved
+state, which is why the plugin applies to the canvas in the browser at all — but the
+*ordering* has no reason to sit in a browser, and three things go wrong when it does:
+
+- **Two editors are two queues.** Ordering the sidebar against the Agent node inside
+  one browser leaves two people editing the same flows completely unsynchronised.
+  Worse, the node's reply is broadcast to *every* connected editor, so each one
+  applies it against its own view.
+- **A browser only sees its own deploys.** The release signal has to be a deploy, and
+  the editor's `deploy` event fires only in the browser that made it.
+- **A closed tab is a stuck queue.** Nothing outside the browser can notice that the
+  turn it took is never coming back.
+
+The client asks for a turn, waits to be granted it, applies, and reports back. State
+is pushed to every editor over comms (`llm-plugin/apply-queue`, retained, so an
+editor opened halfway through sees what is already waiting rather than an empty
+panel).
+
 ### Release
-One signal covers both cases: the editor's `deploy` event, which Node-RED emits only
-from the success path of a deploy. The Agent node's auto deploy goes through
-`core:deploy-flows`, the same action as the Deploy button, so an unattended node
-releases its own hold while a node without auto deploy waits for the user — which is
-the behaviour asked for, without the queue needing to tell the two apart.
+The runtime emits `runtime-event` with id `runtime-deploy` once a deploy has
+completed, and the queue listens for that. It is the same emitter the flow engine
+uses (`@node-red/util`'s `events`, which `RED.events` exposes to plugins), so it
+fires for a Deploy from **any** editor, for the Agent node's auto deploy — which goes
+through `core:deploy-flows`, the same action as the Deploy button — and for a deploy
+driven through the Admin API by something that is not an editor at all. None of those
+last two are visible to a browser.
+
+So an unattended node releases its own hold, a node without auto deploy waits for the
+user, and one person's Deploy frees the flow for everyone — all from one listener,
+with nothing needing to tell the cases apart.
 
 Two cases the deploy event does not cover, both surfaced in the sidebar's queue
 panel rather than left to deadlock:
@@ -418,23 +444,31 @@ panel rather than left to deadlock:
 - **An edit undone by hand, or a restored checkpoint**, ends the edit without a
   deploy. **Release** clears the hold manually. A waiting request can also be
   cancelled, and its caller is told rather than left hanging.
+- **A browser that takes its turn and closes** would hold everyone up. A grant that
+  is not completed within `GRANT_TIMEOUT_MS` expires, and a hold older than
+  `HOLD_MAX_AGE_MS` is dropped as a backstop. The cost of being wrong about an
+  expiry is one duplicate apply attempt; the cost of no timeout is a queue that never
+  moves again.
 
 An apply with **no declared scope** (no flow context was selected) conflicts with
 everything in both directions: it may read or write any flow, and guessing otherwise
 is how an edit lands somewhere nobody looked.
 
-### Scope — one editor, not one server
-The queue is per editor session, and that is where the two producers actually
-collide: the sidebar and the Agent node are both in the same browser. It does **not**
-coordinate two people with the editor open. Each browser holds its own queue, and the
-node's comms message is broadcast to every connected editor, so each applies it
-locally.
+### What this does and does not cover
+It covers every editor talking to one Node-RED, which is what "several people working
+on the same flows" means in practice. It does not extend past that runtime: two
+Node-RED instances behind a shared store would each keep their own queue.
 
-Node-RED already guards that case, at the point where it matters: the flows POST
+Node-RED's own guard remains the backstop for the moment of writing: the flows POST
 carries a revision, and a deploy against a stale one comes back `409` and raises the
-editor's own merge-conflict dialog. The queue is about the window *before* the
-deploy, which Node-RED has no view of.
+editor's merge-conflict dialog. The queue covers the window *before* that — the time
+an edit sits applied and undeployed, which the revision check cannot see.
 
-- Regression test: `test/apply_queue.test.js` — different flows do not wait,
-  the same flow waits for the deploy, arrival order is preserved, a failure holds
-  nothing, an unknown scope holds everything, and cancel / release both work.
+- Regression tests: `test/apply_queue.test.js` drives the server rules (different
+  flows do not wait, the same flow waits for the deploy, arrival order is preserved,
+  a deploy from another editor releases the hold, a failure holds nothing, an unknown
+  scope holds everything, an abandoned grant expires, and every change is published).
+  `test/apply_queue_client.test.js` drives the browser protocol — that nothing is
+  applied before the turn is granted, that a re-pushed grant does not apply twice,
+  that a failure is still reported so the turn is given up, and that another editor's
+  grant is not run locally.
