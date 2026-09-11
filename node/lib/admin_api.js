@@ -7,15 +7,9 @@
 // Base URL: `opts.url`, else auto-detected — port from RED.server.address()
 // (correct even when embedded in Express) → uiPort → 1880, root from
 // settings.httpAdminRoot. No auth: this local read assumes adminAuth is off.
-// Docs: https://nodered.org/docs/api/admin/methods/get/flows/
-//
-// Built on global `fetch` (the package requires Node >= 18), which speaks
-// both schemes through one code path. The previous version picked between
-// the `http` and `https` modules by hand and carried the consequences of
-// that choice everywhere: a `useHttps` flag, default ports written out as
-// 443/80, and host/port/path passed around separately instead of a URL.
-// None of that was ever a decision about behaviour — only about which
-// module to call.
+// Built on global `fetch` (the package requires Node >= 18): one code path
+// for both schemes. Docs: https://nodered.org/docs/api/admin/methods/get/flows/
+// See docs/{en,jp}/llm-request.md — Files.
 
 function createAdminApi(RED) {
 
@@ -46,11 +40,8 @@ function createAdminApi(RED) {
     // Resolve the admin API base as a URL string ending in `/`, from an
     // optional explicit editor URL or by auto-detection.
     //
-    // The override URL can come from msg.editorUrl, i.e. from flow data, so it
-    // is not necessarily operator-authored. Restrict it to the schemes this
-    // client can actually speak; anything else would just be pointing the
-    // runtime at something it has no business opening. That check stays —
-    // it is an allowlist, not a protocol branch.
+    // The override can come from `msg.editorUrl`, i.e. from flow data rather
+    // than an operator, so the scheme is an allowlist — not a protocol branch.
     const ALLOWED_PROTOCOLS = { 'http:': 1, 'https:': 1 };
 
     function resolveBase(overrideUrl) {
@@ -81,8 +72,8 @@ function createAdminApi(RED) {
         if (root === false) {
             throw new Error('Node-RED admin API is disabled (httpAdminRoot=false); set an API URL on the node.');
         }
-        // Still a scheme decision, but only to build a URL — the runtime we
-        // are calling is our own, and it may be serving TLS.
+        // The scheme is still decided here, but only to build a URL: the
+        // runtime we are calling is our own, and it may be serving TLS.
         const scheme = (isHttpsServer(RED.server) || !!RED.settings.https) ? 'https' : 'http';
         return scheme + '://127.0.0.1:' + detectPort() + normaliseRoot(root);
     }
@@ -132,7 +123,7 @@ function createAdminApi(RED) {
     }
 
     // GET the full flow configuration (all tabs + config nodes) plus its rev.
-    // Used by the LLM node's Agent mode to give the model prompt context.
+    // Used by the llm-request node's Agent mode to give the model prompt context.
     function getFlows(opts) {
         return request('flows', { 'Node-RED-API-Version': 'v2' }, opts);
     }

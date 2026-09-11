@@ -28,7 +28,7 @@
         "type": "comment",
         "z": "llm_feedback_tab",
         "name": "CHECK FIRST: set the API endpoint in the change node below",
-        "info": "The change node below stores this instance's HTTP API endpoint base in the flow variable `apiBase` (it fires once automatically on every deploy). Set it in this ONE place and reuse it from any node: function nodes read it with `flow.get('apiBase')` (see 'next loop URL'), typed input fields can reference `flow.apiBase` — the sample's LLM node's API URL is already set to `flow.apiBase`. (If your admin API lives under a different root than this endpoint base — e.g. editor at /red but httpNodeRoot /api — the LLM node logs a warning and falls back to auto-detection; that is expected.)\n\nEDIT ITS VALUE TO MATCH YOUR NODE-RED INSTANCE, then deploy:\n- Standalone Node-RED (default): http://127.0.0.1:1880\n- Embedded in another app: scheme://host:port + your settings' `httpNodeRoot` — e.g. httpNodeRoot \"/api\" on port 8000 → http://127.0.0.1:8000/api\n\nNotes:\n- This is the base where `http in` endpoints live (e.g. <apiBase>/llm-loop). It is NOT the editor URL: the editor and admin API are under `httpAdminRoot` (e.g. /red).\n- Do NOT include a trailing /llm-loop — the 'next loop URL' function appends it.\n- A wrong value shows up as ECONNREFUSED (nothing listening there) or 404 (wrong root path) in the 'loop errors' debug.",
+        "info": "The change node below stores this instance's HTTP API endpoint base in the flow variable `apiBase` (it fires once automatically on every deploy). Set it in this ONE place and reuse it from any node: function nodes read it with `flow.get('apiBase')` (see 'next loop URL'), typed input fields can reference `flow.apiBase` — the sample's llm-request node's API URL is already set to `flow.apiBase`. (If your admin API lives under a different root than this endpoint base — e.g. editor at /red but httpNodeRoot /api — the llm-request node logs a warning and falls back to auto-detection; that is expected.)\n\nEDIT ITS VALUE TO MATCH YOUR NODE-RED INSTANCE, then deploy:\n- Standalone Node-RED (default): http://127.0.0.1:1880\n- Embedded in another app: scheme://host:port + your settings' `httpNodeRoot` — e.g. httpNodeRoot \"/api\" on port 8000 → http://127.0.0.1:8000/api\n\nNotes:\n- This is the base where `http in` endpoints live (e.g. <apiBase>/llm-loop). It is NOT the editor URL: the editor and admin API are under `httpAdminRoot` (e.g. /red).\n- Do NOT include a trailing /llm-loop — the 'next loop URL' function appends it.\n- A wrong value shows up as ECONNREFUSED (nothing listening there) or 404 (wrong root path) in the 'loop errors' debug.",
         "x": 310,
         "y": 60,
         "wires": []
@@ -128,7 +128,7 @@
         "id": "fb_llm_agent",
         "type": "llm-request",
         "z": "llm_feedback_tab",
-        "name": "LLM (agent, auto deploy)",
+        "name": "llm-request (agent, auto deploy)",
         "mode": "agent",
         "provider": "ollama",
         "model": "",

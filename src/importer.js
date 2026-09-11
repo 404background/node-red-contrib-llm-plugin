@@ -437,16 +437,12 @@
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
 
         // Identity / placement / editor-state keys never carried over from
-        // existing to proposed during the merge. Each is supplied by
-        // something else: `z` is assigned explicitly, `x`/`y` by the layout
-        // passes, `wires` by the additive wire merge.
-        //
-        // `g` is NOT in this list, and must not be: nothing else restores it,
-        // so skipping it silently dropped an edited node out of its group —
-        // and left the group still listing it as a member. It is safe to
-        // carry blindly because `g` is a META_KEY in the converter, so the
-        // schema can neither read nor write it; the existing value is the
-        // only value there can be.
+        // existing to proposed during the merge: each is supplied by something
+        // else (`z` explicitly, `x`/`y` by the layout passes, `wires` by the
+        // additive wire merge). `g` is NOT in this list and must not be —
+        // nothing else restores group membership, and carrying it blindly is
+        // safe because the schema can neither read nor write it.
+        // See docs/{en,jp}/design.md §4.2 and §12.
         let MERGE_SKIP_KEYS = {
             id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1,
             dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
@@ -455,7 +451,7 @@
         // Restore every existing-node property the LLM did not explicitly
         // touch. "Explicitly touched" = key listed in n._llmSpecKeys (Vibe
         // Schema path), or key has a defined value on n (raw JSON path).
-        // See docs/*/architecture.md "importer.js" for the rationale.
+        // See docs/{en,jp}/architecture.md "importer.js" for the rationale.
         function preserveUnmentionedProperties(n, existing) {
             if (!existing) return;
             let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : null;
@@ -840,24 +836,14 @@
     // ================================================================== //
     //
     // `rebuildWorkspaceFromSnapshot` already produces the COMPLETE desired end
-    // state for the workspace, so applying it by clearing the tab and
-    // re-importing all of it was correct but far broader than the edit: every
-    // node in the flow was destroyed and recreated, taking the selection, the
-    // editor's own undo history, and anything missing from the snapshot with
-    // it. This applies the same end state as a diff — only what was added,
-    // removed, moved or actually changed is touched; the rest is never handed
-    // to Node-RED at all.
-    //
-    // Wires are why this is not simply "import the changed nodes". In the
-    // editor `node.wires` is NOT the source of truth: links are separate
-    // objects (`{ source, sourcePort, target }`) in their own registry, and
-    // `createExportableNodeSet` derives `wires` from them. Assigning to
-    // `node.wires` changes nothing. A changed connection therefore has to go
-    // through addLink / removeLink against the live node objects.
-    //
+    // state; this applies it as a DIFF, so only what was added, removed, moved
+    // or actually changed is touched. Wires are why that is not simply
+    // "import the changed nodes": links are separate objects in the editor's
+    // own registry and `node.wires` is derived from them, so a changed
+    // connection goes through addLink / removeLink against the live nodes.
     // Anything the diff cannot express safely hands back `fallback: true` and
-    // the caller runs the destructive path instead, so correctness never
-    // depends on this covering every case.
+    // the caller runs the destructive path, so correctness never depends on
+    // this covering every case. See docs/{en,jp}/design.md §12.
 
     // Handled by other means, so they take no part in the property compare:
     // `wires` becomes link surgery, `x`/`y` a move, and id/type/z identify the

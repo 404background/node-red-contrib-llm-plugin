@@ -1,7 +1,7 @@
 # キャンバスレイアウト
 
 Node-RED ノード配列のためのスタンドアロンなレイアウトエンジン。UMD モジュール
-(`window.LLMPlugin.CanvasLayout` / `require('./canvas_layout.js')`)。
+(`window.LLMPlugin.CanvasLayout` / `require('./src/core/canvas_layout.js')`)。
 幅を考慮する: 鎖は `(widthA + widthB)/2 + edgeGap` で詰められ、幅の広いラベルは
 隣接ノードを自動的に押し出す。
 
@@ -10,7 +10,7 @@ Node-RED ノード配列のためのスタンドアロンなレイアウトエ�
 ### 1. 全体再レイアウト(full reflow)
 
 ```js
-const Layout = require('./canvas_layout.js');
+const Layout = require('./src/core/canvas_layout.js');
 const flow = [
     { id: 'a', type: 'inject',   wires: [['b']] },
     { id: 'b', type: 'function', wires: [['c']] },

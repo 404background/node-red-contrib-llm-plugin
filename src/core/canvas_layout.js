@@ -1,6 +1,6 @@
 // Canvas Layout - standalone layout engine for Node-RED node arrays.
 // Public API: layoutNodes, reflowCanvasNodes, placeAddedNodesNearNeighbors,
-// estimateNodeWidth, getNodeWidth, pairSpacing. See docs/*/layout.md.
+// estimateNodeWidth, getNodeWidth, pairSpacing. See docs/{en,jp}/layout.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -13,7 +13,7 @@
 
     // `spacingY`, `componentGap` and `edgeGap` are EDGE-TO-EDGE clearances
     // (visible whitespace), not centre-to-centre distances; the pitch is
-    // `nodeHeight + gap`. See docs/*/layout.md for the spacing rule.
+    // `nodeHeight + gap`. See docs/{en,jp}/layout.md for the spacing rule.
     let LAYOUT_DEFAULTS = {
         startX:        60,
         startY:        60,
@@ -36,7 +36,7 @@
         return true;
     }
 
-    // --- Pure topological layout (docs/*/layout.md §1) ---
+    // --- Pure topological layout (docs/{en,jp}/layout.md §1) ---
     function layoutNodes(aliases, outgoing, incoming, maxColumns) {
         if (!maxColumns || maxColumns < 2) maxColumns = 5;
         let positions = {};
@@ -281,7 +281,7 @@
     function nodeRightEdge(node, opts) { return (node.x || 0) + getNodeWidth(node, opts) / 2; }
     function nodeLeftEdge (node, opts) { return (node.x || 0) - getNodeWidth(node, opts) / 2; }
 
-    // Width-aware centre-to-centre distance (docs/*/layout.md §"Width-aware…").
+    // Width-aware centre-to-centre distance (docs/{en,jp}/layout.md §"Width-aware…").
     function pairSpacing(a, b, opts) {
         let gap = pickOption(opts, 'edgeGap', LAYOUT_DEFAULTS.edgeGap);
         return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
@@ -290,7 +290,7 @@
     // Place each comment directly above the canvas node it heads, stacking
     // upward when several share a target and landing on top of any comments
     // already there. Target = `_llmAboveId`, else the next canvas node in
-    // `_llmOrder`. See docs/*/layout.md#comment-placement.
+    // `_llmOrder`. See docs/{en,jp}/layout.md#comment-placement.
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
@@ -565,7 +565,7 @@
         });
     }
 
-    // --- Canvas-level layout (docs/*/layout.md §§ 2 and 3) ---
+    // --- Canvas-level layout (docs/{en,jp}/layout.md §§ 2 and 3) ---
 
     function reflowCanvasNodes(nodes, options) {
         let opts = options || {};
@@ -790,7 +790,7 @@
             remaining = next;
         }
 
-        // Step 3.4 (docs/*/layout.md): shift downstream chains to clear inserted nodes.
+        // Step 3.4 (docs/{en,jp}/layout.md): shift downstream chains to clear inserted nodes.
         let shiftedIds = {};
         let seedDeltas = {};
         canvasNodes.forEach(function(n) {

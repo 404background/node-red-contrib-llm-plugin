@@ -5,9 +5,9 @@ flow", **in what order, by what rules, and with what priorities** the LLM Plugin
 operates — and **why it is implemented that way**. It is meant as the shared basis
 for discussing the implementation.
 
-- Module-by-module "what does what" reference → [architecture.md](./architecture.md)
-- The intermediate format (Vibe Schema) spec → [vibe-schema.md](./vibe-schema.md)
-- Layout engine details → [layout.md](./layout.md)
+- Module-by-module "what does what" reference → [docs/en/architecture.md](./architecture.md)
+- The intermediate format (Vibe Schema) spec → [docs/en/vibe-schema.md](./vibe-schema.md)
+- Layout engine details → [docs/en/layout.md](./layout.md)
 
 This note does not duplicate those; it focuses on the **"why" behind the design
 decisions and priorities**.
@@ -134,7 +134,7 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
   - Vibe Schema path → `_llmSpecKeys` (recorded at conversion time)
   - raw JSON path → keys whose value is not `undefined`
 - All other keys are restored from the existing node (`preserveUnmentionedProperties`).
-- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/g/dirty/…) and `_`-prefixed metadata (§0.1) are excluded (identity, coordinates, editor state, and metadata are not carried over).
+- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0.1) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — nothing else restores it (§12, "Where it declines").
 - **Reason**: Even when a normaliser fills in a default value (e.g. debug's `complete`), it must not overwrite a value the user set earlier. Guarantees "settings you didn't touch are preserved."
 
 ### 4.3 Node matching: exact-alias only, no fuzzy

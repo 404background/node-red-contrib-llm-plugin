@@ -23,9 +23,9 @@
         inputs: 1,
         outputs: 1,
         icon: 'font-awesome/fa-comments',
-        paletteLabel: 'LLM',
+        paletteLabel: 'llm-request',
         label: function() {
-            return this.name || ('LLM (' + (this.mode === 'agent' ? 'agent' : 'ask') + ')');
+            return this.name || ('llm-request (' + (this.mode === 'agent' ? 'agent' : 'ask') + ')');
         },
         oneditprepare: function() {
             // API URL accepts a literal string or a flow/global context variable.
@@ -56,7 +56,7 @@
 </script>
 
 <script type="text/javascript">
-    // Editor-side bridge for Agent mode. The runtime node publishes the LLM
+    // Editor-side bridge for Agent mode. The node's runtime half publishes the LLM
     // reply over comms (topic "llm-plugin/agent-apply"); here we apply it to the
     // canvas with the plugin's importer — the same path as the sidebar's Agent
     // import — so changes appear live in the open editor. Bound once per session.
@@ -81,7 +81,7 @@
             var P = window.LLMPlugin;
             if (!P || !P.Importer || typeof P.Importer.importFlowFromMessage !== 'function' ||
                 !P.ApplyQueue || typeof P.ApplyQueue.enqueue !== 'function') {
-                notify('LLM node: the LLM Plugin is still loading in this editor (or not installed) — wait a moment and retry.', 'warning');
+                notify('llm-request node: the LLM Plugin is still loading in this editor (or not installed) — wait a moment and retry.', 'warning');
                 return;
             }
             // A single target tab: focus it so the user sees the edit land.
@@ -102,7 +102,7 @@
             // for the user, which is what was asked for.
             P.ApplyQueue.enqueue({
                 source: 'node',
-                label: 'LLM node' + (payload.nodeName ? ' (' + payload.nodeName + ')' : ''),
+                label: 'llm-request node' + (payload.nodeName ? ' (' + payload.nodeName + ')' : ''),
                 targetFlowIds: ids,
                 apply: function () {
                 // A checkpoint BEFORE the import, the same as the sidebar's Import
@@ -137,7 +137,7 @@
                     })
                     .then(function (result) {
                         if (result && result.ok) {
-                            var applied = 'LLM node applied changes to ' + flowNames(ids);
+                            var applied = 'llm-request node applied changes to ' + flowNames(ids);
                             // Say plainly whether this edit can be undone. A failed
                             // checkpoint is not fatal, but it is the difference
                             // between a recoverable change and a permanent one.
@@ -167,7 +167,7 @@
                                 notify(applied + ', but this editor does not support auto deploy — deploy manually.', 'warning');
                             }
                         } else if (result && result.error) {
-                            notify('LLM node: ' + result.error, 'warning');
+                            notify('llm-request node: ' + result.error, 'warning');
                         }
                         // Back to the queue, which reads `ok` to decide whether
                         // these flows are held until the next deploy.
@@ -177,7 +177,7 @@
                 }
             })
                 .catch(function (e) {
-                    notify('LLM node import error: ' + (e && e.message ? e.message : e), 'error');
+                    notify('llm-request node import error: ' + (e && e.message ? e.message : e), 'error');
                 });
         }
 
@@ -240,8 +240,9 @@
 
 <script type="text/html" data-help-name="llm-request">
     <p>Sends <code>msg.payload</code> to an LLM and outputs the reply. Provider,
-    model and the selected flows are configured on the node; the provider's API
-    key and URLs come from the <b>LLM Plugin sidebar</b> (Settings).</p>
+    model and the selected flows are configured on the <code>llm-request</code>
+    node; the provider's API key and URLs come from the <b>LLM Plugin sidebar</b>
+    (Settings).</p>
 
     <h3>Modes</h3>
     <dl class="message-properties">
@@ -279,8 +280,8 @@
     <ul>
         <li><b>Timeout</b> defaults to 3600&nbsp;seconds (local LLMs can be slow). 0 = no limit; <code>msg.timeout</code> overrides.</li>
         <li><b>Auto deploy (developer feature):</b> deploys right after applying, asynchronously and <b>without any confirmation dialog</b> (node-validation warnings are skipped). Development only. Keep one editor open (every open editor deploys) and prefer the Modified Nodes/Flows deploy type — a Full deploy restarts the flow driving this node.</li>
-        <li><b>Agent runs what the model writes:</b> the reply is applied with no review step and there is no node-type restriction, so a generated flow may contain <code>function</code> nodes (arbitrary JavaScript in this process) or <code>exec</code> nodes (arbitrary shell commands). Whoever controls the model output controls this host. Use a trusted endpoint, and do <b>not</b> wire untrusted text (<code>http in</code> payloads, inbound messages, scraped content) into an Agent node — with Auto deploy that is remote input straight to code execution.</li>
-        <li><b>Applies are queued, not raced.</b> If a flow this node targets has an edit already applied and not yet deployed — yours from the sidebar, or an earlier reply from a node — this one waits for that deploy instead of merging on top of an uncommitted change. Edits to different flows never wait for each other. With <b>Auto deploy</b> on, the node releases its own hold; without it, the wait ends when you deploy. The sidebar shows what is waiting and why.</li>
+        <li><b>Agent runs what the model writes:</b> the reply is applied with no review step and there is no node-type restriction, so a generated flow may contain <code>function</code> nodes (arbitrary JavaScript in this process) or <code>exec</code> nodes (arbitrary shell commands). Whoever controls the model output controls this host. Use a trusted endpoint, and do <b>not</b> wire untrusted text (<code>http in</code> payloads, inbound messages, scraped content) into an <code>llm-request</code> node in Agent mode — with Auto deploy that is remote input straight to code execution.</li>
+        <li><b>Applies are queued, not raced.</b> If a flow this node targets has an edit already applied and not yet deployed — yours from the sidebar, or an earlier reply from another <code>llm-request</code> node — this one waits for that deploy instead of merging on top of an uncommitted change. Edits to different flows never wait for each other. With <b>Auto deploy</b> on, the node releases its own hold; without it, the wait ends when you deploy. The sidebar shows what is waiting and why.</li>
         <li><b>Agent needs an open editor</b> with the LLM Plugin loaded; the reply is applied there via comms. It is not recorded in chat history, but a Restore Checkpoint of the target flows is saved immediately before each edit, so the change can be rolled back. Those checkpoints belong to no chat (they are tagged <code>node-apply</code>) and are kept to their own limit, so a node firing on a timer cannot crowd out the sidebar's restore points. If the checkpoint cannot be saved the edit still applies and the notification says so.</li>
         <li><b>API URL</b> is the Node-RED admin API base — normally the same URL the editor is served at (standalone: <code>http://localhost:1880</code>; embedded: the <code>httpAdminRoot</code> base, e.g. <code>http://localhost:8000/red</code>). Blank = auto-detect from the running instance (recommended). Accepts a string or a flow/global context variable; <code>msg.editorUrl</code> overrides. If the configured URL fails, the node falls back to auto-detection with a warning.</li>
         <li><b>Mind the trigger rate:</b> every message costs one LLM request (and one canvas edit in Agent mode).</li>

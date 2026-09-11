@@ -1,5 +1,5 @@
 // Flow Converter Core: Node-RED JSON ↔ Vibe Schema converter + type
-// detection helpers. See docs/*/vibe-schema.md.
+// detection helpers. See docs/{en,jp}/vibe-schema.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory(require('./canvas_layout.js'));
@@ -91,7 +91,7 @@
     // key is absent for a normal node. A type owning a real property of the
     // alias name keeps it: the lift is skipped when the name is taken, and
     // an explicit raw `d`/`l` wins on the way back.
-    // See docs/*/vibe-schema.md#editor-flags-disabled-showlabel.
+    // See docs/{en,jp}/vibe-schema.md#editor-flags-disabled-showlabel.
     let NODE_FLAGS = { d: 'disabled', l: 'showLabel' };
     let NODE_FLAG_RAW = { disabled: 'd', showLabel: 'l' };
 
@@ -116,7 +116,7 @@
     // `_`-prefixed = plugin-internal bookkeeping. The rule lives here alone
     // so both invariants hold: toIntermediate never emits such a key (the
     // LLM never sees metadata) and toNodeRed never accepts one (the LLM
-    // cannot forge it). See docs/*/design.md §0.1.
+    // cannot forge it). See docs/{en,jp}/design.md §0.1.
     function isMetaProp(key) {
         return typeof key === 'string' && key.charAt(0) === '_';
     }

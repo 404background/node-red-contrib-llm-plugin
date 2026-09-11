@@ -1,18 +1,9 @@
-// Client half of the apply queue.
-//
-// The ordering rules live on the server (`src/apply_queue_server.js`), so two
-// open editors share one queue and the deploy that releases a hold is observed
-// by the runtime rather than reported by whichever browser made it. This side
-// only asks for a turn, waits to be granted it, runs the apply, and reports
-// back.
-//
-// The apply itself has to stay here: writing flows back through the Admin API
-// cannot clear the open editor's unsaved state, which is why the plugin
-// applies to the canvas in the browser at all.
-//
-// State arrives over comms (`llm-plugin/apply-queue`, retained), so an editor
-// opened halfway through sees what is already waiting instead of an empty
-// panel — including entries belonging to somebody else's browser.
+// Client half of the apply queue: ask for a turn, wait to be granted it, run
+// the apply, report back. The ordering rules live on the server
+// (src/apply_queue_server.js) and the state arrives over comms, so two open
+// editors share one queue. The apply itself has to stay here — writing flows
+// back through the Admin API cannot clear the editor's unsaved state.
+// See docs/{en,jp}/design.md §13.
 (function() {
     let Common = window.LLMPlugin.Common;
     let ApplyQueue = {};
@@ -99,16 +90,11 @@
     /**
      * Queue one flow-modifying apply.
      *
-     * `apply` runs when the server grants this client its turn, and must
-     * return the importer's result (or a promise for it) — the queue reads
-     * `ok` off it to decide whether these flows are held until the next
-     * deploy. The returned promise settles with whatever `apply` produced, so
-     * a caller reads as though it had applied directly.
-     *
-     * `targetFlowIds` is the scope the apply may write to: the same list the
-     * importer is given, so "what waits for what" and "what may be written"
-     * cannot disagree. An empty list means the scope is unknown, and is
-     * treated as conflicting with everything.
+     * `apply` runs when the server grants this client its turn and must return
+     * the importer's result — the queue reads `ok` off it to decide whether
+     * these flows are held until the next deploy. `targetFlowIds` is the scope
+     * the apply may write to (the same list the importer is given); an empty
+     * list means unknown, and conflicts with everything.
      */
     ApplyQueue.enqueue = function(options) {
         options = options || {};

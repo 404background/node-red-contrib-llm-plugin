@@ -98,12 +98,12 @@ value props on a config node are never mistaken for config references.
 The comment's coordinates here are its raw layout slot; its final
 position (touching `inject_tick`'s top edge, left edges aligned) is
 applied by the importer's layout pass, which resolves `above` to the
-real node id first. See [layout.md](./layout.md#comment-placement).
+real node id first. See [docs/en/layout.md](./layout.md#comment-placement).
 
 ### 3. Round-trip code
 
 ```js
-const Cfg = require('./flow_converter_core.js');
+const Cfg = require('./src/core/flow_converter_core.js');
 
 const schema = Cfg.toIntermediate(exportedNodes);
 //   schema.nodes[alias] = { type, name?, config?, disabled?, props? }
@@ -164,7 +164,7 @@ in both directions: `toIntermediate` emits no `_` key, so the LLM never
 sees one, and `toNodeRed` ignores every `_` key a schema supplies, so the
 LLM cannot author one either. Metadata is written solely by `toNodeRed`
 for the importer to consume, and the importer strips all of it before the
-nodes reach the canvas. See [design.md](./design.md) §0.1.
+nodes reach the canvas. See [docs/en/design.md](./design.md) §0.1.
 
 ### Editor flags (`disabled`, `showLabel`)
 
@@ -191,7 +191,7 @@ and writes back the single-letter key. `d` exists only while a node is
 disabled, so `disabled: false` **removes** the key rather than writing
 `d: false`; it still counts as an explicitly proposed key, which is what
 stops the importer's merge from restoring the node's previous `d: true`
-(see [architecture.md](./architecture.md) — `importFlowFromMessage`, "Property preservation").
+(see [docs/en/architecture.md](./architecture.md) — `importFlowFromMessage`, "Property preservation").
 
 `disabled` and `showLabel` are therefore reserved names. A node type that
 owns real properties of those names keeps them: the outbound lift is
@@ -220,7 +220,7 @@ and deletions in any order.
 { "connections": [ { "remove": { "from": "a", "to": "b" } } ] }     // edge delete
 ```
 
-Connections are otherwise additive — see [architecture.md](./architecture.md)
+Connections are otherwise additive — see [docs/en/architecture.md](./architecture.md)
 "importer.js" for the full merge contract.
 
 ### Reposition directive
@@ -268,7 +268,7 @@ next canvas node in declaration order" and trailing comments (no canvas
 node after them and no `above`) are silently dropped. Comments WITH
 `above` are always kept regardless of where they sit in the `nodes`
 list — declaration order doesn't matter once the anchor is named. See
-[layout.md](./layout.md#comment-placement) for the placement geometry.
+[docs/en/layout.md](./layout.md#comment-placement) for the placement geometry.
 
 ### Detection helpers
 
@@ -314,7 +314,7 @@ list — declaration order doesn't matter once the anchor is named. See
 5. **Build adjacency from connections**, dropping edges where source is a
    no-output type or target is a no-input type.
 6. **Layout** — `CanvasLayout.layoutNodes` for logical positions, then
-   width-aware column placement; see [layout.md](./layout.md).
+   width-aware column placement; see [docs/en/layout.md](./layout.md).
 7. **Build per-port wires** with the same source/target filtering.
 8. **Assemble nodes**: carry `id`, `type`, `name`, and the metadata the
    importer needs — `_llmAlias` (when `preserveAlias: true`),

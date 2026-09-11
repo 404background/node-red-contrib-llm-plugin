@@ -216,7 +216,7 @@ async function scenarioUntaggedNodesFollowTheContextFlow() {
 }
 
 // ------------------------------------------------------------------ //
-//  Outbound: what the runtime node sends to the provider              //
+//  Outbound: what the llm-request node sends to the provider          //
 // ------------------------------------------------------------------ //
 
 function scenarioProviderContextIsScoped() {

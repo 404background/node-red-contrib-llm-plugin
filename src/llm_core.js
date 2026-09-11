@@ -1,11 +1,7 @@
-// LLM Plugin  -  Shared LLM Engine
-//
-// Everything needed to talk to an LLM: storage resolution, encrypted
-// credentials, settings, provider adapters, prompt construction, redaction.
-//
-// The sidebar (src/server.js) and the runtime node (node/llm-request) both
-// consume it, so there is ONE settings + credentials store — which is what
-// lets a node inherit the provider and API key set in the sidebar.
+// LLM Plugin  -  Shared LLM engine: storage, encrypted credentials, settings,
+// provider adapters, prompt construction, redaction. Used by both src/server.js
+// (the sidebar) and the llm-request node, so there is ONE settings +
+// credentials store. See docs/{en,jp}/architecture.md — `llm_core.js`.
 //
 // Usage:  const core = require('./llm_core.js')(RED);
 const fs = require('fs-extra');
@@ -28,21 +24,8 @@ function createLLMCore(RED) {
     if (sharedInstance) return sharedInstance;
 
     // `userDir/llm-plugin`, or memory only. There is deliberately no second
-    // location to fall back to:
-    //
-    //  - The OS temp dir was one, and should not have been. It is where the
-    //    encrypted `credentials.json` ended up on any host with a read-only
-    //    userDir — a world-readable directory on some systems, cleared by the
-    //    OS on no schedule this plugin controls, and left behind on uninstall.
-    //  - The plugin's own install directory is not one either, however
-    //    tempting: npm replaces that whole tree on a version upgrade, so it
-    //    would lose the history on exactly the event that must preserve it.
-    //
-    // userDir is what gives the intended lifecycle — history survives a
-    // plugin update, and removing `userDir/llm-plugin` resets it — and it is
-    // where Node-RED keeps its own settings and credentials, so the plugin's
-    // non-secret settings and the credential secret (both in RED.settings,
-    // i.e. `userDir/.config.runtime.json`) already live alongside it.
+    // location: the OS temp dir is world-readable on some hosts and cleared on
+    // no schedule, and npm replaces the plugin's own directory on upgrade.
     let baseDir = null;
     let chatsDir = null;
     let checkpointsDir = null;
@@ -73,15 +56,9 @@ function createLLMCore(RED) {
             'checkpoints and API keys will be kept in memory only and lost on restart.');
     })();
 
-    // Write-then-rename so a reader never sees a half-written file. The temp
-    // name is unique per call: a fixed `.tmp` suffix makes two concurrent
-    // saves of the SAME document (two editor tabs, or a node and the sidebar)
-    // write over each other's temp file and rename a spliced result into
-    // place. A failed write leaves no debris behind either.
-    // `mode` is applied to the TEMP file, which the rename then becomes. That
-    // is what makes it stick: passing a mode to a plain write is ignored when
-    // the target already exists, so a credentials file created by an older
-    // build would keep its original permissions forever.
+    // Write-then-rename, so a reader never sees a half-written file. The temp
+    // name is unique per call, and `mode` is applied to the TEMP file — that
+    // is what makes it stick across the rename.
     function writeFileAtomic(filepath, content, mode) {
         const tmpPath = filepath + '.' + process.pid + '.' +
             crypto.randomBytes(4).toString('hex') + '.tmp';
@@ -97,20 +74,15 @@ function createLLMCore(RED) {
     // ------------------------------------------------------------------ //
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
-    //
-    // API keys are encrypted into the plugin's own `credentials.json` rather
-    // than `RED.nodes.addCredentials`, whose cleanCredentials wipes entries
-    // no flow node references — on every deploy. Non-secret settings stay in
-    // `RED.settings`.
+    // API keys are encrypted into the plugin's own `credentials.json`; the
+    // non-secret settings stay in `RED.settings`.
+    // See docs/{en,jp}/architecture.md — Security measures.
 
     const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
     let credsCache = null;
 
     // `RED.settings.set` returns a Promise and throws synchronously when the
-    // runtime has no settings storage, so both failure modes are normalised
-    // here. An ignored rejection is an unhandled rejection in the Node-RED
-    // process, and a silently dropped write is a setting the user believes
-    // they saved.
+    // runtime has no settings storage; both failure modes are normalised here.
     function persistSetting(name, value) {
         try {
             const result = RED.settings.set(name, value);
@@ -130,12 +102,7 @@ function createLLMCore(RED) {
     }
 
     // The plugin keeps its OWN secret rather than deriving from Node-RED's.
-    // `_credentialSecret` belongs to the runtime: it generates that key, and
-    // it DELETES it as soon as the user sets their own `credentialSecret` in
-    // settings.js — a documented, encouraged change that would otherwise make
-    // every stored API key here permanently undecryptable. Writing to it was
-    // doubly wrong, since the runtime would then adopt the plugin's key for
-    // the user's flow credentials.
+    // See docs/{en,jp}/architecture.md — Security measures.
     const SECRET_SETTING = 'llmPluginCredentialSecret';
     // Read-only, and only to decrypt blobs an older build wrote.
     const LEGACY_SECRET_SETTINGS = ['credentialSecret', '_credentialSecret'];
@@ -336,12 +303,9 @@ function createLLMCore(RED) {
 
     function redactSecrets(input) {
         let text = String(input || '');
-        // The stored key VALUES go first, matched literally. A custom
-        // endpoint's key can be any shape at all — a UUID, a bare token — so
-        // no pattern will catch it, and an endpoint that echoes the
-        // Authorization header into its error body would otherwise put it
-        // straight in the Node-RED log. The patterns below stay as a net for
-        // keys that were never stored here.
+        // The stored key VALUES go first, matched literally; the patterns
+        // below are only a net for keys that were never stored here.
+        // See docs/{en,jp}/architecture.md — Security measures.
         try {
             const creds = loadCreds();
             Object.keys(creds).forEach(function(field) {
@@ -425,12 +389,9 @@ function createLLMCore(RED) {
             };
         }
 
-        // Multi-flow case: ONE flat Vibe Schema; every canvas node carries a
-        // `flow` field (tab label). A single toIntermediate pass keeps
-        // aliases globally unique (no cross-flow collisions). Config nodes
-        // get no `flow` field — they live outside canvases. Canvas nodes are
-        // grouped tab-by-tab (NOT raw input order): alias numbering follows
-        // this order, and the client's alias resolution mirrors it.
+        // Multi-flow: ONE flat Vibe Schema, every canvas node carrying a
+        // `flow` field, grouped tab-by-tab so the alias numbering matches what
+        // the client resolves against. See docs/{en,jp}/design.md §6.
         const allCanvas = [];
         for (const z of tabIds) {
             const flowNodes = byTab[z] || [];
@@ -479,11 +440,9 @@ function createLLMCore(RED) {
             : '';
     }
 
-    // Build the system prompt.
-    // Instructs the LLM to output Vibe Schema (intermediate JSON) instead of
-    // raw Node-RED JSON, which avoids the need for random IDs and coordinates.
-    // `settings` is optional — pass an already-resolved settings object to
-    // avoid a second settings/credentials read per generation.
+    // Build the system prompt. It asks for Vibe Schema rather than Node-RED
+    // JSON (docs/{en,jp}/vibe-schema.md). `settings` is optional — pass an
+    // already-resolved object to avoid a second settings read per generation.
     function buildMessages(userPrompt, flowContext, activeWorkspaceId, settings) {
         const userSystemPrompt = getUserSystemPrompt(settings);
 
@@ -505,7 +464,7 @@ function createLLMCore(RED) {
     }
 
     // Plain chat messages (no flow context, no Vibe Schema instructions) for
-    // the runtime node's "Ask" mode: just pass the payload through, honoring
+    // the llm-request node's "Ask" mode: just pass the payload through, honoring
     // the user's custom system prompt from settings if one is configured.
     function buildChatMessages(userPrompt, settings) {
         const userSystemPrompt = getUserSystemPrompt(settings);
@@ -543,13 +502,8 @@ function createLLMCore(RED) {
         return generateWithOllamaChat(settings, model, messages, timeoutMs);
     }
 
-    // Ollama chat generation (timeout 0 = wait indefinitely).
-    //
-    // `fetch` rather than the http/https modules: it speaks both schemes
-    // through one code path, so there is no scheme flag to thread through,
-    // no 443/80 default to write out by hand, and no manual chunk
-    // collection. `settings` is passed in like the other adapters (single
-    // settings read per generation).
+    // Ollama chat generation (timeout 0 = wait indefinitely). `fetch` rather
+    // than http/https: one code path for both schemes.
     async function generateWithOllamaChat(settings, model, messages, timeout = 0) {
         const ollamaUrlStr = (settings && settings.ollamaUrl) || 'http://localhost:11434';
         // No try/catch fallback to localhost: the settings endpoint already

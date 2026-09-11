@@ -1,11 +1,6 @@
-// LLM Plugin  -  Server Side
-// Registers all HTTP admin endpoints used by the client sidebar.
-//
-// The LLM engine (settings, credentials, provider adapters, prompt building,
-// secret redaction) lives in `./llm_core.js`
-// so the runtime nodes can share the exact same settings + credentials store.
-// This file keeps the HTTP admin layer plus chat-history / checkpoint
-// persistence, both of which are specific to the editor sidebar.
+// LLM Plugin  -  Server side: the HTTP admin endpoints, plus chat-history and
+// checkpoint persistence. The LLM engine itself lives in ./llm_core.js, shared
+// with the llm-request node. See docs/{en,jp}/architecture.md — `server.js`.
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
@@ -43,13 +38,9 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
     //  Resource limits                                                    //
     // ------------------------------------------------------------------ //
-    //
-    // `apiMaxLength` bounds one request body; it does not bound accumulation
-    // across requests, and every endpoint here writes to disk or spends money.
-
-    // Needs its own bound: the flow context lands in the same system message
-    // as the prompt, so otherwise maxPromptLength is bypassed by moving the
-    // payload into `currentFlow`.
+    // `apiMaxLength` bounds one request body, not accumulation across them.
+    // The flow context needs a bound of its own: it lands in the same system
+    // message as the prompt. See docs/{en,jp}/architecture.md — Security measures.
     const MAX_FLOW_CONTEXT_CHARS = 1024 * 1024;
     // Ceiling for anything persisted as a JSON file (chat, checkpoint).
     const MAX_STORED_JSON_CHARS = 5 * 1024 * 1024;
@@ -91,14 +82,9 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
     //  Endpoint authorisation                                             //
     // ------------------------------------------------------------------ //
-    //
-    // `adminAuth` does NOT cover routes a plugin adds to RED.httpAdmin — the
-    // core Admin API guards each of its own routes individually, and anything
-    // registered afterwards is open unless it does the same. Without these
-    // guards, enabling adminAuth still left chat history readable, settings
-    // rewritable and generation billable by anyone who could reach the port.
-    // needsPermission is a no-op when adminAuth is unset, so single-user
-    // installs are unaffected. Only reads take the `read` scope.
+    // `adminAuth` does NOT reach routes a plugin adds to RED.httpAdmin, so
+    // every endpoint guards itself. See docs/{en,jp}/architecture.md —
+    // Security measures.
     const PERM_READ = 'llm-plugin.read';
     const PERM_WRITE = 'llm-plugin.write';
 
@@ -126,14 +112,8 @@ function createLLMPluginServer(RED) {
     }
 
     // An import failure happens in the browser, where the operator cannot see
-    // it. Reporting it into the Node-RED log is the whole point: that is the
-    // record a user can actually attach to a bug report. `meta` is redacted
-    // because importer diagnostics put node contents in it.
-    //
-    // There is no separate log FILE: nothing ever read the one this used to
-    // write, and Node-RED's own logging is the configurable, rotatable place
-    // for this. Only warn/error reach the log — an info-level client event is
-    // accepted and dropped.
+    // it; the Node-RED log is the record a user can attach to a bug report.
+    // `meta` is redacted — importer diagnostics put node contents in it.
     function writeClientEvent(level, event, message, meta) {
         const lv = String(level || 'info').toLowerCase();
         if (lv !== 'error' && lv !== 'warn' && lv !== 'warning') return;
@@ -245,15 +225,8 @@ function createLLMPluginServer(RED) {
         } catch (e) { return null; }
     }
 
-    // Oldest-first, but per SOURCE rather than across the whole directory.
-    //
-    // A node-driven apply takes a checkpoint like any other, and an Agent
-    // node on a timer with auto deploy takes one every time it fires.
-    // Pruning the globally-oldest would let that stream evict every chat
-    // checkpoint the sidebar's Restore buttons point at, turning those
-    // buttons into 404s while the flow they would have restored is gone.
-    // Each source gets its own budget instead, so a busy node can only
-    // ever crowd out itself.
+    // Oldest-first, but per SOURCE rather than across the whole directory, so
+    // a busy node can only crowd out itself. See docs/{en,jp}/design.md §9.
     function pruneCheckpoints() {
         try {
             const buckets = {};
@@ -307,12 +280,8 @@ function createLLMPluginServer(RED) {
             return record;
         }
         try {
-            // Prune AFTER the write, not before. Pruning first left the
-            // directory at cap+1 once this record landed, so the limit never
-            // meant what it said — and the memory-only branch above already
-            // inserts and then trims, so the two disagreed about the same
-            // constant. A failed write now prunes nothing, which is right:
-            // there is no new record to make room for.
+            // Prune AFTER the write, so the cap means what it says.
+            // See docs/{en,jp}/design.md §9.
             writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
             pruneCheckpoints();
         } catch (e) {
@@ -615,25 +584,11 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // List checkpoint HEADERS (no flow bodies).
-    //
-    // A chat checkpoint is reachable without this: the sidebar stores its id
-    // on the message and the Restore button fetches it by id. A node-driven
-    // one has no message and no chat to hang off, so without a listing it
-    // would be written and then be unreachable — a restore point nobody can
-    // find is not a restore point. `?source=node-apply` narrows to those.
-    //
-    // Newest first, because the one worth restoring is nearly always the
-    // edit that just landed.
     // ------------------------------------------------------------------ //
     //  Apply queue                                                        //
     // ------------------------------------------------------------------ //
-    //
-    // The apply itself stays in the browser (writing back through the Admin
-    // API cannot clear the open editor's unsaved state); only the ordering
-    // is here. A client asks for its turn, waits to be granted it, applies,
-    // and reports back. State changes are pushed to every editor over comms
-    // rather than polled.
+    // Ordering only; the apply itself runs in the browser.
+    // See docs/{en,jp}/design.md §13.
 
     RED.httpAdmin.get('/llm-plugin/apply-queue', guard(PERM_READ), function(req, res) {
         try {
@@ -686,6 +641,9 @@ function createLLMPluginServer(RED) {
             return res.status(500).json({ error: redactSecrets(error.message || 'Failed to release the hold') });
         }
     });
+
+    // Checkpoint headers (no flow bodies), newest first; `?source=node-apply`
+    // narrows to node checkpoints. See docs/{en,jp}/design.md §9.
     RED.httpAdmin.get('/llm-plugin/checkpoints', guard(PERM_READ), function(req, res) {
         try {
             const wanted = req.query && req.query.source ? String(req.query.source) : null;

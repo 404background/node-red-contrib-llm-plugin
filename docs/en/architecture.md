@@ -4,7 +4,7 @@ Technical reference for the client and server modules behind the LLM
 Plugin sidebar.
 
 > **The design rationale — processing flow, rules, priorities and *why* they
-> are the way they are — lives in [design.md](./design.md).** This document is
+> are the way they are — lives in [docs/en/design.md](./design.md).** This document is
 > the "what each module does" catalog; design.md covers "why this order / rule".
 
 ## Big picture
@@ -30,8 +30,8 @@ layout backbone:
 
 | Module | Owns | Reference |
 |--------|------|-----------|
-| `flow_converter_core.js` | Vibe Schema ↔ Node-RED JSON + type detection helpers | [vibe-schema.md](./vibe-schema.md) |
-| `canvas_layout.js` | Topological layout, width-aware spacing, comment placement | [layout.md](./layout.md) |
+| `flow_converter_core.js` | Vibe Schema ↔ Node-RED JSON + type detection helpers | [docs/en/vibe-schema.md](./vibe-schema.md) |
+| `canvas_layout.js` | Topological layout, width-aware spacing, comment placement | [docs/en/layout.md](./layout.md) |
 | `llm_json_parser.js` | JSON repair, fuzzy alias matching, schema extraction | (inline JSDoc) |
 
 Everything else is plugin-specific glue — see the file map below, then
@@ -58,7 +58,7 @@ src/
   vibe_ui.js            Sidebar build + generation workflow
   llm_core.js           Shared LLM engine (settings/creds/providers/prompts)
   server.js             HTTP endpoints + chat/checkpoint persistence
-node/                   Runtime workflow node (category: llm-plugin)
+node/                   The `llm-request` node (palette category: llm-plugin)
   lib/admin_api.js      Local Node-RED Admin API client (read-only GET /flows)
   llm-request/          "LLM" node — Ask / Agent against msg.payload
 ```
@@ -123,12 +123,12 @@ Bi-directional converter plus type-detection helpers (`isConfigNode`,
 `isCanvasNode`, `isNoInputType`, `isNoOutputType`, `setRuntimeGetType`).
 Also owns the metadata convention (`isMetaProp`): `_`-prefixed properties
 are never emitted to the LLM and never accepted from it.
-See [vibe-schema.md](./vibe-schema.md).
+See [docs/en/vibe-schema.md](./vibe-schema.md).
 
 ### `core/canvas_layout.js` — layout engine
 
 UMD (`window.LLMPlugin.CanvasLayout`). Standalone — no plugin
-dependencies. See [layout.md](./layout.md).
+dependencies. See [docs/en/layout.md](./layout.md).
 
 ### `core/llm_json_parser.js` — LLM output parser
 
@@ -176,7 +176,7 @@ waits to be granted it (a grant arrives in a pushed state), runs `apply`, and
 reports the outcome. Entries carry the client that asked, so the panel can tell
 this editor's requests from another's.
 
-See [design.md](./design.md#13-ordering-two-producers-against-one-canvas).
+See [docs/en/design.md](./design.md#13-ordering-two-producers-against-one-canvas).
 ### `chat_manager.js`
 
 Chat session lifecycle.
@@ -189,7 +189,7 @@ Chat session lifecycle.
 | `loadChatHistoriesFromServer()` | `GET /chat-histories`. Auto-loads the most recent if none open. |
 | `loadChat(chatId)` | Replay messages into the chat area. |
 | `showChatList()` / `deleteChat(chatId, cb)` | Chat-list modal. |
-| `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. The snapshot opts into `includeCanvasExtras` so junctions/groups are recorded (see [design.md](./design.md#7-snapshot-completeness--junction--group)). |
+| `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. The snapshot opts into `includeCanvasExtras` so junctions/groups are recorded (see [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group)). |
 | `updateMessageMeta(messageId, patch)` | Patch stored message metadata. |
 
 ### `importer.js`
@@ -278,7 +278,7 @@ Full import workflow with these guarantees:
    settings. The editor flags ride along: an unmentioned `d` / `l` is
    preserved, while `disabled: false` deletes `d` yet still lists it as
    mentioned, so re-enabling is not undone by the restore
-   (see [vibe-schema.md](./vibe-schema.md#editor-flags-disabled-showlabel)).
+   (see [docs/en/vibe-schema.md](./vibe-schema.md#editor-flags-disabled-showlabel)).
 7. **Comment placement** — every comment names its target canvas node
    via `above: <alias>` and lands directly atop that node with zero grid
    gap, **left edge aligned** with the target's left edge (not its
@@ -287,7 +287,7 @@ Full import workflow with these guarantees:
    kept regardless of declaration order — only comments WITHOUT `above`
    AND with no canvas node later in the list are dropped. A schema that
    omits `above` anyway falls back to "next canvas node in declaration
-   order". See [layout.md](./layout.md#comment-placement).
+   order". See [docs/en/layout.md](./layout.md#comment-placement).
 8. **Config Node Protection** — the LLM cannot create or delete config
    nodes; it can only reference existing ones by alias.
 9. **Junction / group preservation** — the snapshot includes the
@@ -295,7 +295,7 @@ Full import workflow with these guarantees:
    never deleted and wires that target a junction are not pruned. An
    incremental apply leaves an unmentioned junction or group alone
    outright; the fallback rebuild still needs them in the snapshot. See
-   [design.md](./design.md#7-snapshot-completeness--junction--group).
+   [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group).
 10. **Incremental apply** — the merged end state is applied as a DIFF:
    only added / removed / changed entities are touched, wiring changes go
    through `RED.nodes.addLink` / `removeLink` (the editor's links are
@@ -305,9 +305,9 @@ Full import workflow with these guarantees:
    group never names a node that is gone. Falls back to the destructive
    rebuild for group membership and type changes, and for a grouped-node
    deletion when the group API is unusable (a locked workspace). See
-   [design.md](./design.md#12-applying-as-a-diff-not-a-rebuild).
+   [docs/en/design.md](./design.md#12-applying-as-a-diff-not-a-rebuild).
 11. **Reposition without ID churn** — a top-level `reposition: [alias…]`
-   directive (see [vibe-schema.md](./vibe-schema.md#reposition-directive))
+   directive (see [docs/en/vibe-schema.md](./vibe-schema.md#reposition-directive))
    reflows just the named canvas-node subset while keeping IDs, props,
    and wires. The subset is anchored to its previous top-left so the
    rest of the canvas doesn't visibly shift.
@@ -315,7 +315,7 @@ Full import workflow with these guarantees:
    is stripped before the nodes reach the canvas: once right after the
    merge (keeping only `_llmOrder` / `_llmAboveId`, which the layout
    passes still consume) and once after layout. Nothing metadata-shaped
-   is ever imported. See [design.md](./design.md) §0.1.
+   is ever imported. See [docs/en/design.md](./design.md) §0.1.
 13. Apply the end state to the target workspace as a diff (with the
    destructive rebuild as the fallback); layout is delegated to
    `CanvasLayout`.
@@ -334,7 +334,7 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 | `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)`. Notifies if the node has since been deleted. A single try/catch wraps the whole routine — focus is best-effort, so every failure has the same answer (stop and log). |
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
-| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the runtime node. `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [design.md](./design.md#7-snapshot-completeness--junction--group). |
+| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
@@ -368,8 +368,8 @@ templates in `llm_plugin.html`; `initializeClientApp()` wires events:
 
 ### `llm_core.js` — shared LLM engine
 
-`require('./llm_core.js')(RED)` returns the stateless engine used by both
-`server.js` (sidebar) and the runtime nodes under `node/`. Centralising it
+`require('./src/llm_core.js')(RED)` returns the stateless engine used by both
+`server.js` (the sidebar) and the `llm-request` node under `node/`. Centralising it
 here is what lets a node "inherit" the provider / API key the user set in the
 sidebar — there is only one settings + credentials store.
 
@@ -391,10 +391,10 @@ Thin HTTP layer over `llm_core.js`, plus the sidebar-only persistence.
 | Client logging | `writeClientEvent` (secret-redacted, into `RED.log`) |
 | HTTP admin endpoints | All `RED.httpAdmin.*` routes (delegating generation to the engine) |
 
-### `node/` — runtime workflow node
+### `node/` — the `llm-request` node
 
 The `llm-request` node (and its Admin-API helper) reuse this engine. It is
-documented separately in **[runtime-node.md](./runtime-node.md)**. Note: the
+documented separately in **[docs/en/llm-request.md](./llm-request.md)**. Note: the
 sidebar's chat history retains the target flow **name** (`ui_core.js` badge +
 `vibe_ui.js` `metaOpts.targetFlowName`).
 
@@ -478,7 +478,7 @@ No chat history is sent — each request is stateless to the LLM.
 - Client-reported events have newlines collapsed before they reach the
   line-oriented log, so caller-supplied text cannot forge a log entry.
 - Credentials stripped from flow context before sending to the LLM. The
-  runtime node narrows the context further: only the config nodes its
+  `llm-request` node narrows the context further: only the config nodes its
   selected flows actually reference (transitively), rather than every
   config node in the instance.
 
@@ -504,29 +504,10 @@ disposable instances for exactly this reason.
 
 ## Tests
 
-`npm test` runs offline and needs nothing but Node. Each suite states the
-guarantee it protects in its header comment; that comment, not the assertion
-names, is the place to look first.
-
-| Suite | Guards |
-|-------|--------|
-| `canvas_layout` | The layout engine: cross-component push, insertion reflow, and that a component the edit did not touch is translated rather than sheared. |
-| `flow_converter_core` | Auto-stub creation, and that the single-line `func` pretty-printer only ever changes whitespace. |
-| `llm_core` | The credential key is the plugin's own and survives the user setting `credentialSecret`; older blobs still decrypt; a failed settings write reaches the caller; a configured API key escapes through none of its exits; the system prompt ships. |
-| `schema_conventions` | Both directions of the Vibe Schema boundary: `_`-prefixed metadata, and the editor flags (`disabled` / `showLabel`). |
-| `junction_preserve` | An edit does not delete junctions or groups, and wires are severed only on an explicit `remove`. |
-| `cross_flow_isolation` | The flow selection bounds what an edit may write to, and what leaves the machine. |
-| `import_safety` | Deletions reach the flow that owns them; a failed import rolls back completely; the flow context follows config references. |
-
-`test/helpers.js` holds the assertion counter and `loadPluginSandbox(RED)`,
-which runs the real client modules in a vm context — in the same order
-`client.js` uses, so a load-order dependency cannot pass here and fail in
-production. Each suite keeps its own `buildRED`: the registries and the state
-a scenario captures are the point of that suite.
-
-`npm run test:llm` (`test/llm_roundtrip.test.js`) is deliberately outside
-`npm test`. It talks to a real model, so its assertions are structural rather
-than exact, and it exits 2 when no endpoint is configured.
+Test documentation lives with the tests, in
+**[`test/README.md`](../../test/README.md)**: what each suite guards, the
+shared `helpers.js` sandbox, and how to configure the live round-trip
+(`npm run test:llm`).
 
 ## Development notes
 

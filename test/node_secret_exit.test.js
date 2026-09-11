@@ -1,4 +1,4 @@
-// The runtime node's ERROR exit is a secret exit.
+// The llm-request node's ERROR exit is a secret exit.
 //
 // `done(err)` is flow-visible: Node-RED logs the message AND hands it to a
 // Catch node as `msg.error`, from where a debug or http response node can

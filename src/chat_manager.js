@@ -135,7 +135,7 @@
         let meta = (cp && cp.meta) || {};
         if (meta.source === 'node-apply') {
             let node = meta.node || {};
-            return 'before ' + (node.name || node.id || 'an LLM node') + ' edited the flow';
+            return 'before ' + (node.name || node.id || 'an llm-request node') + ' edited the flow';
         }
         return 'before an import from the sidebar';
     }

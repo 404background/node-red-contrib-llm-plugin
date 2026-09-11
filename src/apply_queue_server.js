@@ -1,29 +1,10 @@
 // LLM Plugin  -  Apply queue (server side)
 //
-// Orders the flow-modifying applies that the editors perform, so two of them
-// never merge into each other's uncommitted work.
-//
-// The APPLY itself stays in the browser — that is a design pillar, because
-// writing back through the Admin API cannot clear the open editor's unsaved
-// state. Only the ORDERING lives here. The client asks for its turn, waits to
-// be granted it, applies, and reports back.
-//
-// Why the server rather than each browser:
-//
-//  - One queue for everyone. Two people with the editor open are two browsers,
-//    and a per-browser queue orders neither against the other. The Agent
-//    node's reply is broadcast to every connected editor, so without this they
-//    would each apply it against their own view of the flow.
-//  - The deploy is visible here directly. The runtime emits `runtime-event`
-//    with id `runtime-deploy` after a deploy completes — whoever triggered it,
-//    including a deploy made through the Admin API by something that is not an
-//    editor at all. A browser can only see its own.
-//  - A closed tab stops being a problem. A grant that is never completed
-//    expires; a browser that vanishes mid-wait cannot wedge everyone else.
-//
-// The rule is unchanged: a flow that has been applied but NOT yet deployed is
-// held, anything else targeting it waits, and among those waiting the earlier
-// request goes first. Applies to different flows never wait for each other.
+// Orders the flow-modifying applies the editors perform, so two of them never
+// merge into each other's uncommitted work. Only the ORDERING lives here; the
+// apply itself stays in the browser. One queue for every editor, and the
+// deploy that releases a hold is observed here directly.
+// See docs/{en,jp}/design.md §13.
 
 const COMMS_TOPIC = 'llm-plugin/apply-queue';
 
@@ -224,11 +205,8 @@ function createApplyQueue(RED) {
         },
 
         /**
-         * The client has finished (or failed).
-         *
-         * A FAILED apply holds nothing: the importer rolled back, so nothing
-         * was committed, and holding its flows would make the next request
-         * wait for a deploy that has no reason to happen.
+         * The client has finished (or failed). A FAILED apply holds nothing:
+         * the importer rolled back, so no deploy is owed.
          */
         complete: function(entryId, ok) {
             let i = entries.findIndex(function(e) { return e.id === entryId; });
@@ -250,12 +228,8 @@ function createApplyQueue(RED) {
         },
 
         /**
-         * End the hold without a deploy.
-         *
-         * The hold exists because an undeployed edit is still on a canvas, and
-         * the usual way that ends is a deploy. It is not the only way: the
-         * edit can be undone by hand or a checkpoint restored, and then no
-         * deploy is coming and the queue would wait for one forever.
+         * End the hold without a deploy — the edit was undone by hand or a
+         * checkpoint restored, so no deploy is coming.
          */
         releaseHold: function() {
             releaseHolds();
@@ -266,11 +240,8 @@ function createApplyQueue(RED) {
 
         /**
          * Release every hold when the runtime reports a completed deploy.
-         *
-         * `runtime-deploy` is emitted by the flow engine itself, so this fires
-         * for a Deploy from any editor, for the Agent node's auto deploy, and
-         * for a deploy driven through the Admin API by something that is not
-         * an editor at all — none of which a browser-side queue could see.
+         * `runtime-deploy` comes from the flow engine, so it covers a deploy
+         * from any editor or through the Admin API. See docs/{en,jp}/design.md §13.
          */
         bindDeployListener: function() {
             if (!RED.events || typeof RED.events.on !== 'function') return;

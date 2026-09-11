@@ -70,7 +70,7 @@ function scenarioSameFlowWaitsForDeploy() {
   Q.complete(a.entryId, true);
   ok(Q.state().holding, 'the flow is held after the apply');
 
-  const b = Q.request({ clientId: 'c2', source: 'node', label: 'LLM node', targetFlowIds: ['tabA'] });
+  const b = Q.request({ clientId: 'c2', source: 'node', label: 'llm-request node', targetFlowIds: ['tabA'] });
   ok(b.state === 'waiting', 'the second is not granted (' + b.state + ')');
 
   const waiting = entryFor(Q.state(), b.entryId);

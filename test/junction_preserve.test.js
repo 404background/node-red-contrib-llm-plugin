@@ -1,11 +1,20 @@
-// Integration test for two guarantees the importer must uphold:
-//   (A) an LLM edit must NOT delete junctions (or groups), and
-//   (B) existing wires are never severed unless the schema explicitly
-//       asks (a `remove` directive) — omitting wires means "keep them".
-//   (C) group membership survives an edit, and a deleted member does not
+// The two canvas entities an apply loses first: junctions and groups.
+//
+//   (A) a junction survives an edit WITH ITS WIRES — it sits in the middle of
+//       a chain, so losing it silently breaks the path rather than leaving a
+//       visible gap.
+//   (B) group membership survives an edit, and a deleted member does not
 //       linger in the group's `nodes` list.
+//
 // Loads the real client modules in a mocked RED/browser sandbox and drives
 // Importer.importFlowFromMessage end to end.
+//
+// Deliberately NOT here: "a property edit keeps the wires nobody mentioned"
+// and "an explicit `remove` does sever one". Both are assertions about the
+// work an apply does, which is incremental_apply.test.js's subject, and both
+// are already made there (`propertyEditTouchesNothingElse` pins every wire,
+// `rewiringOnlyMovesLinks` drives a `remove` directive). Asserting them twice
+// meant two suites to update for one behaviour change.
 const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
 // `byId` / `imported` read the flow AS IT NOW STANDS, not import()'s payload:
@@ -48,38 +57,6 @@ async function scenarioJunctionSurvivesAddNode() {
   ok(byId['b'] && byId['b'].wires[0].indexOf(debug.id) !== -1, 'function B wired to the new debug node');
 }
 
-async function scenarioWiresKeptOnPropertyEdit() {
-  console.log('\nScenario 2: editing a node property (no wires mentioned) keeps existing wires');
-  // inject A ->[b] function B ->[c] debug C ; plus an untouched junction J.
-  const A = { id: 'a', type: 'inject', z: 'tab1', name: 'A', x: 100, y: 100, wires: [['b']] };
-  const B = { id: 'b', type: 'function', z: 'tab1', name: 'B', x: 300, y: 100, func: 'return msg;', wires: [['c']] };
-  const C = { id: 'c', type: 'debug', z: 'tab1', name: 'C', x: 500, y: 100, wires: [[]] };
-  const J = { id: 'j', type: 'junction', z: 'tab1', x: 700, y: 300, wires: [[]] };
-  // Edit only B's function body — no `connections`, no `wires`.
-  const msg = 'Tweaking the function.\n' + fence({
-    nodes: { function_b: { type: 'function', name: 'B', props: { func: 'msg.payload = 1; return msg;' } } },
-  });
-  const { res, byId } = await runImport([A, B, C], [J], [], msg);
-  ok(res && res.ok, 'import returned ok');
-  ok(byId['a'] && byId['a'].wires[0].indexOf('b') !== -1, 'A->B wire preserved (upstream untouched)');
-  ok(byId['b'] && byId['b'].wires[0].indexOf('c') !== -1, 'B->C wire preserved though wires were not mentioned');
-  ok(byId['b'] && /payload = 1/.test(byId['b'].func || ''), 'B function body was updated');
-  ok(!!byId['j'] && byId['j'].type === 'junction', 'untouched junction J still present');
-}
-
-async function scenarioExplicitRemoveDoesCut() {
-  console.log('\nScenario 3: an explicit remove directive DOES sever the wire');
-  const A = { id: 'a', type: 'inject', z: 'tab1', name: 'A', x: 100, y: 100, wires: [['b']] };
-  const B = { id: 'b', type: 'function', z: 'tab1', name: 'B', x: 300, y: 100, func: 'return msg;', wires: [[]] };
-  const msg = 'Disconnect them.\n' + fence({
-    connections: [{ remove: { from: 'inject_a', to: 'function_b' } }],
-  });
-  const { res, byId } = await runImport([A, B], [], [], msg);
-  ok(res && res.ok, 'import returned ok');
-  ok(byId['a'] && byId['a'].wires[0].indexOf('b') === -1, 'A->B wire severed by explicit remove');
-  ok(!!byId['b'], 'function B itself still present (only the wire was removed)');
-}
-
 // ------------------------------------------------------------------ //
 //  Group membership survives an edit, and does not outlive a delete   //
 // ------------------------------------------------------------------ //
@@ -95,7 +72,7 @@ async function scenarioExplicitRemoveDoesCut() {
 // changed", and the diff hands the whole edit to the destructive rebuild.
 
 async function scenarioEditKeepsGroupMembership() {
-  console.log('\nScenario 4: editing a node inside a group keeps it in the group');
+  console.log('\nScenario 2: editing a node inside a group keeps it in the group');
   const A = { id: 'a', type: 'inject', z: 'tab1', g: 'grp', name: 'A', x: 100, y: 100, wires: [['b']] };
   const B = { id: 'b', type: 'function', z: 'tab1', g: 'grp', name: 'B', x: 300, y: 100,
               func: 'return msg;', wires: [[]] };
@@ -118,7 +95,7 @@ async function scenarioEditKeepsGroupMembership() {
 }
 
 async function scenarioDeleteLeavesNoDanglingMember() {
-  console.log('\nScenario 5: deleting a grouped node removes it from the group too');
+  console.log('\nScenario 3: deleting a grouped node removes it from the group too');
   const A = { id: 'a', type: 'inject', z: 'tab1', g: 'grp', name: 'A', x: 100, y: 100, wires: [['b']] };
   const B = { id: 'b', type: 'function', z: 'tab1', g: 'grp', name: 'B', x: 300, y: 100,
               func: 'return msg;', wires: [[]] };
@@ -148,7 +125,7 @@ async function scenarioDeleteLeavesNoDanglingMember() {
 // which does not need the API, because it re-imports the group wholesale —
 // produces the same consistent end state.
 async function scenarioLockedWorkspaceFallsBackSafely() {
-  console.log('\nScenario 6: a locked workspace falls back rather than half-detaching');
+  console.log('\nScenario 4: a locked workspace falls back rather than half-detaching');
   const A = { id: 'a', type: 'inject', z: 'tab1', g: 'grp', name: 'A', x: 100, y: 100, wires: [['b']] };
   const B = { id: 'b', type: 'function', z: 'tab1', g: 'grp', name: 'B', x: 300, y: 100,
               func: 'return msg;', wires: [[]] };
@@ -166,8 +143,6 @@ async function scenarioLockedWorkspaceFallsBackSafely() {
 
 async function run() {
   await scenarioJunctionSurvivesAddNode();
-  await scenarioWiresKeptOnPropertyEdit();
-  await scenarioExplicitRemoveDoesCut();
   await scenarioEditKeepsGroupMembership();
   await scenarioDeleteLeavesNoDanglingMember();
   await scenarioLockedWorkspaceFallsBackSafely();

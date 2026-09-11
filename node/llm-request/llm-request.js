@@ -1,12 +1,13 @@
-// LLM Plugin  -  "LLM" node (llm-request)
+// LLM Plugin  -  the `llm-request` node, runtime half
 //
-// Workflow node for automating LLM interactions. Ask: msg.payload (+ selected
-// flows as context) → text reply. Agent: same, then the reply is applied LIVE
-// in the open editor — published over comms, applied by the subscriber in
-// llm-request.html via LLMPlugin.Importer (same path as the sidebar; an
-// editor must be open). Node interactions are NOT saved to chat history and
-// create no Restore Checkpoint. Provider / API key / endpoint are inherited
-// from the sidebar settings via the shared engine (src/llm_core.js).
+// Ask: msg.payload (+ the selected flows as context) → text reply. Agent: the
+// same, then the reply is published over comms and applied LIVE in the open
+// editor by llm-request.html through the plugin's importer — the same path as
+// the sidebar, so an editor has to be open. A node-driven edit is not saved to
+// chat history, but the editor takes a `node-apply` checkpoint before applying
+// it, so it can be rolled back from the sidebar's Restore Points. Provider /
+// API key / endpoint are inherited from the sidebar settings via the shared
+// engine (src/llm_core.js). See docs/{en,jp}/llm-request.md.
 const path = require('path');
 
 module.exports = function(RED) {
@@ -27,13 +28,11 @@ module.exports = function(RED) {
         return String(text).replace(/(\bhttps?:\/\/)[^\s/@"']*@/gi, '$1');
     }
 
-    // The error a provider hands back can carry the API key straight back out:
-    // an endpoint that echoes the Authorization header puts it in the message,
-    // and `done(err)` is a flow-visible exit — the Node-RED log, `msg.error`
-    // on the Catch route, and from there any debug or http response node. The
-    // sidebar's /generate handler already redacts its equivalent; this is the
-    // one exit from the shared engine that did not. `code` is preserved so
-    // callers keep detecting timeouts without parsing the message.
+    // A provider error can carry the API key straight back out, and `done(err)`
+    // is a flow-visible exit: the log, `msg.error` on a Catch route, any debug
+    // node from there. `code` is preserved so callers keep detecting timeouts
+    // without parsing the message. See docs/{en,jp}/architecture.md — Security
+    // measures; test/node_secret_exit.test.js.
     function redactedError(err) {
         const safe = new Error(core.redactSecrets(err && err.message ? err.message : err));
         if (err && err.code) safe.code = err.code;
@@ -62,8 +61,9 @@ module.exports = function(RED) {
     // The selected tabs plus only the config nodes they reference, followed
     // transitively. Null when nothing is selected, so the prompt carries no
     // flow context. The selection is the user's statement of what may leave
-    // the machine — including config nodes wholesale sent every broker and
+    // the machine: sending config nodes wholesale would hand every broker and
     // credential-holder in the instance to the provider.
+    // See docs/{en,jp}/design.md §6; test/cross_flow_isolation.test.js.
     function flowContextFor(allFlows, ids) {
         if (!Array.isArray(ids) || ids.length === 0 || !Array.isArray(allFlows)) return null;
         const set = new Set(ids);

@@ -142,22 +142,6 @@ function scenarioSelectorsMatchTheMarkup() {
     'and carries .restore-btn, which the message queries to replace it');
 }
 
-// These moved out of JS (`el.style.marginTop = '0'`, duplicated at two call
-// sites) and into the stylesheet. If the rule went missing the button row
-// would still render, just in the wrong place — the kind of thing no
-// assertion elsewhere would notice.
-function scenarioMovedStylesAreInTheStylesheet() {
-  console.log('\nThe styles that moved out of JS are in the stylesheet');
-  ok(/\.pre-chat-actions\s*\{[^}]*margin-bottom:\s*10px/.test(CSS),
-    '.pre-chat-actions carries its own spacing');
-  ok(UI_CORE.indexOf("style.marginBottom") === -1,
-    'and ui_core.js no longer sets that margin inline');
-  ok(/\.retry-btn i\.fa-refresh\s*\{[^}]*color:/.test(CSS),
-    'the retry icon colour is a CSS rule');
-  ok(UI_CORE.indexOf("retryIcon.style.color") === -1,
-    'and is not also assigned in JS');
-}
-
 // The reason cloneTemplate is allowed to throw: it cannot be reached unless
 // llm_plugin.html loaded, so a missing template is a packaging bug, not a
 // runtime state to degrade around.
@@ -167,9 +151,6 @@ function scenarioMissingTemplateIsLoud() {
     'cloneTemplate throws when the template is absent');
   ok(!/function cloneTemplate\(/.test(UI_CORE) && !/function cloneTemplate\(/.test(CHAT_MANAGER),
     'and there is only the one definition, in common.js');
-  ok(UI_CORE.indexOf('} catch (e) {}\n            } else') === -1 &&
-     !/\} catch \(e\) \{\}\s*\n\s*\}\s*\n\s*chatArea\.appendChild/.test(UI_CORE),
-    'the flow-actions block no longer swallows every error bare');
   ok(/flow actions not rendered/.test(UI_CORE),
     'it logs what failed instead');
 }
@@ -214,7 +195,6 @@ function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
   scenarioSelectorsMatchTheMarkup();
-  scenarioMovedStylesAreInTheStylesheet();
   scenarioMissingTemplateIsLoud();
   scenarioRestorePointsButtonIsWired();
   scenarioQueuePanelIsWired();

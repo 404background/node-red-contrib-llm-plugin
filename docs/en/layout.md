@@ -1,7 +1,7 @@
 # Canvas Layout
 
 Standalone layout engine for Node-RED node arrays. UMD module
-(`window.LLMPlugin.CanvasLayout` / `require('./canvas_layout.js')`).
+(`window.LLMPlugin.CanvasLayout` / `require('./src/core/canvas_layout.js')`).
 Width-aware: chains pack at `(widthA + widthB)/2 + edgeGap` so wide
 labels push their neighbours out automatically.
 
@@ -10,7 +10,7 @@ labels push their neighbours out automatically.
 ### 1. Full reflow
 
 ```js
-const Layout = require('./canvas_layout.js');
+const Layout = require('./src/core/canvas_layout.js');
 const flow = [
     { id: 'a', type: 'inject',   wires: [['b']] },
     { id: 'b', type: 'function', wires: [['c']] },
