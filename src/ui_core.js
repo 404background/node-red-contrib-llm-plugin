@@ -312,17 +312,8 @@
         return Array.isArray(ids) ? ids : null;
     }
 
-    // Mirrors FlowConverterCore.isVibeSchema: `nodes` OR `connections`
-    // alone is valid (a node-prop-only edit omits connections, a wiring
-    // tweak omits nodes).
-    function isVibeSchema(parsed) {
-        let hasNodes = parsed.nodes && typeof parsed.nodes === 'object' &&
-            !Array.isArray(parsed.nodes);
-        return Boolean(hasNodes || Array.isArray(parsed.connections));
-    }
-
     function jsonBlockSummary(parsed) {
-        if (isVibeSchema(parsed)) return 'Vibe Schema JSON';
+        if (Converter.isVibeSchema(parsed)) return 'Vibe Schema JSON';
         if (Array.isArray(parsed)) return 'Flow JSON (' + parsed.length + ' nodes)';
         return 'JSON';
     }
@@ -340,7 +331,7 @@
 
             // A description inside the JSON is prose, so lift it out of the
             // block the reader would have to expand to find it.
-            if (isVibeSchema(parsed) && typeof parsed.description === 'string') {
+            if (Converter.isVibeSchema(parsed) && typeof parsed.description === 'string') {
                 let descPara = document.createElement('p');
                 descPara.textContent = parsed.description;
                 pre.parentNode.insertBefore(descPara, pre);

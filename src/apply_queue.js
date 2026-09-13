@@ -13,8 +13,9 @@
     let clientId = Common.randomId('client_');
 
     // Last state pushed by the server. The panel renders this, so it shows
-    // every editor's requests, not just this one's.
-    let lastState = { entries: [], heldFlows: [], heldEverything: false, holding: false };
+    // every editor's requests, not just this one's. Which flows are held is
+    // the server's business — the panel only ever draws the entries.
+    let lastState = { entries: [] };
 
     let listeners = [];
     let pending = {};   // entryId -> { resolve, reject, apply, started }
@@ -148,12 +149,6 @@
         });
     };
 
-    ApplyQueue.heldFlows = function() {
-        return lastState.heldEverything ? null : (lastState.heldFlows || []).slice();
-    };
-
-    ApplyQueue.isHolding = function() { return !!lastState.holding; };
-
     /** Drop a waiting entry. An entry already granted is mid-apply and is left alone. */
     ApplyQueue.cancel = function(entryId) {
         return post('cancel', { entryId: entryId }).then(function(out) {
@@ -199,16 +194,8 @@
             .catch(function() { /* the panel simply stays empty until the first push */ });
     };
 
-    // Test seam: the module holds per-session state.
-    ApplyQueue._reset = function() {
-        lastState = { entries: [], heldFlows: [], heldEverything: false, holding: false };
-        listeners = [];
-        pending = {};
-        ApplyQueue._connected = false;
-        clientId = Common.randomId('client_');
-    };
+    // Test seam: a scenario builds its entries under this editor's id.
     ApplyQueue._clientId = function() { return clientId; };
-    ApplyQueue._adoptState = adoptState;
 
     window.LLMPlugin.ApplyQueue = ApplyQueue;
 })();
