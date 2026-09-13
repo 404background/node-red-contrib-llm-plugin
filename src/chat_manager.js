@@ -351,7 +351,7 @@
         currentChatId = chatId;
         clearChatArea();
         (chat.messages || []).forEach(function(msg) {
-            LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
+            LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, msg);
         });
         Common.notify('Loaded chat: ' + chat.title, 'success');
     };
@@ -411,7 +411,7 @@
         }
         ChatManager.saveChatToServer(chatId);
 
-        return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser, message);
+        return LLMPlugin.UI.addMessageToUI(content, isUser, message);
     };
 
     window.LLMPlugin = window.LLMPlugin || {};

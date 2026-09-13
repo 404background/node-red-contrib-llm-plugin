@@ -301,7 +301,7 @@
         return btn;
     }
 
-    UI.addMessageToUI = function(content, isUser, showActions, messageMeta) {
+    UI.addMessageToUI = function(content, isUser, messageMeta) {
         let chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea) return null;
 
@@ -400,13 +400,6 @@
                 elapsed.textContent = parts.join(' / ');
                 message.appendChild(elapsed);
             }
-        }
-
-        if (!isUser && showActions) {
-            let messageActions = Common.cloneTemplate('llm-plugin-message-actions-template');
-            messageActions.querySelector('.retry-btn')
-                .addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
-            message.appendChild(messageActions);
         }
 
         if (!isUser) {
@@ -511,8 +504,45 @@
         }
 
         chatArea.appendChild(message);
+        UI.refreshRetryButton();
         chatArea.scrollTop = chatArea.scrollHeight;
         return message;
+    };
+
+    function findChatMessage(messageId) {
+        if (!messageId) return null;
+        try {
+            let history = LLMPlugin.ChatManager.getChatHistory();
+            let chat = history[LLMPlugin.ChatManager.getCurrentChatId()];
+            if (!chat || !chat.messages) return null;
+            for (let i = chat.messages.length - 1; i >= 0; i--) {
+                if (chat.messages[i].id === messageId) return chat.messages[i];
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    // Retry re-sends the last user prompt, so only the last message can
+    // carry the button. Placed here rather than at render time so a
+    // reloaded history, a failed turn and a cancelled one get it too.
+    UI.refreshRetryButton = function() {
+        let chatArea = document.getElementById('llm-plugin-chat');
+        if (!chatArea) return;
+        chatArea.querySelectorAll('.message-actions').forEach(function(el) { el.remove(); });
+
+        let messages = chatArea.querySelectorAll('.llm-plugin-message');
+        let last = messages.length > 0 ? messages[messages.length - 1] : null;
+        if (!last || last.classList.contains('loading-message')) return;
+
+        let messageMeta = findChatMessage(last.dataset.messageId);
+        let messageActions = Common.cloneTemplate('llm-plugin-message-actions-template');
+        messageActions.querySelector('.retry-btn')
+            .addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
+
+        // Above the Import button, where it has always sat.
+        let flowActions = last.querySelector('.flow-actions:not(.pre-chat-actions)');
+        if (flowActions) last.insertBefore(messageActions, flowActions);
+        else last.appendChild(messageActions);
     };
 
     UI.retryLastUserMessage = function(messageMeta) {

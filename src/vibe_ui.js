@@ -695,8 +695,10 @@
             // Checkpoints are captured at import time (right before a flow
             // edit is applied), not here — chat sends that don't end up
             // modifying the flow no longer consume a checkpoint slot.
-            let loadingMsg = LLMPlugin.UI.addMessageToUI('Generating...', false, false);
+            let loadingMsg = LLMPlugin.UI.addMessageToUI('Generating...', false);
             if (loadingMsg) loadingMsg.classList.add('loading-message');
+            // The placeholder is last now, and it is not retryable.
+            LLMPlugin.UI.refreshRetryButton();
 
             generateBtn.disabled = false;
             generateBtn.classList.add('stop-btn');
@@ -771,11 +773,13 @@
                 if (err && err.status === 404) {
                     errorMsg = 'LLM Plugin endpoint not found. Check plugin installation.';
                 }
-                LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false, false);
+                LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false);
             })
             .finally(function() {
                 resetGenerateBtn();
                 currentAbortController = null;
+                // Stop leaves the user message last, with no reply after it.
+                LLMPlugin.UI.refreshRetryButton();
             });
         }
     }
