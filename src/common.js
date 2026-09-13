@@ -30,15 +30,9 @@
         return node;
     };
 
-    // Clone one of the markup templates in llm_plugin.html by id.
-    //
-    // The sidebar's markup lives in that file rather than in JS strings, and
-    // three modules now build pieces of the UI from it. Throwing on a missing
-    // template is deliberate: every caller is reachable only once the sidebar
-    // itself has rendered, and the sidebar comes from the same file — so an
-    // absent template is a packaging or editing mistake, not a runtime state
-    // to degrade around. Degrading would mean a control silently not
-    // appearing, which nobody notices until they need it.
+    // Clone one of the markup templates in llm_plugin.html by id. Throwing
+    // is deliberate: a missing template is an editing mistake, and degrading
+    // would mean a control silently not appearing.
     Common.cloneTemplate = function(templateId) {
         let tpl = document.getElementById(templateId);
         if (!tpl) throw new Error('LLM Plugin: missing markup template #' + templateId);
@@ -66,10 +60,8 @@
         return (prefix || '') + Date.now() + '_' + rand;
     };
 
-    // fetch() carrying the editor's bearer token. Node-RED only injects the
-    // Authorization header into jQuery ajax calls, so a plain fetch() would
-    // 401 as soon as `adminAuth` is on. (Static assets stay unauthenticated —
-    // <script>/<link> tags cannot send headers.)
+    // fetch() carrying the editor's bearer token: Node-RED only injects the
+    // Authorization header into jQuery ajax calls.
     Common.apiFetch = function(url, options) {
         let opts = Object.assign({}, options || {});
         let headers = Object.assign({}, opts.headers || {});

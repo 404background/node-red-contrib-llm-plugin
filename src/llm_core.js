@@ -1,7 +1,6 @@
-// LLM Plugin  -  Shared LLM engine: storage, encrypted credentials, settings,
-// provider adapters, prompt construction, redaction. Used by both src/server.js
-// (the sidebar) and the llm-request node, so there is ONE settings +
-// credentials store. See docs/{en,jp}/architecture.md — `llm_core.js`.
+// LLM Plugin  -  shared LLM engine: storage, encrypted credentials, settings,
+// provider adapters, prompt construction, redaction. One store for the sidebar
+// and the llm-request node both. See docs/{en,jp}/architecture.md.
 //
 // Usage:  const core = require('./llm_core.js')(RED);
 const fs = require('fs-extra');
@@ -74,9 +73,8 @@ function createLLMCore(RED) {
     // ------------------------------------------------------------------ //
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
-    // API keys are encrypted into the plugin's own `credentials.json`; the
-    // non-secret settings stay in `RED.settings`.
-    // See docs/{en,jp}/architecture.md — Security measures.
+    // API keys are encrypted into the plugin's own `credentials.json`;
+    // everything else stays in `RED.settings`.
 
     const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
     let credsCache = null;
@@ -288,10 +286,8 @@ function createLLMCore(RED) {
         if (migrated) persistCreds();
     })();
 
-    // A stored key must ALWAYS produce a non-empty mask: the settings form
-    // reads an empty one as "no key stored", shows a blank field, and the next
-    // save deletes the key it meant to keep. Short keys get a fixed
-    // placeholder rather than a prefix/suffix that would reveal most of them.
+    // A stored key must ALWAYS mask to something non-empty: the form reads an
+    // empty mask as "no key" and the next save would delete it.
     function maskApiKey(key) {
         if (!key) return '';
         let s = String(key);
@@ -506,10 +502,8 @@ function createLLMCore(RED) {
     // than http/https: one code path for both schemes.
     async function generateWithOllamaChat(settings, model, messages, timeout = 0) {
         const ollamaUrlStr = (settings && settings.ollamaUrl) || 'http://localhost:11434';
-        // No try/catch fallback to localhost: the settings endpoint already
-        // rejects anything that is not a parseable http(s) URL, and quietly
-        // redirecting an unparseable one to localhost would answer "why is my
-        // remote Ollama not being used?" with silence.
+        // No fallback to localhost: the settings endpoint already rejects
+        // unparseable URLs, and a silent redirect would be unexplainable.
         const ollamaUrl = new URL(ollamaUrlStr);
 
         let basePath = ollamaUrl.pathname;
@@ -528,10 +522,7 @@ function createLLMCore(RED) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json; charset=utf-8' },
                 body: body,
-                // The old socket-inactivity timer effectively bounded the
-                // total wait, because the non-streaming /api/chat sends
-                // nothing until generation completes. AbortSignal.timeout
-                // bounds the total wait outright, which is what was meant.
+                // Bounds the total wait, which is what the setting means.
                 signal: (timeout && timeout > 0) ? AbortSignal.timeout(timeout) : undefined
             });
         } catch (e) {
@@ -587,9 +578,7 @@ function createLLMCore(RED) {
     }
 
     // One adapter for OpenAI (`baseURL` null) and OpenAI-compatible
-    // endpoints (llama.cpp / LM Studio / vLLM / LocalAI). Blank key becomes
-    // a placeholder — the SDK insists on one, auth-less endpoints ignore
-    // it. `timeoutMs` > 0 → per-request SDK timeout (0 = SDK default).
+    // endpoints. A blank key becomes a placeholder: the SDK insists on one.
     async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs) {
         const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
         const openai = new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });

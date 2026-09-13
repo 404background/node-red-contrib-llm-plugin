@@ -70,11 +70,8 @@
             });
         }
 
-        // The server refuses to keep a stored key while the Base URL changes
-        // in the same save (that would send the key to a new endpoint without
-        // the user ever seeing it). Clear the sentinel as soon as the URL is
-        // edited so the requirement is visible in the form rather than
-        // arriving as a save error.
+        // The server refuses to keep a stored key while the Base URL changes,
+        // so clear the sentinel in the form rather than failing the save.
         if (customBaseUrlInput && customApiKeyInput) {
             customBaseUrlInput.addEventListener('input', function() {
                 if (customApiKeyInput.value !== '__EXISTING_KEY__') return;

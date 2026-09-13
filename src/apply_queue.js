@@ -1,8 +1,5 @@
-// Client half of the apply queue: ask for a turn, wait to be granted it, run
-// the apply, report back. The ordering rules live on the server
-// (src/apply_queue_server.js) and the state arrives over comms, so two open
-// editors share one queue. The apply itself has to stay here — writing flows
-// back through the Admin API cannot clear the editor's unsaved state.
+// Client half of the apply queue: ask for a turn, wait, apply, report back.
+// The rules live on the server; the apply has to stay here.
 // See docs/{en,jp}/design.md §13.
 (function() {
     let Common = window.LLMPlugin.Common;
@@ -70,11 +67,8 @@
         });
     }
 
-    // Report the outcome and settle the caller's promise.
-    //
-    // The server is told even when the apply threw: an entry that is never
-    // completed keeps its turn until the grant expires, and holding everyone
-    // else up for two minutes because of an error is worse than the error.
+    // The server is told even when the apply threw: an entry that never
+    // completes holds everyone up until its grant expires.
     function finish(entryId, ok, value, err) {
         let p = pending[entryId];
         delete pending[entryId];
@@ -87,15 +81,9 @@
             });
     }
 
-    /**
-     * Queue one flow-modifying apply.
-     *
-     * `apply` runs when the server grants this client its turn and must return
-     * the importer's result — the queue reads `ok` off it to decide whether
-     * these flows are held until the next deploy. `targetFlowIds` is the scope
-     * the apply may write to (the same list the importer is given); an empty
-     * list means unknown, and conflicts with everything.
-     */
+    // Queue one flow-modifying apply. `apply` runs when the turn is granted
+    // and returns the importer's result; the queue reads `ok` off it.
+    // `targetFlowIds` is the write scope — empty means unknown.
     ApplyQueue.enqueue = function(options) {
         options = options || {};
         let targets = Array.isArray(options.targetFlowIds) ? options.targetFlowIds : [];
@@ -107,10 +95,8 @@
             targetFlowIds: targets
         }).then(function(out) {
             if (!out || !out.entryId) {
-                // Tagged so a caller can tell "the queue never gave this a
-                // turn" from "the apply ran and failed". The importer reports
-                // its own errors; this one had no reporter at all, and so
-                // presented as the edit silently not happening.
+                // Tagged so a caller can tell "never got a turn" from
+                // "ran and failed" — only the first needs reporting here.
                 let err = new Error((out && out.error) || 'Could not join the apply queue');
                 err.queueError = true;
                 throw err;
@@ -198,13 +184,8 @@
         };
     };
 
-    /**
-     * Subscribe to the server's pushes and take the current state once.
-     *
-     * The GET is not redundant with the retained comms message: `subscribe`
-     * delivers the retained value only if one has been published, and on a
-     * freshly started runtime nothing has.
-     */
+    // Subscribe, then take the current state once: the retained comms message
+    // does not exist until something has been published.
     ApplyQueue.connect = function() {
         if (ApplyQueue._connected) return;
         ApplyQueue._connected = true;

@@ -41,6 +41,17 @@ importer — the same path as the sidebar.
   no chat message to hang a Restore button off. If the checkpoint cannot be
   saved the edit still applies and the notification says so. Review on the canvas
   before Deploy; the editor's undo works too.
+- **Applies are queued.** A reply arrives whenever the model finishes, which
+  may be while an edit of your own is applied and not yet deployed. Rather than
+  merge on top of uncommitted work, the edit waits for that deploy — see
+  [design.md §13](./design.md). With **Auto deploy** the node releases its own
+  hold; without it the wait ends when you deploy.
+- **Auto deploy skips validation.** The editor half invokes
+  `core:deploy-flows` with the deploy action's `skipValidation` flag, which is
+  the path behind the confirm dialog's own Confirm button. Without it a single
+  unconfigured or unknown node **anywhere** in the workspace pops a modal that
+  an unattended loop can never answer. The deploy is asynchronous, so the
+  editor's own deploy notification — not the node's — reports the outcome.
 - There is intentionally **no "deploy" node**: a server-side node cannot reproduce
   the editor's Deploy button (it deploys the browser's editor state — purely
   client-side). Agent mode applies edits live, which you then Deploy yourself —

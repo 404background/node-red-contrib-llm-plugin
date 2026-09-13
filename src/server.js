@@ -10,10 +10,8 @@ const createApplyQueue = require('./apply_queue_server');
 function createLLMPluginServer(RED) {
     const core = createLLMCore(RED);
 
-    // Orders the editors' flow applies against each other. Server-side so
-    // that two open editors share one queue, and so the deploy that
-    // releases a hold can be observed directly rather than reported by
-    // whichever browser happened to make it.
+    // One queue for every editor, and the deploy that releases a hold is
+    // observed here. See docs/{en,jp}/design.md §13.
     const applyQueue = createApplyQueue(RED);
     applyQueue.bindDeployListener();
 
@@ -38,9 +36,9 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
     //  Resource limits                                                    //
     // ------------------------------------------------------------------ //
-    // `apiMaxLength` bounds one request body, not accumulation across them.
-    // The flow context needs a bound of its own: it lands in the same system
-    // message as the prompt. See docs/{en,jp}/architecture.md — Security measures.
+    // `apiMaxLength` bounds one request body; the flow context lands in the
+    // same system message as the prompt and needs its own bound.
+    // See docs/{en,jp}/architecture.md — Security measures.
     const MAX_FLOW_CONTEXT_CHARS = 1024 * 1024;
     // Ceiling for anything persisted as a JSON file (chat, checkpoint).
     const MAX_STORED_JSON_CHARS = 5 * 1024 * 1024;
@@ -82,16 +80,13 @@ function createLLMPluginServer(RED) {
     // ------------------------------------------------------------------ //
     //  Endpoint authorisation                                             //
     // ------------------------------------------------------------------ //
-    // `adminAuth` does NOT reach routes a plugin adds to RED.httpAdmin, so
-    // every endpoint guards itself. See docs/{en,jp}/architecture.md —
-    // Security measures.
+    // `adminAuth` does not reach routes a plugin adds to RED.httpAdmin, so
+    // every endpoint guards itself. See docs/{en,jp}/architecture.md.
     const PERM_READ = 'llm-plugin.read';
     const PERM_WRITE = 'llm-plugin.write';
 
-    // `RED.auth.needsPermission` is part of the plugin API for every runtime
-    // this package supports (package.json requires node-red >= 4.0.0), so
-    // there is no "runtime without RED.auth" branch: if it were ever missing,
-    // this throws while registering routes instead of leaving them reachable.
+    // No "runtime without RED.auth" branch: were it ever missing, this throws
+    // while registering routes instead of leaving them reachable.
     function guard(permission) {
         return RED.auth.needsPermission(permission);
     }
@@ -210,10 +205,9 @@ function createLLMPluginServer(RED) {
         }
     }
 
-    // Prune oldest-first so an automated Agent loop cannot grow the
-    // checkpoint directory without bound.
-    // Read just enough of a checkpoint to classify and list it. The `flow`
-    // is the bulk of the file and no caller here needs it.
+    // Prune oldest-first: an automated Agent loop must not grow the
+    // directory without bound. The `flow` is the bulk of a file, so the
+    // listing reads only enough to classify it.
     function readCheckpointHeader(file) {
         try {
             const cp = JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8'));
@@ -373,10 +367,8 @@ function createLLMPluginServer(RED) {
         res.json(settings);
     });
 
-    // Blank URL fields preserve the existing value (the form shows URLs as
-    // placeholders, not values). API keys use the '__EXISTING_KEY__'
-    // placeholder to mean "keep"; anything else replaces, blank deletes
-    // (a blank key is valid for auth-less custom endpoints).
+    // The form shows URLs and keys as placeholders, so blank means "keep"
+    // for a URL, and '__EXISTING_KEY__' means "keep" for a key.
     function urlOrExisting(value, existingValue) {
         return (value && typeof value === 'string' && value.trim() !== '') ? value.trim() : existingValue;
     }
@@ -408,9 +400,8 @@ function createLLMPluginServer(RED) {
     }
 
     // Keeping a stored key while the URL changes in the same request would
-    // make the settings form a key-exfiltration primitive: point customBaseUrl
-    // at an attacker host, keep the key, and /generate sends it there —
-    // defeating the masking that stops GET /settings from returning it.
+    // send that key to a new endpoint the user never typed it for.
+    // See docs/{en,jp}/architecture.md — Security measures.
     function rejectKeyReuseOnUrlChange(bodyKey, oldUrl, newUrl, label) {
         if (bodyKey !== '__EXISTING_KEY__') return;
         if ((oldUrl || '') === (newUrl || '')) return;
@@ -711,10 +702,8 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // Serve the bundled marked.js so Markdown rendering works offline (no
-    // CDN). marked's exports map hides lib/, so resolve via package.json
-    // and read the UMD build once (immutable per process). ui_core.js
-    // falls back to escaped plain text if this 404s.
+    // The bundled marked.js, so Markdown rendering works offline. Its
+    // exports map hides lib/, hence resolving through package.json.
     let markedJsCache = null;
     RED.httpAdmin.get('/llm-plugin/vendor/marked.js', function(req, res) {
         try {
@@ -760,10 +749,8 @@ function createLLMPluginServer(RED) {
             if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
                 return res.status(400).send('Invalid file path');
             }
-            // Allowlist the client asset types rather than serving whatever
-            // happens to sit under src/. This route is deliberately
-            // unauthenticated (script tags cannot send an auth header) and
-            // only ever needs to hand out the browser modules.
+            // This route is unauthenticated by necessity (script tags send no
+            // headers), so it hands out an allowlist, not whatever is in src/.
             const CLIENT_ASSET_TYPES = {
                 '.js': 'application/javascript; charset=utf-8',
                 '.css': 'text/css; charset=utf-8',

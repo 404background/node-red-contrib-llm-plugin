@@ -18,10 +18,8 @@
     //  Apply queue panel                                                  //
     // ------------------------------------------------------------------ //
     //
-    // Sits above the prompt, and appears only when there is something to say.
-    // A request that is waiting has no other visible sign — the sidebar would
-    // simply look as though nothing happened — so the panel exists to answer
-    // "why has my edit not been applied" before the user has to ask it.
+    // Appears only when there is something to say: a waiting request has no
+    // other visible sign. See docs/{en,jp}/design.md §13.
 
     let QUEUE_REASONS = {
         // Named for what the user does about it, not for the internal state.
@@ -53,10 +51,8 @@
             badge.textContent = entry.source === 'node' ? 'Node' : 'Chat';
             badge.classList.add('source-' + entry.source);
 
-            // The queue is shared, so an entry may belong to another open
-            // editor. Saying so is the difference between "my request is
-            // waiting" and "someone else is holding this flow", which call for
-            // different actions.
+            // The queue is shared: "mine is waiting" and "someone else holds
+            // this flow" call for different actions.
             item.querySelector('.llm-queue-label').textContent =
                 entry.label + flowScopeText(entry.targets) +
                 (entry.mine === false ? ' · another editor' : '');
@@ -86,10 +82,8 @@
         if (!panel || !listEl) return;
 
         panel.querySelector('.llm-queue-release').addEventListener('click', function() {
-            // The hold normally ends at the next deploy. It does not have to:
-            // the user may have restored a checkpoint or undone the edit by
-            // hand, in which case no deploy is coming and the queue would wait
-            // for one forever. This is the way out of that.
+            // The way out when no deploy is coming — the edit was undone by
+            // hand, or a checkpoint was restored.
             if (!confirm('Stop waiting for a deploy and apply the queued requests now?')) return;
             LLMPlugin.ApplyQueue.releaseHold();
         });
@@ -292,10 +286,8 @@
             if (e.key === 'Enter' && e.ctrlKey) handleGenerate();
         });
 
-        // --- Shell-style history navigation (Up/Down through this chat's
-        // user messages; Down past the newest restores the draft). Only
-        // fires on the textarea's first/last line so multi-line editing
-        // still works.
+        // --- Shell-style history: Up/Down through this chat's user
+        // messages, only on the textarea's first/last line.
         let historyIndex = null;        // null when not navigating
         let draftBeforeHistory = '';
 
@@ -438,10 +430,8 @@
             }
         }
 
-        // Drop selections that no longer correspond to an existing workspace.
-        // Guarded against the transient "RED not ready yet → 0 workspaces"
-        // state so we don't wipe a freshly-restored selection from
-        // localStorage before the workspaces have actually loaded.
+        // Drop selections whose workspace is gone. Guarded against the
+        // transient "RED not ready yet" state, which reports no workspaces.
         function pruneSelectedFlows(workspaces) {
             let ws = workspaces || listWorkspaces();
             if (ws.length === 0) return;
@@ -457,10 +447,8 @@
             if (changed) saveSelectedFlows();
         }
 
-        // Re-sync the selector with current workspace state: prune deleted
-        // flows, then refresh the label and (if open) the panel. The user's
-        // explicit selection is preserved - we never re-add an active flow
-        // here, only remove flows that no longer exist.
+        // Prune, then refresh the label and panel. Only removes: the user's
+        // explicit selection is never added back to.
         function refreshFlowSelector() {
             let workspaces = listWorkspaces();
             pruneSelectedFlows(workspaces);
@@ -528,10 +516,8 @@
             flowPanel.appendChild(masterRow);
             let masterCb = masterRow.querySelector('input');
 
-            // The flow being looked at first: it is the default context and
-            // the one reached for most, and a long tab bar otherwise buries it
-            // wherever the tab order happens to put it. The rest keep tab
-            // order, so nothing else moves around between openings.
+            // The open flow first; the rest keep tab order, so nothing else
+            // moves between openings.
             let ordered = workspaces.filter(function(ws) { return ws.id === active; })
                 .concat(workspaces.filter(function(ws) { return ws.id !== active; }));
 
@@ -563,10 +549,8 @@
             return workspaces.some(function(ws) { return !!selectedFlowIds[ws.id]; });
         }
 
-        // One click on a flow changes one other thing - this box - so it is
-        // updated in place. The all-flows row re-renders instead, because
-        // there every row's state changed and patching them one by one would
-        // just be renderFlowPanel written twice.
+        // One flow click changes one other thing, so it is patched in place;
+        // the all-flows row re-renders, because every row changed.
         function syncMasterCheckbox(masterCb, workspaces) {
             if (!masterCb) return;
             masterCb.checked = isEverySelected(workspaces);
@@ -638,11 +622,8 @@
             window.removeEventListener('scroll', repositionOnScroll, true);
         }
 
-        // Back to just the open flow. The flow context belongs to the
-        // conversation, so a new one starts from what the user is looking at
-        // rather than inheriting a selection made for an older question - that
-        // selection is also the scope every edit and checkpoint is confined
-        // to, which makes a stale one more than a convenience.
+        // Back to just the open flow: the selection is the scope every edit
+        // and checkpoint is confined to. See docs/{en,jp}/architecture.md.
         function selectActiveFlowOnly() {
             Object.keys(selectedFlowIds).forEach(function(id) {
                 delete selectedFlowIds[id];

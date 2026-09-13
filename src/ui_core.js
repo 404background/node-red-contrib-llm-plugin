@@ -8,10 +8,9 @@
     let Parser = window.LLMPlugin.LLMJsonParser;
     let escapeHtml = Common.escapeHtml;
 
-    // Messages render inside the editor, which holds full admin privileges.
-    // A regex over `href` is bypassed by entity encoding (`javascript&colon;`)
-    // that the browser decodes on click, so each URL is resolved through the
-    // DOM — what the browser itself does — and matched against this allowlist.
+    // Messages render inside the editor, which holds admin privileges. URLs
+    // are resolved through the DOM, not matched by regex — entity encoding
+    // defeats a regex. See docs/{en,jp}/architecture.md — Security measures.
     let SAFE_URL_SCHEMES = { 'http:': 1, 'https:': 1, 'mailto:': 1, 'tel:': 1 };
     function sanitizeRenderedHtml(html) {
         // Inert document, not innerHTML on a live element: the allowlist below
@@ -68,10 +67,8 @@
         return escapeHtml(text);
     }
 
-    // Focus a node the way the Debug sidebar does. Config nodes have no
-    // canvas position, so they open their edit dialog instead. One try/catch
-    // for the whole routine: focus is best-effort, and every failure along
-    // the way has the same answer.
+    // Focus a node the way the Debug sidebar does; config nodes have no
+    // position, so they open their dialog instead. Best effort throughout.
     function focusCanvasNode(nodeId) {
         try {
             if (!nodeId) return;
@@ -117,12 +114,9 @@
         });
     }
 
-    // Make node references clickable: pass 1 over inline <code>, pass 2 over
-    // plain text (for when the LLM forgets to backtick an alias).
-    //
-    // The alias map must be built from the SAME node list the LLM saw —
-    // toIntermediate numbers duplicates by iteration order, so `change_2`
-    // otherwise points at a different node. Hence getFlowsByIds(targetFlowIds).
+    // Node references -> clickable: pass 1 over inline <code>, pass 2 over
+    // plain text. The alias map must come from the same node list the model
+    // saw, or a numbered alias points at a different node.
     function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
 
@@ -239,10 +233,8 @@
         });
     }
 
-    // Re-annotate every assistant message. Historical messages can render
-    // before RED.nodes is populated (empty alias map → silent skip), so
-    // RED.events hooks catch up once nodes arrive and keep annotations in
-    // sync across edits / deploys.
+    // Historical messages can render before RED.nodes is populated, so the
+    // editor's events catch up and keep annotations in sync.
     let _reannotateDebounce = null;
     function reannotateAllAssistantMessages() {
         let chatArea = document.getElementById('llm-plugin-chat');
@@ -270,10 +262,8 @@
             setTimeout(registerFlowsReadyHook, 200);
             return;
         }
-        // flows:loaded fires once after initial flow load. The node-level
-        // events keep annotations fresh as the user edits / deploys.
-        // workspace:change picks up tab switches that bring config nodes
-        // for newly-visited subflows into RED.nodes.
+        // flows:loaded fires once; the rest keep annotations fresh as the
+        // user edits, deploys and visits tabs.
         let events = ['flows:loaded', 'deploy', 'workspace:change',
                       'nodes:add', 'nodes:remove', 'nodes:change'];
         events.forEach(function(ev) {
@@ -378,12 +368,8 @@
             } catch (e) { /* not JSON — leave as-is */ }
         }
 
-        // Make inline code that names a current canvas node clickable -
-        // mirrors Node-RED's debug-node "jump to node" behaviour. The
-        // immediate call wins when RED.nodes is already populated; the
-        // flows-loaded hook (registered once at module load) catches
-        // the cold-start race where this runs before flows finish
-        // loading.
+        // The immediate call wins once RED.nodes is populated; the
+        // flows-loaded hook covers the cold-start race.
         if (!isUser) {
             try { annotateNodeReferences(messageContent, targetFlowIds); } catch (e) {}
         }
@@ -455,34 +441,24 @@
                             ? messageMeta.meta.targetFlowIds
                             : null;
 
-                        // Through the queue rather than straight to the
-                        // importer: if an earlier edit is on the canvas and
-                        // not deployed yet, this one waits for that deploy
-                        // instead of merging on top of an uncommitted change.
+                        // Through the queue: an undeployed edit on these
+                        // flows holds this one. See design.md §13.
                         LLMPlugin.ApplyQueue.enqueue({
                             source: 'sidebar',
                             label: 'Import Flow',
                             targetFlowIds: targetFlowIds,
-                            // Everything below runs when this entry's turn
-                            // comes, INCLUDING the checkpoint. Taken at click
-                            // time it would snapshot a flow that the apply
-                            // ahead of this one is about to change, and
-                            // Restore would rewind to a state that never
-                            // existed. If the checkpoint fails to save the
-                            // import still runs, just with no Restore button.
+                            // The checkpoint is inside the turn: taken at
+                            // click time it would snapshot a flow the apply
+                            // ahead of this one is about to change.
                             apply: function() {
                                 return LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
                                     .then(function(checkpointId) {
                                         return LLMPlugin.Importer.importFlowFromMessage(content, {
                                             chatId: chatId,
                                             mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask',
-                                            // Confine every write to the flows
-                                            // this turn was given as context —
-                                            // the same set the checkpoint above
-                                            // covers, so Restore can always undo
-                                            // whatever the import did, and the
-                                            // same set the queue holds until the
-                                            // next deploy.
+                                            // The same set the checkpoint
+                                            // covers, so Restore can always
+                                            // undo what the import did.
                                             allowedWorkspaceIds: targetFlowIds
                                         }).then(function(result) {
                                             if (result && result.ok && checkpointId) {
@@ -494,22 +470,16 @@
                                                     });
                                                 }
                                             }
-                                            // The importer's result, not the
-                                            // UI's: the queue reads `ok` off
-                                            // this to decide whether to hold
-                                            // these flows until a deploy.
+                                            // The importer's result: the
+                                            // queue reads `ok` off it.
                                             return result;
                                         });
                                     });
                             }
                         })
                         .catch(function(err) {
-                            // An import error has already been reported by the
-                            // importer itself, so it is not repeated here. The
-                            // queue's own outcomes have no other reporter: a
-                            // cancellation, and a turn that could not even be
-                            // requested — which was swallowed, and looked from
-                            // the outside exactly like the edit never running.
+                            // The importer reports its own errors. The
+                            // queue's own outcomes have no other reporter.
                             if (err && /Cancelled/.test(err.message || '')) {
                                 Common.notify('Import cancelled', 'warning');
                             } else if (err && err.queueError) {
@@ -534,10 +504,8 @@
                     message.appendChild(flowActions);
                 }
             } catch (e) {
-                // Was a bare swallow. The parse below it can legitimately
-                // fail on a malformed reply, but a missing markup template
-                // throws here too, and that must not vanish silently — it
-                // would present as "the Import button stopped appearing".
+                // A malformed reply may legitimately fail to parse, but a
+                // missing template throws here too and must not vanish.
                 if (window.console) console.error('[LLM Plugin] flow actions not rendered:', e);
             }
         }
@@ -613,10 +581,9 @@
                 });
             });
 
-            // filterNodes never returns junctions or groups. A caller that
-            // will REBUILD the flow must opt in, or the remove-then-reimport
-            // cycle deletes them. The LLM-context path stays opted out so the
-            // alias numbering the model sees does not change.
+            // filterNodes returns neither, so a caller that will REBUILD the
+            // flow has to opt in. The LLM-context path stays out: it would
+            // change the alias numbering the model sees.
             if (opts && opts.includeCanvasExtras) {
                 ids.forEach(function(zid) {
                     let extras = (RED.nodes.junctions(zid) || []).concat(RED.nodes.groups(zid) || []);

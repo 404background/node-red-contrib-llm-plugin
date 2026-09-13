@@ -66,9 +66,8 @@
         return chatHistory;
     };
 
-    // Starting a chat resets more than the transcript - the sidebar's flow
-    // selection belongs to the conversation too. The listeners live outside
-    // this module, so it announces rather than reaches.
+    // The sidebar's flow selection belongs to the conversation too, and
+    // lives outside this module — hence announce rather than reach.
     let newChatListeners = [];
     ChatManager.onNewChat = function(fn) {
         if (typeof fn === 'function') newChatListeners.push(fn);
@@ -85,12 +84,8 @@
         Common.notify('Started new chat', 'success');
     };
 
-    /**
-     * Snapshot the current flow as a Restore Checkpoint immediately before
-     * a flow-modifying import. Returns the checkpoint ID on success, or
-     * null on failure. Callers wait on this before applying the import so
-     * the Restore button always points at the true pre-edit state.
-     */
+    // A Restore Checkpoint taken immediately before a flow-modifying import.
+    // The checkpoint id, or null on failure.
     ChatManager.saveImportCheckpoint = function(chatId, targetFlowIds) {
         let id = chatId || ChatManager.getCurrentChatId();
         let flow = snapshotCurrentFlow(targetFlowIds);
@@ -98,19 +93,10 @@
         return postCheckpointSave(id, 'pre-import-' + new Date().toISOString(), flow, 'pre-import');
     };
 
-    /**
-     * The same snapshot, for an edit the Agent NODE is about to apply.
-     *
-     * The node path used to take none at all, which made it the one way to
-     * change a flow that could not be undone — worse with auto deploy, where
-     * the edit reaches the running runtime without anyone looking at it.
-     *
-     * It is deliberately not `saveImportCheckpoint`: there is no chat here,
-     * and borrowing the "current" chat id would file the node's edit under
-     * whatever conversation happens to be open in the sidebar and delete it
-     * when that chat is deleted. `chatId` stays null; `meta.source` is what
-     * tells the two apart, and `meta.node` records which node did it.
-     */
+    // The same snapshot for an edit the Agent NODE is about to apply.
+    // `chatId` stays null deliberately: borrowing the open chat's id would
+    // file the edit under it and delete the checkpoint with that chat.
+    // See docs/{en,jp}/llm-request.md.
     ChatManager.saveNodeApplyCheckpoint = function(nodeInfo, targetFlowIds) {
         let flow = snapshotCurrentFlow(targetFlowIds);
         if (!flow) return Promise.resolve(null);
@@ -133,11 +119,8 @@
     //  Restore points                                                     //
     // ------------------------------------------------------------------ //
     //
-    // A chat checkpoint is reachable without any of this: the sidebar keeps
-    // its id on the message and the message's own Restore button uses it.
-    // The Agent node has no message to hang one off, so before this its
-    // checkpoints were written and then unfindable — and a restore point
-    // nobody can find is not a restore point.
+    // A chat checkpoint hangs off its message's Restore button. A node edit
+    // has no message, so the listing is the only way to find its checkpoint.
 
     let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
 

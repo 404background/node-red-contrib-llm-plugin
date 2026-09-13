@@ -1,13 +1,6 @@
-// LLM Plugin  -  the `llm-request` node, runtime half
-//
-// Ask: msg.payload (+ the selected flows as context) → text reply. Agent: the
-// same, then the reply is published over comms and applied LIVE in the open
-// editor by llm-request.html through the plugin's importer — the same path as
-// the sidebar, so an editor has to be open. A node-driven edit is not saved to
-// chat history, but the editor takes a `node-apply` checkpoint before applying
-// it, so it can be rolled back from the sidebar's Restore Points. Provider /
-// API key / endpoint are inherited from the sidebar settings via the shared
-// engine (src/llm_core.js). See docs/{en,jp}/llm-request.md.
+// LLM Plugin  -  the `llm-request` node, runtime half.
+// Ask returns the reply; Agent also publishes it for the editor half to apply.
+// See docs/{en,jp}/llm-request.md.
 const path = require('path');
 
 module.exports = function(RED) {
@@ -20,27 +13,21 @@ module.exports = function(RED) {
     // Comms topic shared with the editor-side subscriber in llm-request.html.
     const AGENT_APPLY_TOPIC = 'llm-plugin/agent-apply';
 
-    // Strip `user:pass@` out of any URL in a log line. The API URL is
-    // operator- or flow-supplied and may carry userinfo; the Node-RED log is
-    // not the place for it. Everything else in the URL stays readable, which
-    // is the point of the warning.
+    // The API URL may carry `user:pass@`; the log is not the place for it.
     function scrubUrlCredentials(text) {
         return String(text).replace(/(\bhttps?:\/\/)[^\s/@"']*@/gi, '$1');
     }
 
-    // A provider error can carry the API key straight back out, and `done(err)`
-    // is a flow-visible exit: the log, `msg.error` on a Catch route, any debug
-    // node from there. `code` is preserved so callers keep detecting timeouts
-    // without parsing the message. See docs/{en,jp}/architecture.md — Security
-    // measures; test/node_secret_exit.test.js.
+    // `done(err)` is a flow-visible exit and a provider error can carry the
+    // API key. `code` survives so timeouts stay detectable.
+    // See docs/{en,jp}/architecture.md — Security measures.
     function redactedError(err) {
         const safe = new Error(core.redactSecrets(err && err.message ? err.message : err));
         if (err && err.code) safe.code = err.code;
         return safe;
     }
 
-    // Normalise line endings so multi-line prompts behave consistently
-    // regardless of source (Windows CRLF, lone CR). Interior newlines kept.
+    // CRLF / lone CR from any source; interior newlines kept.
     function normaliseText(text) {
         return String(text)
             .replace(/\r\n/g, '\n')
@@ -58,12 +45,9 @@ module.exports = function(RED) {
         catch (e) { return normaliseText(String(payload)); }
     }
 
-    // The selected tabs plus only the config nodes they reference, followed
-    // transitively. Null when nothing is selected, so the prompt carries no
-    // flow context. The selection is the user's statement of what may leave
-    // the machine: sending config nodes wholesale would hand every broker and
-    // credential-holder in the instance to the provider.
-    // See docs/{en,jp}/design.md §6; test/cross_flow_isolation.test.js.
+    // The selected tabs plus the config nodes they reference, transitively.
+    // Null when nothing is selected. What this returns is what leaves the
+    // machine. See docs/{en,jp}/design.md §6.
     function flowContextFor(allFlows, ids) {
         if (!Array.isArray(ids) || ids.length === 0 || !Array.isArray(allFlows)) return null;
         const set = new Set(ids);
@@ -95,9 +79,7 @@ module.exports = function(RED) {
         return ctx.length > 0 ? ctx : null;
     }
 
-    // Timeout in whole seconds. Deliberately long by default (1 hour):
-    // local LLMs routinely take many minutes on modest hardware, and a
-    // short default would break the primary use case. 0 = no limit.
+    // Seconds, 0 = no limit. An hour by default: local LLMs are slow.
     const DEFAULT_TIMEOUT_SEC = 3600;
     function toTimeoutSec(value, fallback) {
         if (value === undefined || value === null || value === '') return fallback;
@@ -111,20 +93,14 @@ module.exports = function(RED) {
         const mode = (config.mode === 'agent') ? 'agent' : 'ask';
         const providerOverride = config.provider || '';
         const configModel = config.model || '';
-        // API URL (admin API base). Literal string, or the name of a
-        // flow/global context variable holding it. Empty = auto-detect.
+        // A literal URL, or the name of a flow/global holding one.
         const configEditorUrl = config.editorUrl || '';
         const configEditorUrlType = config.editorUrlType || 'str';
         const configTimeoutSec = toTimeoutSec(config.timeout, DEFAULT_TIMEOUT_SEC);
-        // Developer feature: the editor deploys right after applying (Agent).
         const autoDeploy = config.autoDeploy === true;
-        // Multi-select flow ids (the edit dialog always writes an array).
         const targetFlows = Array.isArray(config.targetFlows) ? config.targetFlows.slice() : [];
 
-        // While a request is in flight, tick the node status with the
-        // elapsed time so long local-LLM runs are visibly alive (status
-        // text stays under the ~20-char guideline). Last writer wins if
-        // several messages are in flight at once.
+        // Ticks the elapsed time, so a long local-LLM run looks alive.
         let statusTimer = null;
         function stopStatusTicker() {
             if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
@@ -167,10 +143,9 @@ module.exports = function(RED) {
                 node.status({ fill: 'blue', shape: 'dot', text: 'requesting…' });
                 const started = Date.now();
                 startStatusTicker(started);
-                // 0 stays 0 (= no limit); the engine owns that interpretation.
                 const genOptions = { timeoutMs: timeoutSec * 1000 };
 
-                // Best-effort flow context for the selected flows (both modes).
+                // Best effort: no context is better than no reply.
                 let context = null;
                 if (targetFlows.length > 0) {
                     try {
@@ -188,8 +163,8 @@ module.exports = function(RED) {
                             current = await adminApi.getFlows(editorUrl ? { url: editorUrl } : undefined);
                         } catch (e) {
                             if (!editorUrl) throw e;
-                            // A configured URL that doesn't serve the admin API
-                            // (e.g. the httpNodeRoot base) — retry auto-detection.
+                            // A URL that doesn't serve the admin API, e.g. the
+                            // httpNodeRoot base. Retry auto-detection.
                             node.warn(scrubUrlCredentials('[llm-request] Flow context fetch failed for "' +
                                 editorUrl + '" (' + (e && e.message ? e.message : e) +
                                 '); retrying with auto-detection.'));
@@ -204,8 +179,7 @@ module.exports = function(RED) {
                     }
                 }
 
-                // Agent always gets the flow-building prompt (even without
-                // context, so the model can propose a flow from scratch);
+                // Agent always builds flows, with or without context;
                 // Ask without selected flows is plain chat.
                 const messages = (context || mode === 'agent')
                     ? core.buildMessages(prompt, context, targetFlows[0] || null, settings)
@@ -217,17 +191,15 @@ module.exports = function(RED) {
                 msg.llm = { mode: mode, provider: provider, model: model, elapsed: Date.now() - started };
 
                 if (mode === 'agent') {
-                    // Hand the reply to the open editor to apply live. Fire-and-
-                    // forget: the node can't know if an editor is connected.
+                    // Fire-and-forget: whether an editor is listening is
+                    // not knowable from here.
                     if (RED.comms && typeof RED.comms.publish === 'function') {
                         RED.comms.publish(AGENT_APPLY_TOPIC, {
                             response: response,
                             targetFlows: targetFlows,
                             autoDeploy: autoDeploy,
                             nodeId: node.id,
-                            // Named so the checkpoint the editor takes before
-                            // applying says WHICH node changed the flow, not
-                            // just that some node did.
+                            // Names the checkpoint the editor takes.
                             nodeName: node.name || null,
                             ts: Date.now()
                         }, false);
@@ -239,8 +211,6 @@ module.exports = function(RED) {
                     }
                 } else {
                     const elapsedMs = Date.now() - started;
-                    // Keep the status text short (<20 chars per the docs);
-                    // hour-long local runs read better in seconds.
                     const elapsedText = elapsedMs < 10000
                         ? elapsedMs + 'ms'
                         : Math.round(elapsedMs / 1000) + 's';
@@ -250,7 +220,6 @@ module.exports = function(RED) {
                 done();
             } catch (err) {
                 stopStatusTicker();
-                // The engine tags timeouts with code ETIMEDOUT (both adapters).
                 const text = (err && err.code === 'ETIMEDOUT') ? 'timeout' : 'error';
                 node.status({ fill: 'red', shape: 'ring', text: text });
                 done(redactedError(err));
@@ -260,9 +229,7 @@ module.exports = function(RED) {
 
     RED.nodes.registerType('llm-request', LLMRequestNode);
 
-    // Exposed for test/cross_flow_isolation.test.js — what this returns is what
-    // leaves the machine, so it is covered by a regression test.
+    // Test seams: cross_flow_isolation, node_secret_exit.
     module.exports._flowContextFor = flowContextFor;
-    // Exposed for test/node_secret_exit.test.js.
     module.exports._scrubUrlCredentials = scrubUrlCredentials;
 };

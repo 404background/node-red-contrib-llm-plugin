@@ -1,8 +1,6 @@
-// Importer: parses LLM assistant messages and imports Node-RED flows.
-// Supports both raw Node-RED JSON arrays and Vibe Schema (intermediate JSON).
-//
-// JSON parsing, token normalization, schema extraction, and flow lookup are
-// implemented in src/core/llm_json_parser.js and accessed via LLMPlugin.LLMJsonParser.
+// Importer: parses LLM assistant messages and imports Node-RED flows (raw
+// Node-RED JSON or Vibe Schema). Parsing and lookup live in
+// src/core/llm_json_parser.js. See docs/{en,jp}/design.md.
 (function(){
     let Importer = {};
 
@@ -48,11 +46,8 @@
     // ------------------------------------------------------------------ //
     //  Workspace Scope                                                    //
     // ------------------------------------------------------------------ //
-    // Every workspace decision below stays inside the flows sent to the LLM
-    // as context. Auto-generated aliases are unique only WITHIN a flow, and
-    // replaceWorkspaceFlow rebuilds its target destructively, so a global
-    // scan can wipe a flow the conversation never saw. A null set means
-    // unrestricted (no flow context was selected).
+    // Every decision below stays inside the flows sent as context; a null set
+    // means none was selected. See docs/{en,jp}/design.md §6.
 
     function buildAllowedWorkspaceSet(ids) {
         if (!Array.isArray(ids) || ids.length === 0) return null;
@@ -68,10 +63,8 @@
         return !allowedSet || (!!wsId && !!allowedSet[wsId]);
     }
 
-    // Default target when the schema carries no usable `flow` tag: the
-    // active tab, but only when it is in scope. Otherwise the first context
-    // flow — the user may have switched tabs between Send and Import, and
-    // the edit still belongs to the flow the LLM actually saw.
+    // The active tab when it is in scope, else the first context flow: the
+    // user may have changed tabs between Send and Import.
     function pickDefaultWorkspace(allowedSet) {
         let active = getActiveWorkspaceId();
         if (!allowedSet) return active;
@@ -80,12 +73,8 @@
         return ids.length > 0 ? ids[0] : null;
     }
 
-    /**
-     * Scan RED workspaces for a tab matching the given label (or ID).
-     * Returns the workspace ID or null if no unique match exists.
-     * `allowedSet` (optional) restricts the scan to the context flows, so a
-     * label can never resolve onto an unrelated workspace.
-     */
+    // Tab label (or id) -> workspace id, null unless the match is unique.
+    // `allowedSet` keeps the scan inside the context flows.
     function resolveFlowLabelToWorkspace(label, allowedSet) {
         if (!label || typeof label !== 'string') return null;
         if (!window.RED || !RED.nodes) return null;
@@ -156,15 +145,9 @@
     function isConfigNodeType(type)   { return Converter.isConfigType(type); }
     function isConfigNodeObj(node)    { return Converter.isConfigNode(node); }
 
-    // Alias -> live config node, built from the flows the MODEL was shown.
-    //
-    // Node identity is resolved per-flow, and must stay that way: aliases are
-    // unique only within a flow and the target is the only flow this import
-    // may write to. A config node is the exception — it has no flow, it is
-    // referenced rather than written, and the prompt numbers aliases across
-    // every context flow at once. So 'ui_group_test_2' exists only in this
-    // wider table, and resolving it here is what stops a reference the model
-    // read straight out of its context from landing as a dangling id.
+    // Alias -> live config node, over the flows the MODEL was shown. Config
+    // references resolve here; node identity stays per-flow.
+    // See docs/{en,jp}/design.md §5.
     function buildConfigAliasIndex(allowedWorkspaceIds) {
         let index = {};
         try {
@@ -284,10 +267,8 @@
     //  Unified Alias Lookup                                               //
     // ================================================================== //
 
-    // buildFlowLookup plus an index of the `_llmAlias` markers new nodes
-    // carry. A new node's auto-alias is just its type ("function"), so
-    // without this a connection to the LLM's "function_new" resolves the
-    // source but loses the target.
+    // buildFlowLookup plus the `_llmAlias` markers new nodes carry, so a
+    // connection can name a node this same schema is adding.
     function buildUnifiedLookup(flowNodes) {
         let lookup = buildFlowLookup(flowNodes);
         if (Array.isArray(flowNodes)) {
@@ -314,10 +295,8 @@
 
         let desiredByFromPort = {};
         hints.forEach(function(h) {
-            // exactOnly: fuzzy matching here would let a new-node alias
-            // ("inject_py_1") prefix-match an existing "inject" and reroute
-            // the connection to the wrong node. The unified lookup already
-            // covers new nodes, so exact resolution is enough.
+            // exactOnly: a fuzzy match would reroute the connection to a
+            // node that merely shares a prefix. See design.md §4.3.
             let fromId = lookup.resolve(h.from, { exactOnly: true });
             let toId = lookup.resolve(h.to, { exactOnly: true });
             if (!fromId || !toId || !lookup.byId[fromId] || !lookup.byId[toId]) return;
@@ -354,17 +333,13 @@
 
     function isCanvasNode(node) { return Converter.isCanvasNode(node); }
 
-    // Groups are canvas entities for z-assignment and re-import, but the
-    // layout must never treat them as positionable nodes: a group's bounding
-    // box always encloses its members, so feeding it to the collision passes
-    // would make it fight its own contents. Junctions stay in — they are real
-    // routing points with wires and belong in the adjacency graph.
+    // A group's box encloses its members, so the layout must not move it as
+    // a node. Junctions are real routing points and stay in.
     function isLayoutNode(node) {
         return isCanvasNode(node) && !(node && node.type === 'group');
     }
 
-    // Collect canvas-level entities of a workspace, separated by type
-    // because Node-RED's remove API is type-specific:
+    // Separated by type because the remove API is:
     //   nodes      -> RED.nodes.remove(id)
     //   groups     -> RED.nodes.removeGroup(groupObj)
     //   junctions  -> RED.nodes.removeJunction(juncObj)
@@ -376,10 +351,8 @@
         };
     }
 
-    // Node-RED's _redraw only repaints an entity whose `dirty` flag is set,
-    // so after an import a plain redraw draws the wires and leaves the node
-    // bodies blank. The second, rAF-deferred redraw covers new nodes whose
-    // SVG <g> had not attached yet (checkpoint restore switching tabs).
+    // _redraw only repaints entities marked dirty; the deferred second pass
+    // catches nodes whose SVG had not attached yet.
     function refreshCanvasView(workspaceIds) {
         RED.actions.invoke('core:select-none');
         RED.nodes.dirty(true);
@@ -468,12 +441,8 @@
                     return port.filter(function(tid) { return !removedRealIds[tid]; });
                 });
             });
-            // A group's `nodes` is the other half of a member's `g`, and
-            // deleting the member does not update it — RED.nodes.remove has
-            // no group bookkeeping at all (verified in the 4.1 editor client;
-            // the editor's own delete action calls RED.group.removeFromGroup
-            // first). Left alone, the group keeps naming a node that no
-            // longer exists, in the rebuilt flow and on the canvas after it.
+            // RED.nodes.remove has no group bookkeeping, so a deleted member
+            // stays listed in its group. See docs/{en,jp}/design.md §12.
             nodes.forEach(function(n) {
                 if (!n || n.type !== 'group' || !Array.isArray(n.nodes)) return;
                 n.nodes = n.nodes.filter(function(mid) { return !removedRealIds[mid]; });
@@ -491,22 +460,16 @@
         let baseIds = {};
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
 
-        // Identity / placement / editor-state keys never carried over from
-        // existing to proposed during the merge: each is supplied by something
-        // else (`z` explicitly, `x`/`y` by the layout passes, `wires` by the
-        // additive wire merge). `g` is NOT in this list and must not be —
-        // nothing else restores group membership, and carrying it blindly is
-        // safe because the schema can neither read nor write it.
-        // See docs/{en,jp}/design.md §4.2 and §12.
+        // Never carried over from existing to proposed: something else
+        // supplies each. `g` is deliberately absent — nothing else restores
+        // group membership. See docs/{en,jp}/design.md §4.2 and §12.
         let MERGE_SKIP_KEYS = {
             id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1,
             dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
         };
 
-        // Restore every existing-node property the LLM did not explicitly
-        // touch. "Explicitly touched" = key listed in n._llmSpecKeys (Vibe
-        // Schema path), or key has a defined value on n (raw JSON path).
-        // See docs/{en,jp}/architecture.md "importer.js" for the rationale.
+        // Restore every property the LLM did not explicitly touch — listed in
+        // _llmSpecKeys, or defined on n. See docs/{en,jp}/design.md §4.2.
         function preserveUnmentionedProperties(n, existing) {
             if (!existing) return;
             let llmKeys = Array.isArray(n._llmSpecKeys) ? n._llmSpecKeys : null;
@@ -597,10 +560,8 @@
 
         applyConnectionHints(rebuilt, connectionHints || [], connLookup);
 
-        // Resolve comment `above: <alias>` references to real node ids.
-        // The alias may name a NEW node from the same schema (look up its
-        // _llmAlias on rebuilt) or an EXISTING node from the live flow
-        // (look up via toIntermediate's aliasToId / nameToId).
+        // `above: <alias>` -> node id. The alias may name a node this schema
+        // is adding, or one already on the canvas.
         (function resolveCommentAboveRefs() {
             let aboveCandidates = rebuilt.filter(function(n) {
                 return n && n.type === 'comment' && typeof n._llmAbove === 'string' && n._llmAbove.length > 0;
@@ -620,11 +581,8 @@
             });
         })();
 
-        // Metadata sweep #1. Every `_`-prefixed property is plugin-internal
-        // (see FlowConverterCore.isMetaProp) and must never reach the canvas.
-        // `_llmOrder` / `_llmAboveId` are still consumed by the layout passes
-        // below, so they are the only survivors; sweep #2 drops them once
-        // layout is done.
+        // Metadata sweep #1: no `_`-prefixed property may reach the canvas.
+        // These two survive until the layout passes below are done.
         let LAYOUT_META_KEYS = { _llmOrder: 1, _llmAboveId: 1 };
         rebuilt.forEach(function(n) {
             if (!n) return;
@@ -638,11 +596,8 @@
         fixConfigNodeProperties(rebuilt);
 
         let layout = LLMPlugin.CanvasLayout;
-        // Prefer Node-RED's live `.w` (measured from the rendered SVG)
-        // for existing nodes when the label is unchanged. If the LLM
-        // renamed the node or changed its type the cached width no
-        // longer matches the post-import label, so fall back to the
-        // estimate which can grow the column to fit the new label.
+        // The live `.w` is measured from the rendered SVG, so it is only
+        // valid while the label is unchanged. See docs/{en,jp}/layout.md.
         function liveNodeWidth(n) {
             if (!n || !n.id) return undefined;
             try {
@@ -773,11 +728,9 @@
     //  Replace Workspace Flow                                             //
     // ================================================================== //
 
-    // Serialise live editor entities into their import-ready export shape.
-    // `createExportableNodeSet` is mandatory for groups and junctions: a live
-    // group's `nodes` array holds node OBJECTS, so the obvious fallback — a
-    // plain JSON clone — writes whole nodes where the import format expects
-    // ids. A fallback that produces a corrupt backup is worse than none.
+    // createExportableNodeSet is mandatory, not a convenience: a live group
+    // holds node OBJECTS where the export format wants ids, so there is no
+    // safe JSON-clone fallback. See docs/{en,jp}/design.md §7.
     function exportEntities(entities) {
         let list = (entities || []).filter(Boolean);
         return list.length > 0 ? RED.nodes.createExportableNodeSet(list) : [];
@@ -793,10 +746,8 @@
         try {
             let ents = collectWorkspaceEntities(workspaceId);
             let canvasNodes = ents.nodes.filter(isCanvasNode);
-            // Junctions and groups are removed below too, so they belong in
-            // the rollback snapshot. A node-only backup used to restore the
-            // canvas without them — silently deleting them on the very error
-            // path that is supposed to leave the flow untouched.
+            // Junctions and groups are removed below, so the rollback
+            // snapshot has to carry them too.
             backupEntitiesJSON = exportEntities(
                 canvasNodes.concat(ents.junctions || [], ents.groups || [])
             );
@@ -836,13 +787,8 @@
             return true;
         });
 
-        // Update existing config nodes in-place (properties only; no re-import)
-        //
-        // No `_autoStub` guard here: by this point rebuildWorkspaceFromSnapshot
-        // has already dropped every stub that stood in for a real config node,
-        // and its metadata sweep has removed every `_`-prefixed key from what
-        // is left. A test for one would never fire — Config Node Protection
-        // lives in the merge, not here.
+        // Properties only, no re-import. Stubs and `_`-prefixed keys are
+        // already gone by here; Config Node Protection lives in the merge.
         configNodesToUpdate.forEach(function(nn) {
             try {
                 let existing = RED.nodes.node(nn.id);
@@ -890,15 +836,10 @@
     //  Incremental Workspace Apply                                        //
     // ================================================================== //
     //
-    // `rebuildWorkspaceFromSnapshot` already produces the COMPLETE desired end
-    // state; this applies it as a DIFF, so only what was added, removed, moved
-    // or actually changed is touched. Wires are why that is not simply
-    // "import the changed nodes": links are separate objects in the editor's
-    // own registry and `node.wires` is derived from them, so a changed
-    // connection goes through addLink / removeLink against the live nodes.
-    // Anything the diff cannot express safely hands back `fallback: true` and
-    // the caller runs the destructive path, so correctness never depends on
-    // this covering every case. See docs/{en,jp}/design.md §12.
+    // rebuildWorkspaceFromSnapshot produces the complete desired end state;
+    // this applies it as a diff. Anything the diff cannot express hands back
+    // `fallback: true` and the caller rebuilds instead, so correctness never
+    // depends on the diff covering every case. See docs/{en,jp}/design.md §12.
 
     // Handled by other means, so they take no part in the property compare:
     // `wires` becomes link surgery, `x`/`y` a move, and id/type/z identify the
@@ -956,10 +897,8 @@
         return null;
     }
 
-    // Bring one node's outgoing links in line with its desired `wires`.
-    // removeLink matches by object identity, so the links to drop must come
-    // from getNodeLinks — a reconstructed `{source, sourcePort, target}` would
-    // silently match nothing.
+    // removeLink matches by object identity, so the links to drop have to
+    // come from getNodeLinks, not be reconstructed.
     function applyWireDiff(liveNode, desiredWires) {
         let want = wireKeySet({ wires: desiredWires });
         let existing = [];
@@ -984,10 +923,8 @@
         });
     }
 
-    // Write changed properties onto the live node the way the edit dialog
-    // does. Repointing a config reference has to be de-registered against the
-    // OLD value first, or the config node's `users` list keeps a node that no
-    // longer uses it (and its "N nodes use this" count drifts forever).
+    // As the edit dialog does it: a repointed config reference is
+    // de-registered against the OLD value first, or `users` drifts.
     function applyPropertyUpdate(liveNode, after, changedKeys) {
         let tracksConfig = typeof RED.nodes.updateConfigNodeUsers === 'function';
         if (tracksConfig) {
@@ -1010,14 +947,9 @@
         liveNode.dirty = true;
     }
 
-    // Can group membership be maintained on the live canvas?
-    //
-    // `RED.group.removeFromGroup` is the only correct way: a group holds its
-    // members as node OBJECTS, so the list cannot be edited through the
-    // exported id form, and the editor's own delete action calls this before
-    // removing anything. It is a silent no-op on a locked workspace, which is
-    // exactly the case that must NOT proceed — a node removed while the group
-    // still lists it leaves the group naming something that no longer exists.
+    // Can group membership be maintained on the live canvas? On a locked
+    // workspace removeFromGroup is a silent no-op, which is the one case that
+    // must not proceed. See docs/{en,jp}/design.md §12.
     function canMaintainGroups() {
         return !!(RED.group && typeof RED.group.removeFromGroup === 'function' &&
                   typeof RED.nodes.group === 'function' &&
@@ -1025,10 +957,8 @@
                     RED.workspaces.isLocked()));
     }
 
-    // Take a node out of its group, so removing it next does not leave the
-    // group holding a member that is gone. Reports whether membership is
-    // actually consistent afterwards; the caller treats false as a failure
-    // rather than carrying on, because the alternative is a dangling member.
+    // Detach before removing. Returns whether membership is actually
+    // consistent afterwards; false has to abort, not carry on.
     function detachFromGroup(liveNode) {
         if (!liveNode || !liveNode.g) return true;
         let group = RED.nodes.group(liveNode.g);
@@ -1050,10 +980,8 @@
         liveNode.dirty = true;
     }
 
-    // Clear the tab and re-import an export of it. Only the rollback path uses
-    // this now — the destructive rebuild it mirrors is what the diff exists to
-    // avoid, but on a half-applied failure it is the only way back to a known
-    // state.
+    // Clear the tab and re-import an export of it. Rollback only: on a
+    // half-applied failure it is the only way back to a known state.
     function restoreWorkspaceFromExport(exportedFlow, wsId) {
         let ents = collectWorkspaceEntities(wsId);
         ents.nodes.forEach(function(n) { try { RED.nodes.remove(n.id); } catch (e) { /* ignore */ } });
@@ -1088,14 +1016,9 @@
         return { canvas: canvas, configs: configs };
     }
 
-    // Update existing config nodes in place; hand back the ones that are new
-    // so they can be imported with the rest.
-    //
-    // `undo` collects what it takes to put each touched config node back:
-    // config nodes live OUTSIDE the workspace, so restoreWorkspaceFromExport
-    // (which only re-imports entities whose `z` is the tab) cannot reach
-    // them. Without this a failed apply left the flow restored but the
-    // brokers and credentials it had already rewritten still rewritten.
+    // Update existing config nodes in place; hand back the new ones to be
+    // imported with the rest. They live outside the workspace, so the canvas
+    // rollback cannot reach them and `undo` records how to put them back.
     function applyConfigNodeUpdates(configs, undo) {
         let toImport = [];
         (configs || []).forEach(function(nn) {
@@ -1134,10 +1057,8 @@
         return toImport;
     }
 
-    // Put the config nodes back the way applyConfigNodeUpdates found them.
-    // Runs newest-first so a node that was created and then edited is removed
-    // rather than half-restored. Best-effort by design: it runs on an error
-    // path that has already failed once.
+    // Newest-first, so a node created and then edited is removed rather than
+    // half-restored. Best effort: this path has already failed once.
     function undoConfigNodeUpdates(undo) {
         (undo || []).slice().reverse().forEach(function(entry) {
             try {
@@ -1159,10 +1080,8 @@
         });
     }
 
-    // The end state, applied as a diff. Returns { ok } on success,
-    // { ok: false, fallback: true } when the caller should use the
-    // destructive path instead, or { ok: false, error } on a real failure
-    // (the workspace is rolled back first).
+    // { ok } | { ok: false, fallback: true } (use the destructive path)
+    // | { ok: false, error } (real failure; the workspace is rolled back).
     function applyWorkspaceDiff(desired, targetWorkspaceId) {
         let wsId = (targetWorkspaceId && typeof targetWorkspaceId === 'string')
             ? targetWorkspaceId
@@ -1223,11 +1142,8 @@
         });
 
         // --- Refuse what the diff cannot express ----------------------- //
-        // Groups own their members as live OBJECTS and a node's `g` is only
-        // half of that relationship, so any change to either has to go through
-        // RED.group's own add/remove. None of this is reachable from the
-        // schema (it has no notion of groups), so falling back costs nothing
-        // and keeps the group bookkeeping in one place.
+        // The schema has no notion of groups, so falling back costs nothing
+        // and keeps group bookkeeping in RED.group's own API.
         let bail = null;
         updates.forEach(function(u) {
             let before = beforeById[u.id], after = afterById[u.id];
@@ -1276,10 +1192,8 @@
             });
             moves.forEach(function(id) { applyMove(liveById[id], afterById[id]); });
 
-            // Added nodes go in BEFORE the wire pass: a new link needs both
-            // ends to exist. Their own `wires` are turned into links by the
-            // import; wires pointing AT them from untouched nodes are not, and
-            // that is what the rewire pass below is for.
+            // Before the wire pass: a new link needs both ends to exist. The
+            // import makes their own wires; wires pointing AT them are below.
             let configImports = applyConfigNodeUpdates(split.configs, configUndo);
             let importSet = added.concat(configImports);
             if (importSet.length > 0) {
@@ -1308,11 +1222,8 @@
                 'Incremental apply threw; rolling the workspace back', {
                     error: e && e.message ? e.message : String(e)
                 });
-            // Canvas first, then configs: restoreWorkspaceFromExport removes
-            // the workspace's nodes, and that de-registers them from the
-            // config nodes' `users` lists — so a config node this undo is
-            // about to delete is no longer claimed by a node that is going
-            // away anyway.
+            // Canvas first: removing its nodes de-registers them from the
+            // config nodes the undo below may delete.
             try { restoreWorkspaceFromExport(beforeExport, wsId); } catch (e2) { /* ignore */ }
             try { undoConfigNodeUpdates(configUndo); } catch (e3) { /* ignore */ }
             return { ok: false, error: 'Failed to apply flow changes: ' + (e.message || e) };
@@ -1323,11 +1234,8 @@
     //  Multi-flow Dispatch Helpers                                        //
     // ================================================================== //
 
-    // Label of the flow untagged nodes belong to: the active tab, or — when
-    // that tab is outside the conversation's scope — the context flow the
-    // import will actually target. Returning the active label here would
-    // route untagged nodes to a workspace the dispatch is not allowed to
-    // write to, and they would be silently dropped as "unknown flow".
+    // Where untagged nodes go: the active tab, or the context flow the import
+    // will actually target when that tab is out of scope.
     function getDefaultWorkspaceLabel(allowedSet) {
         let id = pickDefaultWorkspace(allowedSet);
         if (!id || !window.RED || !RED.nodes) return null;
@@ -1365,9 +1273,7 @@
     }
 
     // Slice a schema down to one flow: its tagged canvas nodes, the untagged
-    // (config / shared) ones, and the connections internal to it.
-    // `ownedDeletes` is this flow's share of the delete directives, decided
-    // by routeDeleteTokens.
+    // ones, its internal connections, and its share of the deletions.
     function buildSubSchemaForFlow(schema, aliases, ownedDeletes) {
         let aliasSet = {};
         aliases.forEach(function(a) { aliasSet[a] = true; });
@@ -1396,11 +1302,8 @@
             if (isUntagged) subNodes[alias] = spec;
         });
 
-        // A connection is forwarded here when at least one endpoint belongs
-        // to this sub-schema and neither is tagged to a different flow —
-        // Node-RED has no cross-flow wires. An endpoint absent from
-        // schema.nodes is an existing canvas node, resolved by the
-        // sub-import's own lookup.
+        // There are no cross-flow wires, so a connection is forwarded only
+        // when neither endpoint is tagged to a different flow.
         function endpointBelongsToAnotherFlow(endpoint) {
             if (aliasSet[endpoint]) return false;
             let spec = schema.nodes && schema.nodes[endpoint];
@@ -1464,11 +1367,9 @@
         return tokens;
     }
 
-    // A deletion carries no `flow` tag and its node is normally not
-    // redeclared under `nodes`, so the only evidence is which canvas holds
-    // it. Routed only when exactly ONE in-scope flow resolves the token;
-    // ambiguous or unresolvable ones are reported, not applied, because a
-    // deletion cannot be undone from the import itself.
+    // A deletion has no `flow` tag, so the only evidence is which canvas
+    // holds it. Routed only when exactly one in-scope flow resolves it;
+    // anything ambiguous is reported, not applied.
     // → { byLabel: { <flow label>: { <token>: true } }, unrouted: [] }
     function routeDeleteTokens(tokens, labelToWorkspaceId) {
         let byLabel = {};
@@ -1508,12 +1409,10 @@
     //  Implicit Flow Tagging                                              //
     // ================================================================== //
 
-    // LLMs routinely omit `flow` tags even when a message spans workspaces,
-    // leaving the dispatch unfired and cross-tab connections unresolved.
-    // Recover the tags from the context canvases and propagate them along
-    // connections; the schema is cloned. The `allowedSet` scope is
-    // load-bearing — the map is first-workspace-wins, so a global scan would
-    // tag `inject` with whichever unrelated tab sits earlier in the tab bar.
+    // Models routinely omit `flow` tags; recover them from the context
+    // canvases and propagate along connections (the schema is cloned). The
+    // `allowedSet` scope is load-bearing: the map is first-workspace-wins.
+    // See docs/{en,jp}/design.md §6.
     function inferImplicitFlowTagging(schema, allowedSet) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return schema;
 
@@ -1552,11 +1451,8 @@
             }
         });
 
-        // Propagate labels along connections. A connection's endpoint is
-        // either: a schema-node alias (in `inferred` once set), or an
-        // existing canvas alias (always in `aliasToWorkspaceLabel`). When
-        // one endpoint is known and the schema-node endpoint isn't, the
-        // unknown side inherits the known side's label.
+        // Propagate along connections: an endpoint whose label is unknown
+        // inherits it from the endpoint that has one.
         let connections = Array.isArray(schema.connections) ? schema.connections : [];
         let changed = true;
         let safety = 64;
@@ -1605,10 +1501,8 @@
         return cloned;
     }
 
-    // Re-serialize a schema back into a fenced ```json``` block so an
-    // outer-level import can hand its inferred-tagged version off to the
-    // sub-import path (which re-parses the message via extractFlowNodes
-    // / extractConnectionHints from the surrounding text).
+    // Back into a fenced block: the sub-import path re-parses a message,
+    // not a schema object.
     function serializeSchemaAsMessage(schema) {
         return '```json\n' + JSON.stringify(schema, null, 2) + '\n```';
     }
@@ -1620,11 +1514,8 @@
         let unresolved = [];
         let flowLabels = Object.keys(flowGroups);
 
-        // Resolve every target workspace up front: deletions have to be
-        // routed against the whole set of candidate flows, not one at a time.
-        // Out-of-scope labels resolve to null and are reported as skipped —
-        // a fan-out must never reach a flow outside the conversation's
-        // context.
+        // Up front, because deletions are routed against the whole set of
+        // candidates. Out-of-scope labels resolve to null and are skipped.
         let labelToWs = {};
         flowLabels.forEach(function(label) {
             let wsId = resolveFlowLabelToWorkspace(label, allowedSet);
@@ -1681,11 +1572,8 @@
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
         try {
-            // Workspace scope for this import: the flows that were sent to
-            // the LLM as context (`allowedWorkspaceIds`, supplied by the
-            // caller). Null = unrestricted, i.e. no flow context was
-            // selected, in which case the active tab is the only sensible
-            // target anyway.
+            // The flows sent as context. Null = none was selected, which
+            // leaves the active tab as the only sensible target.
             let allowedSet = buildAllowedWorkspaceSet(options.allowedWorkspaceIds);
 
             // Split a `flow`-tagged schema per workspace before importing.
@@ -1726,10 +1614,8 @@
             // stale id) is discarded rather than honoured.
             if (targetWs && !isWorkspaceAllowed(allowedSet, targetWs)) targetWs = null;
 
-            // Resolve the destination BEFORE snapshotting: `beforeFlow` is the
-            // rebuild base and must come from the very workspace the result is
-            // written back to, or the merge would splice one flow's nodes into
-            // another.
+            // Before snapshotting: the rebuild base must come from the very
+            // workspace the result is written back to.
             let currentWorkspace = targetWs || pickDefaultWorkspace(allowedSet);
             let beforeFlow = safeGetCurrentFlow(currentWorkspace);
 
@@ -1863,10 +1749,8 @@
 
                 let replacedExisting = null;
 
-                // 1. Alias-based matching (primary): exact-alias only.
-                // The LLM gets every existing alias in its prompt context, so
-                // a non-matching alias means "add as new" — never fuzzy-match,
-                // which would silently overwrite an unrelated node.
+                // 1. Exact alias only: the model was given every existing
+                // alias, so a new one means "add". See design.md §4.3.
                 if (nn._llmAlias) {
                     let aliasId = preResolvedAlias[idx] || null;
                     if (aliasId) {
@@ -1880,18 +1764,14 @@
                 }
 
                 // 1b. Config nodes only: the same alias against the wider
-                // context table. The model reads config aliases out of a
-                // listing that spans every context flow, so the one it wrote
-                // may not exist in the target flow's own numbering at all.
+                // context table. See buildConfigAliasIndex.
                 if (!replacedExisting && nn._llmAlias && isConfigNodeObj(nn)) {
                     let hit = resolveConfigAlias(configAliases, nn._llmAlias, null);
                     if (hit && !claimedExistingIds[hit.id]) {
                         let live = RED.nodes.node(hit.id);
-                        // A stub's type is a GUESS the converter made from the
-                        // property name ('somethingConfig' -> 'something-config'),
-                        // so it is not evidence; the alias is. A config node the
-                        // schema declared itself states its own type, and that
-                        // has to agree.
+                        // A stub's type is a guess from the property name, so
+                        // only the alias is evidence. A declared config node
+                        // states its own type, and that has to agree.
                         if (live && (nn._autoStub || live.type === nn.type)) {
                             replacedExisting = live;
                         }
@@ -1941,11 +1821,8 @@
                     }
                 } else {
                     if (nn._autoStub) {
-                        // Invented by the converter for a reference the schema
-                        // never defined, and nothing on this instance matches
-                        // it. It must not be created (the LLM may not add
-                        // config nodes), so the reference to it is cleared
-                        // below instead of being left pointing at a phantom.
+                        // Nothing matches this stub and it must not be
+                        // created, so the reference is cleared below.
                         unresolvedStubs[nn.id] = nn._llmAlias || nn.type;
                         existingIds.add(nn.id);
                         return null;
@@ -1982,15 +1859,9 @@
                 });
             }
 
-            // Config references the converter never recognised as such.
-            //
-            // Its stub strategies know a fixed set of key names (broker, group,
-            // tab, ...) plus anything ending in "config". A node type nobody
-            // here has heard of names its config property whatever it likes,
-            // and that reference would keep the alias string and point at
-            // nothing. Any value that is exactly the alias of a config node in
-            // the context IS that node: toIntermediate wrote the alias there in
-            // the first place, and this is the other half of that round trip.
+            // Config references under a key the converter never recognised -
+            // an unfamiliar node type names its config property whatever it
+            // likes. See docs/{en,jp}/design.md §5.
             newNodes.forEach(function(n) {
                 if (!n) return;
                 Object.keys(n).forEach(function(key) {
@@ -2000,11 +1871,8 @@
                 });
             });
 
-            // References to a config node that exists nowhere. Clearing them is
-            // the difference between a node the editor reports as needing
-            // configuration and one pointing at an id that does not exist -
-            // and, either way, the user is told which node was missing rather
-            // than left to find a quietly broken node later.
+            // References to a config node that exists nowhere: cleared, so
+            // the node reads as unconfigured rather than broken, and named.
             if (Object.keys(unresolvedStubs).length > 0) {
                 let missing = {};
                 newNodes.forEach(function(n) {
@@ -2055,11 +1923,8 @@
                 return { ok: false, error: 'Invalid node shape' };
             }
 
-            // Last line of defence before the destructive rebuild: whatever
-            // path decided `currentWorkspace`, it must be a flow this chat
-            // was actually given. replaceWorkspaceFlow clears its target's
-            // canvas, so an out-of-scope id here would destroy an unrelated
-            // flow — abort instead.
+            // Last line of defence: the fallback path clears its target's
+            // canvas, so an out-of-scope id here would destroy a flow.
             if (!isWorkspaceAllowed(allowedSet, currentWorkspace)) {
                 let scopeErr = 'Import aborted: target flow is outside this chat\'s flow context';
                 notify(scopeErr, 'error');
@@ -2070,11 +1935,8 @@
             }
 
             let rebuiltFlow = rebuildWorkspaceFromSnapshot(beforeFlow, newNodes, currentWorkspace, connectionHints, flowDirectives);
-            // Apply the end state as a diff, touching only what the edit
-            // actually changes. `fallback` means the diff found something it
-            // cannot express (group membership, a type change) — the
-            // destructive rebuild still applies the same end state, just
-            // wholesale, so it stays as the backstop rather than as the norm.
+            // `fallback` means the diff found something it cannot express;
+            // the rebuild applies the same end state wholesale.
             let rebuiltResult = applyWorkspaceDiff(rebuiltFlow, currentWorkspace);
             if (rebuiltResult && rebuiltResult.fallback) {
                 postTerminalLog('warn', 'incremental-apply-fallback',
@@ -2097,15 +1959,9 @@
                 return { id: n.id, type: n.type || '', name: n.name || '' };
             });
 
-            // One toast per import: two in a row (and a 'warning' severity for
-            // what is really a success detail) just buried the result.
-            //
-            // It counts what the edit DID, not only what is new. An edit that
-            // reuses an alias rewrites that node in place — same id, same
-            // position — so a toast that only counts additions says "Flow
-            // updated" over an edit that looks, on the canvas, like nothing
-            // happened at all. The counts come from the incremental apply; the
-            // destructive fallback does not report them, hence the guards.
+            // One toast, counting what the edit DID: an edit that reuses an
+            // alias rewrites that node in place and adds nothing. The counts
+            // come from the diff, which the fallback path does not report.
             let summary = [];
             if (addedNodes.length > 0) summary.push(addedNodes.length + ' added');
             if (rebuiltResult.updated > 0) summary.push(rebuiltResult.updated + ' changed');
@@ -2158,10 +2014,8 @@
                     if (active) ids = [active];
                 }
 
-                // Clear every non-tab canvas entity (regular nodes +
-                // subflow instances + junctions + groups) via type-
-                // specific Node-RED APIs. Config nodes (no `z`) are
-                // left alone and patched in place below.
+                // Every non-tab canvas entity, through the type-specific
+                // APIs. Config nodes (no `z`) are patched in place below.
                 ids.forEach(function(wsId) {
                     let ents = collectWorkspaceEntities(wsId);
                     ents.nodes.forEach(function(n) {

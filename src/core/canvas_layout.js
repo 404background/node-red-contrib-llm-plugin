@@ -209,11 +209,8 @@
         return { outgoing: outgoing, incoming: incoming };
     }
 
-    // `spacingY` and `gap` are EDGE-TO-EDGE clearances. The row pitch
-    // (centre-to-centre) is `nodeHeight + spacingY`; the component step
-    // (last centre of comp N to first centre of comp N+1) is
-    // `nodeHeight + gap`. `nodeHeight` defaults to LAYOUT_DEFAULTS.nodeHeight
-    // when the caller omits it.
+    // `spacingY` and `gap` are EDGE-TO-EDGE clearances, so each pitch is
+    // `nodeHeight + `the clearance. See docs/{en,jp}/layout.md — Defaults.
     function computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight) {
         if (typeof nodeHeight !== 'number') nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
         let rowPitch = nodeHeight + spacingY;
@@ -254,11 +251,9 @@
         return false;
     }
 
-    // Mirrors the editor's own width formula (view.js redraw, NR 4.1.7):
+    // The editor's own width formula:
     //   w = max(minWidth, grid * ceil((labelWidth + chrome) / grid))
-    // with the label width estimated per character. The comment chrome (24)
-    // is smaller than a node's (57) and empirically matched: too large and a
-    // caption's left edge no longer lines up with its target's.
+    // See docs/{en,jp}/layout.md — Width-aware spacing.
     function estimateNodeWidth(node, opts) {
         let minW = pickOption(opts, 'minNodeWidth', LAYOUT_DEFAULTS.minNodeWidth);
         let grid = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
@@ -377,11 +372,8 @@
             // stack, or touching the target's top edge if none. Earlier
             // declaration order = higher in the stack (further from target).
             let bottomY = findStackBottomY(target, group);
-            // Align each comment's LEFT EDGE with the target's left edge
-            // -- captions and their target node share a column, not a
-            // centre. Centring a wide caption (e.g. a long Japanese label)
-            // on a narrow inject would push the caption past the canvas
-            // margin and visually drift the inject right of the caption.
+            // LEFT EDGES, not centres: a caption and its target share a
+            // column. See docs/{en,jp}/layout.md — Comment placement.
             let targetLeft = (target.x || 0) - getNodeWidth(target, opts) / 2;
             group.forEach(function(c, i) {
                 c.x = targetLeft + getNodeWidth(c, opts) / 2;
@@ -390,11 +382,9 @@
         });
     }
 
-    // Record each caption's offset to the node it is attached to, by hopping
-    // down through whatever it is TOUCHING (`stackStep + grid` below and
-    // within a grid square horizontally). The tolerance is tight on purpose:
-    // a standalone annotation finds no neighbour, gets no anchor, and is
-    // therefore left exactly where the user put it.
+    // Each caption's offset to the node it is attached to, found by hopping
+    // down through whatever it TOUCHES. The tolerance is tight on purpose: a
+    // standalone annotation gets no anchor and is left where the user put it.
     function captureCommentAnchors(canvasNodes, opts) {
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
@@ -411,12 +401,8 @@
         function touchingBelow(from, visited) {
             let best = null;
             let bestDy = Infinity;
-            // Compare LEFT EDGES rather than centres -- captions and their
-            // target node share a left edge (the new repositionComments
-            // pass enforces that), and a wide caption over a narrow inject
-            // has a centre that sits well outside the inject's bounding
-            // box. A leftEdge-vs-leftEdge tolerance still catches stacks
-            // with minor drift while admitting wide captions properly.
+            // LEFT EDGES again: a wide caption over a narrow node has a
+            // centre well outside that node's box.
             let fromLeft = (from.x || 0) - getNodeWidth(from, opts) / 2;
             for (let i = 0; i < positioned.length; i++) {
                 let n = positioned[i];
@@ -473,11 +459,9 @@
         });
     }
 
-    // Last-resort pass for overlaps the directional pushes (3.4 / 3.5a /
-    // 3.5b) couldn't reach. With `compOf` (nodeId → component id) each
-    // component moves as a RIGID BODY, so a flow the user did not edit
-    // keeps its shape; same-component pairs are left to that component's
-    // own layout. Comments are re-aligned afterwards, so they are skipped.
+    // Last resort for overlaps the directional pushes could not reach. With
+    // `compOf` each component moves as a RIGID BODY, so a flow the user did
+    // not edit keeps its shape. See docs/{en,jp}/layout.md — Pass details.
     function resolveOverlaps(canvasNodes, opts, compOf) {
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
@@ -583,11 +567,8 @@
         let canvasNodes = (nodes || []).filter(isCanvas);
         if (canvasNodes.length < 2) return nodes;
 
-        // Snapshot caption-to-target offsets BEFORE the grid layout
-        // rewrites node coordinates. Attached comments follow their
-        // target via applyCommentAnchors below; standalone comments
-        // are excluded from the grid pass entirely so the user's
-        // deliberate placement survives the reflow.
+        // Before the grid layout rewrites coordinates: attached captions
+        // follow their target, standalone ones are left alone.
         let commentAnchors = captureCommentAnchors(canvasNodes, opts);
 
         let byId = {};
@@ -641,12 +622,9 @@
 
         let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight);
 
-        // No grid snap on derived X/Y here: snapping the CENTRE distorts
-        // visible alignment when nodes have widths whose halves don't
-        // share a grid residue. We keep each leftEdge exactly and derive
-        // the centre as `leftEdge + width/2`. A uniform `rowPitch` gives
-        // consistent row spacing even though `nodeHeight` (30) is not a
-        // grid multiple.
+        // No grid snap on the derived centre: left edges are what align, so
+        // each is kept exactly and the centre derived from it.
+        // See docs/{en,jp}/layout.md — Width-aware spacing.
         ids.forEach(function(id) {
             let node = byId[id];
             let pos = positions[id] || { col: 0, row: 0 };

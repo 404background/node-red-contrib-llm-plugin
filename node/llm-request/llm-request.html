@@ -8,14 +8,11 @@
             provider:    { value: 'ollama' },
             model:       { value: '', required: true },
             targetFlows: { value: [] },
-            // Admin API base URL. Blank string = auto-detect from the running
-            // instance. Type str | flow | global (typedInput).
+            // Admin API base; blank = auto-detect.
             editorUrl:   { value: '' },
             editorUrlType: { value: 'str' },
-            // Agent only: deploy right after the editor applies the changes.
             autoDeploy:  { value: false },
-            // Seconds; deliberately long (1 h) because local LLMs can take
-            // many minutes per reply. 0 = wait indefinitely.
+            // Seconds, 0 = no limit. Long by default: local LLMs are slow.
             timeout:     { value: 3600, validate: function(v) {
                 return v === '' || v === undefined || (!isNaN(v) && Number(v) >= 0);
             } }
@@ -28,21 +25,19 @@
             return this.name || ('llm-request (' + (this.mode === 'agent' ? 'agent' : 'ask') + ')');
         },
         oneditprepare: function() {
-            // API URL accepts a literal string or a flow/global context variable.
             $('#node-input-editorUrl').typedInput({
                 default: 'str',
                 types: ['str', 'flow', 'global'],
                 typeField: '#node-input-editorUrlType'
             });
 
-            // Refresh the flow list every time the dialog opens.
+            // Refreshed on every open: the tab list changes underneath.
             var sel = $('#node-input-targetFlows').empty();
             RED.nodes.eachWorkspace(function(ws) {
                 sel.append($('<option>').val(ws.id).text(ws.label || ws.id));
             });
             sel.val(Array.isArray(this.targetFlows) ? this.targetFlows : []);
 
-            // Agent-only hints follow the mode dropdown.
             function syncMode() {
                 $('.llm-request-agent-only').toggle($('#node-input-mode').val() === 'agent');
             }
@@ -56,13 +51,8 @@
 </script>
 
 <script type="text/javascript">
-    // Editor-side bridge for Agent mode. The node's runtime half publishes the LLM
-    // reply over comms (topic "llm-plugin/agent-apply"); here we apply it to the
-    // canvas with the plugin's importer — the same path as the sidebar's Agent
-    // import — so changes appear live in the open editor. Bound once per session.
-    // Node interactions are NOT recorded in chat history, but they DO create a
-    // Restore Checkpoint (source "node-apply", filed under no chat) so the
-    // change can be undone. See the node's help.
+    // Agent mode's editor half: applies what the runtime publishes over comms.
+    // Bound once per session. See docs/{en,jp}/llm-request.md.
     (function () {
         if (typeof RED === 'undefined' || !RED.comms || typeof RED.comms.subscribe !== 'function') return;
         if (window.__llmPluginAgentApplyBound) return;
@@ -70,8 +60,7 @@
 
         function notify(text, type) { if (RED.notify) RED.notify(text, type || 'info'); }
 
-        // Only called after the LLMPlugin check in applyAgentResult, so
-        // Common (loaded before every other plugin module) is available.
+        // Reached only after applyAgentResult's LLMPlugin check.
         function flowNames(ids) {
             return (window.LLMPlugin.Common.flowLabels(ids)) || 'the flow';
         }
@@ -84,37 +73,20 @@
                 notify('llm-request node: the LLM Plugin is still loading in this editor (or not installed) — wait a moment and retry.', 'warning');
                 return;
             }
-            // A single target tab: focus it so the user sees the edit land.
-            // Multiple tabs rely on the schema's flow tags, like the sidebar.
+            // One target: show it, so the edit lands in view.
             if (ids.length === 1 && RED.workspaces && typeof RED.workspaces.show === 'function') {
                 try { RED.workspaces.show(ids[0]); } catch (e) { /* tab may be gone */ }
             }
-            // Through the plugin's apply queue, not straight to the importer.
-            // The node's reply lands whenever the model finishes, which may be
-            // in the middle of the user reviewing an edit of their own that is
-            // applied but not yet deployed. Merging on top of that would leave
-            // both changes tangled and neither cleanly undoable, so this waits
-            // for the deploy instead.
-            //
-            // The queue holds the flows it wrote until the NEXT deploy, and
-            // auto deploy below is a deploy like any other — so an unattended
-            // node releases its own hold, while one without auto deploy waits
-            // for the user, which is what was asked for.
+            // Through the apply queue: a reply can land while the user is
+            // reviewing an undeployed edit. See docs/{en,jp}/design.md §13.
             P.ApplyQueue.enqueue({
                 source: 'node',
                 label: 'llm-request node' + (payload.nodeName ? ' (' + payload.nodeName + ')' : ''),
                 targetFlowIds: ids,
                 apply: function () {
-                // A checkpoint BEFORE the import, the same as the sidebar's Import
-                // button takes. Without one this was the only way to change a flow
-                // that could not be undone — and with auto deploy the change
-                // reaches the running runtime unattended. If the save fails the
-                // import still runs; losing the undo is not a reason to drop the
-                // edit, and the notification says which happened.
-                //
-                // Inside the queued turn, so it snapshots the flow this edit will
-                // actually merge against rather than one an earlier apply is about
-                // to change.
+                // Undo for a node-driven edit, taken inside the turn so it
+                // snapshots what this edit merges against. A failed save is
+                // reported, not fatal.
                 var cpPromise = (P.ChatManager && typeof P.ChatManager.saveNodeApplyCheckpoint === 'function')
                     ? P.ChatManager.saveNodeApplyCheckpoint(
                         { id: payload.nodeId, name: payload.nodeName }, ids)
@@ -123,40 +95,22 @@
                 return cpPromise.then(function (checkpointId) {
                     return P.Importer.importFlowFromMessage(payload.response, {
                         mode: 'agent',
-                        // The node's selected flows are what was sent to the model,
-                        // so they are also the only flows this edit may write to —
-                        // the same scope the sidebar passes as the message's
-                        // targetFlowIds, and the same scope the checkpoint above
-                        // covers, so the undo can always reach what the edit wrote.
-                        // Without it every write fell back to "unrestricted", and
-                        // an alias is unique only WITHIN a flow: `inject` on the
-                        // target tab can resolve against an unrelated one. An empty
-                        // selection means no flow context was sent, which keeps the
-                        // legacy active-tab behaviour.
+                        // The flows sent to the model are the only ones it may
+                        // write to. Empty = no context was sent.
                         allowedWorkspaceIds: ids
                     })
                     .then(function (result) {
                         if (result && result.ok) {
                             var applied = 'llm-request node applied changes to ' + flowNames(ids);
-                            // Say plainly whether this edit can be undone. A failed
-                            // checkpoint is not fatal, but it is the difference
-                            // between a recoverable change and a permanent one.
                             if (!checkpointId) {
                                 applied += ' (no restore point could be saved)';
                             }
                             if (!payload.autoDeploy) {
                                 notify(applied + '. Review and Deploy.', 'success');
                             } else if (RED.actions && typeof RED.actions.invoke === 'function') {
-                                // Auto deploy (developer feature): the editor's own
-                                // Deploy action, so dirty state clears like a manual
-                                // click. It runs ASYNC — the editor's own deploy
-                                // toast reports the actual outcome.
-                                // The extra `true` is save()'s skipValidation flag
-                                // (RED.actions.invoke forwards args to the handler):
-                                // without it, any invalid/unknown node anywhere in
-                                // the workspace pops a modal "confirm deploy" dialog
-                                // that stalls unattended loops. Same path as the
-                                // dialog's own Confirm button (save(true)).
+                                // The editor's own Deploy, async; `true` is
+                                // save()'s skipValidation flag, so an unattended
+                                // loop cannot stall on a confirm dialog.
                                 try {
                                     RED.actions.invoke('core:deploy-flows', true);
                                     notify(applied + '. Deploy triggered (auto deploy) — watch the deploy result notification.', 'success');
@@ -169,8 +123,7 @@
                         } else if (result && result.error) {
                             notify('llm-request node: ' + result.error, 'warning');
                         }
-                        // Back to the queue, which reads `ok` to decide whether
-                        // these flows are held until the next deploy.
+                        // The queue reads `ok` to decide whether to hold.
                         return result;
                     });
                 });

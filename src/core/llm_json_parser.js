@@ -1,11 +1,6 @@
-// LLM JSON Parser Core.
-//
-// Absorbs the ways LLM output is not quite JSON: comments, unescaped quotes
-// inside strings, JSON buried in code fences or prose, and alias references
-// that do not match any existing node exactly.
-//
-// CommonJS module and browser global both. No plugin globals — `cfg`
-// (FlowConverterCore) is passed in wherever Vibe Schema conversion is needed.
+// LLM JSON Parser Core: absorbs the ways LLM output is not quite JSON —
+// comments, unescaped quotes, JSON buried in prose, inexact alias references.
+// No plugin globals; `cfg` (FlowConverterCore) is passed in.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();

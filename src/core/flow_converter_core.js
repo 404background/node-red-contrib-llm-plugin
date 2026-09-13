@@ -86,21 +86,14 @@
     // Runtime keys never treated as type-specific `props`.
     let META_KEYS = ['id', 'type', 'name', 'z', 'x', 'y', 'wires', 'g'];
 
-    // Node-RED's single-letter editor flags, renamed to the words the
-    // editor's own UI uses. Both are exported only when set, so the schema
-    // key is absent for a normal node. A type owning a real property of the
-    // alias name keeps it: the lift is skipped when the name is taken, and
-    // an explicit raw `d`/`l` wins on the way back.
-    // See docs/{en,jp}/vibe-schema.md#editor-flags-disabled-showlabel.
+    // The single-letter editor flags, under the words the editor's own UI
+    // uses. Exported only when set; a type owning a real property of that
+    // name keeps it. See docs/{en,jp}/vibe-schema.md.
     let NODE_FLAGS = { d: 'disabled', l: 'showLabel' };
     let NODE_FLAG_RAW = { disabled: 'd', showLabel: 'l' };
 
-    /**
-     * A schema value is only read as an editor flag when it is boolean-ish
-     * (models write `false` as often as `"false"`). Anything else is left
-     * alone, so a node type whose own configuration happens to use one of
-     * the alias names keeps that property instead of being disabled by it.
-     */
+    // Boolean-ish only (models write `false` as often as `"false"`), so a
+    // type that owns a property of the same name keeps its own value.
     function isFlagValue(v) {
         if (typeof v === 'boolean') return true;
         if (typeof v !== 'string') return false;
@@ -163,12 +156,7 @@
     //  Node-RED JSON  →  Intermediate (Vibe Schema)                       //
     // ------------------------------------------------------------------ //
 
-    /**
-     * Convert an array of Node-RED nodes into Vibe Schema intermediate JSON.
-     *
-     * @param  {Array}  nodeRedJson  Exported Node-RED nodes (array of objects).
-     * @return {Object} Vibe Schema { description, nodes, connections }.
-     */
+    // Exported Node-RED nodes -> Vibe Schema { description, nodes, connections }.
     function toIntermediate(nodeRedJson, options) {
         let opts = options || {};
         if (!Array.isArray(nodeRedJson) || nodeRedJson.length === 0) {
@@ -326,12 +314,8 @@
             let spec = nodeSpecs[alias];
             if (!spec || !spec.props) return;
 
-            // Shared invariant for every stub strategy: never stub a ref
-            // whose mapped type equals the owning spec's OWN type. An
-            // mqtt-broker config node's `broker` prop is its hostname
-            // (e.g. "localhost"), not a reference to another broker —
-            // stubbing would replace the hostname with a spurious stub id.
-            // Cross-type refs (ui-group's `tab` → ui-tab) still stub.
+            // Never stub a ref whose mapped type is the spec's OWN type: an
+            // mqtt-broker's `broker` prop is its hostname, not a reference.
             function stubIfCrossType(refAlias, mappedType) {
                 if (!mappedType || mappedType === spec.type) return;
                 nodeSpecs[refAlias] = { type: mappedType, name: refAlias, config: true, props: {} };
@@ -380,11 +364,8 @@
                 // `type` and aren't comments, so keep them so the importer
                 // sees the delete request.
                 if (!spec || spec.type !== 'comment') { kept[alias] = true; return; }
-                // Explicit `above` means the LLM took ownership of the
-                // anchor target. Keep the comment regardless of where it
-                // sits in declaration order; the importer will resolve
-                // the alias to either a new schema node or an existing
-                // canvas node.
+                // An explicit `above` names the anchor, so declaration
+                // order no longer matters.
                 if (typeof spec.above === 'string' && spec.above.length > 0) {
                     kept[alias] = true;
                     return;
@@ -455,11 +436,8 @@
 
         // --- Node-type normalisers ---
 
-        /**
-         * Reformat single-line JS/Python code into readable multi-line.
-         * Only activates when the code appears to be a single line (few or
-         * no newlines relative to the number of statements).
-         */
+        // Single-line JS/Python -> readable multi-line. Only fires when the
+        // code looks like one line relative to its statement count.
         function formatFunctionCode(code) {
             if (!code || typeof code !== 'string') return code;
 
@@ -589,12 +567,9 @@
             formatted = formatted.replace(/^\s*\n/, '');  // leading blank line
             formatted = formatted.replace(/\n\s*$/, '');  // trailing blank line
 
-            // This pass only ever inserts or drops WHITESPACE — every other
-            // character is pushed through verbatim. Assert that here rather
-            // than trust it: the walker does not model regex literals or
-            // comments, so a future edit that starts consuming characters
-            // inside one would rewrite the user's function body. Falling back
-            // to the original code costs only the pretty-printing.
+            // Whitespace only. Asserted rather than trusted: the walker does
+            // not model regex literals or comments, and rewriting a user's
+            // function body is far worse than skipping the pretty-printing.
             if (formatted.replace(/\s+/g, '') !== code.replace(/\s+/g, '')) return code;
             return formatted;
         }
@@ -686,11 +661,8 @@
             }
         }
 
-        // Debug nodes: default to showing msg.payload. A debug spec without
-        // an explicit `complete` gets payload/msg — the full msg object is
-        // noisy in the sidebar. An explicit `complete` from the LLM (e.g. the
-        // user asked to see the whole message) is left untouched, and edits
-        // to existing debug nodes keep the user's setting via _llmSpecKeys.
+        // Default to msg.payload: the full msg object is noisy. An explicit
+        // `complete` is left alone, and an existing node keeps its setting.
         function normalizeDebugNode(node) {
             if (node.complete === undefined) {
                 node.complete = 'payload';
@@ -732,11 +704,9 @@
             if (node.field === undefined) node.field = 'payload';
         }
 
-        // Type-specific normalisers, applied by node type. Core types only;
-        // any other type (custom / contrib nodes) passes through untouched —
-        // its props were already flattened verbatim above. Add an entry here
-        // to teach the converter a new type's defaults; the dispatch below
-        // stays generic. A type may list several normalisers, run in order.
+        // Core types only: anything else passes through untouched. Add an
+        // entry to teach the converter a type's defaults; the dispatch below
+        // stays generic. See docs/{en,jp}/vibe-schema.md.
         const NODE_NORMALIZERS = {
             inject:   [normalizeInjectNode],
             function: [normalizeFunctionNode],
@@ -863,11 +833,8 @@
                 }
             });
 
-            // Translate the readable editor flags back to Node-RED's
-            // single-letter keys. An explicit raw key wins, so a type that
-            // owns a real `disabled`/`showLabel` property round-trips intact.
-            // `flagName` — not `alias`, which is this node's schema alias in
-            // the enclosing scope.
+            // Back to the single-letter keys; an explicit raw key wins.
+            // `flagName`, not `alias`: that name is taken in this scope.
             Object.keys(NODE_FLAG_RAW).forEach(function(flagName) {
                 if (!(flagName in mergedProps)) return;
                 let raw = NODE_FLAG_RAW[flagName];
