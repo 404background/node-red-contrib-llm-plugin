@@ -124,13 +124,18 @@
 
     let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
 
-    // What this restore point was taken before. The server stores enough to
-    // say so without guessing: which node, and which flows were in scope.
+    // What this restore point was taken before. This is the line the list is
+    // read by, so it has to name THIS one: which node, or which conversation.
     function describeCheckpoint(cp) {
         let meta = (cp && cp.meta) || {};
         if (meta.source === 'node-apply') {
             let node = meta.node || {};
             return 'before ' + (node.name || node.id || 'an llm-request node') + ' edited the flow';
+        }
+        let chat = (cp && cp.chatId) ? chatHistory[cp.chatId] : null;
+        let title = (chat && typeof chat.title === 'string') ? chat.title.trim() : '';
+        if (title && title !== 'New Chat') {
+            return 'before an import in "' + title + '"';
         }
         return 'before an import from the sidebar';
     }
