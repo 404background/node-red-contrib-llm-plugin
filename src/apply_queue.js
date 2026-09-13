@@ -107,7 +107,13 @@
             targetFlowIds: targets
         }).then(function(out) {
             if (!out || !out.entryId) {
-                throw new Error((out && out.error) || 'Could not join the apply queue');
+                // Tagged so a caller can tell "the queue never gave this a
+                // turn" from "the apply ran and failed". The importer reports
+                // its own errors; this one had no reporter at all, and so
+                // presented as the edit silently not happening.
+                let err = new Error((out && out.error) || 'Could not join the apply queue');
+                err.queueError = true;
+                throw err;
             }
             let settled = new Promise(function(resolve, reject) {
                 pending[out.entryId] = {
@@ -118,9 +124,25 @@
                 };
             });
             if (out.queue) adoptState(out.queue);
+            announceWait(out);
             return settled;
         });
     };
+
+    // A turn that is not granted at once has no other announcement — Agent
+    // mode applies with no click, so the canvas simply does not change and
+    // only the panel says why. Said once, here, because every caller enqueues.
+    function announceWait(out) {
+        if (!out || out.state !== 'waiting') return;
+        let mine = ((out.queue && out.queue.entries) || []).filter(function(e) {
+            return e && e.id === out.entryId;
+        })[0];
+        let why = (mine && mine.blockedBy === 'queue')
+            ? 'an earlier request'
+            : 'a deploy';
+        Common.notify('Flow edit queued — waiting for ' + why +
+            '. See the queue at the top of the LLM sidebar.', 'warning');
+    }
 
     /** The whole queue, every editor's entries, for the sidebar panel. */
     ApplyQueue.list = function() {

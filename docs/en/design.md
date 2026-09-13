@@ -454,6 +454,20 @@ An apply with **no declared scope** (no flow context was selected) conflicts wit
 everything in both directions: it may read or write any flow, and guessing otherwise
 is how an edit lands somewhere nobody looked.
 
+### Saying that a turn is waiting
+Waiting is the normal outcome of the rule above, and from the outside it looks
+exactly like the failure it is meant to prevent: the canvas does not change. In Agent
+mode there is not even a click to attribute it to. So a request that is not granted
+immediately says so once, when it is queued, naming what it waits for — the panel
+then carries the detail and the way out.
+
+The same reasoning applies to a request that never joins the queue at all (the
+endpoint is unreachable, the runtime half is older than the editor half). That used
+to be swallowed by the sidebar on the grounds that "the importer reports its own
+errors" — true, but only for an import that actually ran. Everything the queue
+itself decides is now reported, and only what happens *after* a completed apply is
+left to the console.
+
 ### What this does and does not cover
 It covers every editor talking to one Node-RED, which is what "several people working
 on the same flows" means in practice. It does not extend past that runtime: two

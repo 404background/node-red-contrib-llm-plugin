@@ -505,11 +505,20 @@
                         })
                         .catch(function(err) {
                             // An import error has already been reported by the
-                            // importer itself. A cancellation has not — it is
-                            // the queue's own outcome — so only that is
-                            // announced here, and nothing is said twice.
+                            // importer itself, so it is not repeated here. The
+                            // queue's own outcomes have no other reporter: a
+                            // cancellation, and a turn that could not even be
+                            // requested — which was swallowed, and looked from
+                            // the outside exactly like the edit never running.
                             if (err && /Cancelled/.test(err.message || '')) {
                                 Common.notify('Import cancelled', 'warning');
+                            } else if (err && err.queueError) {
+                                Common.notify('Import did not run: ' +
+                                    (err.message || err), 'error');
+                            } else if (err && window.console) {
+                                // The apply itself reports its own failures,
+                                // so anything else here happened after it.
+                                console.error('[LLM Plugin] after the import:', err);
                             }
                         })
                         .finally(function() {

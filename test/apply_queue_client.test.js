@@ -21,11 +21,15 @@ function loadClient() {
   let nextResponse = null;
 
   let serverState = emptyState();
+  // What the user is told. Waiting is invisible on the canvas, so the
+  // notification IS the feature here, not decoration.
+  const notes = [];
 
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
     setTimeout,
     RED: {
+      notify: (text, type) => { notes.push({ text: String(text), type: type }); },
       comms: { subscribe: (topic, fn) => { commsHandler = fn; } },
       settings: { get: () => null },
     },
@@ -59,6 +63,7 @@ function loadClient() {
     Q,
     posts,
     gets,
+    notes,
     setResponse: (r) => { nextResponse = r; },
     push: (state) => {
       serverState = state;
@@ -207,6 +212,52 @@ async function scenarioOtherClientsGrantsAreIgnored() {
   ok(list.find((e) => e.id === 'mine').mine === true, 'while ours is');
 }
 
+// A waiting turn and a silently dropped one look identical from the canvas:
+// nothing changes. In Agent mode there is not even a click to attribute it to,
+// so both have to say something.
+async function scenarioWaitingIsAnnounced() {
+  console.log('\nA turn that has to wait says so');
+  const c = loadClient();
+  c.setResponse({ entryId: 'e1', state: 'waiting', queue: stateWith([
+    { id: 'e1', clientId: c.Q._clientId(), source: 'sidebar', label: 'Import Flow',
+      targets: ['tabA'], state: 'waiting', blockedBy: 'deploy' },
+  ]) });
+  c.Q.enqueue({ targetFlowIds: ['tabA'], apply: function () { return { ok: true }; } });
+  await tick();
+
+  ok(c.notes.length === 1, 'the user was told once (' + c.notes.length + ')');
+  ok(/deploy/.test(c.notes[0].text), 'naming what it is waiting for');
+
+  // Granted straight away is the normal case and must stay quiet.
+  const c2 = loadClient();
+  c2.setResponse({ entryId: 'e2', state: 'granted', queue: stateWith([
+    { id: 'e2', clientId: c2.Q._clientId(), source: 'sidebar', label: 'Import Flow',
+      targets: ['tabA'], state: 'granted', blockedBy: null },
+  ]) });
+  const p = c2.Q.enqueue({ targetFlowIds: ['tabA'], apply: function () { return { ok: true }; } });
+  await tick();
+  c2.setResponse({ ok: true, queue: emptyState() });
+  await p;
+  ok(c2.notes.length === 0, 'a turn granted at once says nothing');
+}
+
+// The request itself can fail — an unreachable endpoint, a runtime half older
+// than the editor half. The caller cannot tell that from a failed apply unless
+// the error says so, and the sidebar used to swallow it either way.
+async function scenarioRefusedRequestIsTagged() {
+  console.log('\nA turn that could not even be requested is reported as such');
+  const c = loadClient();
+  c.setResponse({});   // no entryId: the server never took the request
+  let rejected = null;
+  const p = c.Q.enqueue({ targetFlowIds: ['tabA'], apply: function () { return { ok: true }; } });
+  p.catch(function (e) { rejected = e; });
+  await tick();
+
+  ok(!!rejected, 'the caller is told rather than left hanging');
+  ok(rejected && rejected.queueError === true,
+    'and can tell this from an apply that ran and failed');
+}
+
 async function scenarioConnectSubscribesAndSeeds() {
   console.log('\nconnect() subscribes and takes the current state once');
   const c = loadClient();   // calls connect()
@@ -241,6 +292,8 @@ async function run() {
   await scenarioGrantIsNotAppliedTwice();
   await scenarioFailureIsStillReported();
   await scenarioOtherClientsGrantsAreIgnored();
+  await scenarioWaitingIsAnnounced();
+  await scenarioRefusedRequestIsTagged();
   await scenarioConnectSubscribesAndSeeds();
   await scenarioListenersAreNotified();
   summary();
