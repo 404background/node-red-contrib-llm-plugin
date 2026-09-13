@@ -143,6 +143,17 @@ Schema extraction from prose-mixed responses.
 | Node extraction | `extractFlowNodes` |
 | Diagnostics | `diagnoseJsonExtractionFailure` — when `extractFlowNodes` returns null, re-parses each fenced block and returns the first concrete `JSON.parse` error with line/column/snippet so the importer can show "JSON parse failed at line X" instead of the generic "no JSON found". |
 
+**Repair order.** `parseJsonRelaxed` tries `JSON.parse` first, then each repair
+in turn, from the least assumed to the most, and takes the first result that
+parses: as-is → unescaped quotes inside values → an unterminated string closed
+at the end of its line → an unterminated string treated as a multi-line value.
+The last two are the two readings of a raw newline inside a string, which JSON
+forbids and which therefore means the string was never closed. Which reading is
+right cannot be known in advance, so neither is assumed: only the one that
+yields valid JSON is used, and a block that was already valid never reaches a
+repair at all. One dropped quote in a forty-node schema otherwise costs the
+whole reply. Guarded by `test/json_repair.test.js`.
+
 Token normalization, JSON repair (comment stripping, quote fixing,
 balanced-snippet scanning) and the Agent partial-schema merge are internal
 steps of those four entry points — they are not exported.

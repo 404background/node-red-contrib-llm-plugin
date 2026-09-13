@@ -124,17 +124,31 @@
         return out.join('');
     }
 
-    /**
-     * Repair unescaped double quotes inside JSON string values.
-     * LLMs often embed Python f-strings like f"text {var}" or inline
-     * code snippets that break standard JSON.parse.
-     */
-    function repairJsonQuotes(text) {
+    // Repair unescaped double quotes inside JSON string values: models embed
+    // f"text {var}" and code snippets that JSON.parse rejects.
+    //
+    // `newline` says what to do with a raw newline inside a string, which JSON
+    // forbids and which therefore means the string was never closed. 'keep'
+    // leaves it (and the parse fails), 'close' assumes the closing quote was
+    // dropped at the end of that line, 'escape' assumes the value really is
+    // multi-line. Both readings are real; parseJsonRelaxed tries each in turn.
+    function repairJsonQuotes(text, newline) {
         let result = [];
         let i = 0;
         let len = text.length;
         let inString = false;
         let isValueString = false;
+
+        // Close the open string at the end of the line just walked: before a
+        // trailing comma when there is one, since a line ending in a comma
+        // inside an object is a separator, not the last character of a value.
+        function closeAtLineEnd() {
+            let k = result.length - 1;
+            while (k >= 0 && (result[k] === ' ' || result[k] === '\t')) k--;
+            if (k >= 0 && result[k] === ',') result.splice(k, 0, '"');
+            else result.splice(k + 1, 0, '"');
+            inString = false;
+        }
 
         while (i < len) {
             let ch = text[i];
@@ -172,6 +186,14 @@
                         result.push('\\"');
                         i++;
                     }
+                } else if (newline && (ch === '\n' || ch === '\r')) {
+                    if (newline === 'escape') {
+                        result.push(ch === '\r' ? '\\r' : '\\n');
+                    } else {
+                        closeAtLineEnd();
+                        result.push(ch);
+                    }
+                    i++;
                 } else {
                     result.push(ch);
                     i++;
@@ -179,6 +201,23 @@
             }
         }
         return result.join('');
+    }
+
+    // JSON.parse, then each repair in turn. Ordered from the least assumed to
+    // the most: an unterminated string has two plausible readings and only the
+    // one that parses is taken. Throws the last error when none does.
+    function parseJsonRelaxed(text) {
+        let attempts = [
+            function() { return JSON.parse(text); },
+            function() { return JSON.parse(repairJsonQuotes(text)); },
+            function() { return JSON.parse(repairJsonQuotes(text, 'close')); },
+            function() { return JSON.parse(repairJsonQuotes(text, 'escape')); }
+        ];
+        let lastError = null;
+        for (let i = 0; i < attempts.length; i++) {
+            try { return attempts[i](); } catch (e) { lastError = e; }
+        }
+        throw lastError;
     }
 
     // ================================================================== //
@@ -215,18 +254,11 @@
     //  Vibe Schema Extraction                                             //
     // ================================================================== //
 
-    /**
-     * Parse a candidate JSON string and return it if it satisfies isVibeSchemaFn.
-     */
+    // A candidate JSON string, returned only if it is a Vibe Schema.
     function parseVibeSchemaCandidate(text, isVibeSchemaFn) {
         let parsed = null;
-        try {
-            parsed = JSON.parse(stripJsonComments(text));
-        } catch (e1) {
-            try {
-                parsed = JSON.parse(repairJsonQuotes(stripJsonComments(text)));
-            } catch (e2) { /* ignore */ }
-        }
+        try { parsed = parseJsonRelaxed(stripJsonComments(text)); }
+        catch (e) { /* not JSON, or beyond repair */ }
         return (parsed && isVibeSchemaFn(parsed)) ? parsed : null;
     }
 
@@ -565,13 +597,8 @@
     function tryParseFlowNodes(text, options, cfg) {
         let cleaned = stripJsonComments(text).trim();
         let parsed;
-        try {
-            parsed = JSON.parse(cleaned);
-        } catch (e) {
-            try {
-                parsed = JSON.parse(repairJsonQuotes(cleaned));
-            } catch (e2) { /* still invalid */ }
-        }
+        try { parsed = parseJsonRelaxed(cleaned); }
+        catch (e) { /* not JSON, or beyond repair */ }
         if (!parsed) return null;
 
         try {
@@ -666,20 +693,19 @@
         for (let i = candidates.length - 1; i >= 0; i--) {
             let text = stripJsonComments(candidates[i]).trim();
             if (!text) continue;
-            try { JSON.parse(text); continue; } catch (e) {}
-            try { JSON.parse(repairJsonQuotes(text)); continue; } catch (e2) {
+            try { parseJsonRelaxed(text); continue; } catch (e2) {
                 let info = { error: (e2 && e2.message) ? e2.message : String(e2) };
                 let posMatch = /position\s+(\d+)/.exec(info.error);
-                if (posMatch) {
-                    let pos = parseInt(posMatch[1], 10);
-                    if (!isNaN(pos) && pos >= 0 && pos <= text.length) {
-                        let before = text.substring(0, pos);
-                        info.line = (before.match(/\n/g) || []).length + 1;
-                        info.column = pos - (before.lastIndexOf('\n') + 1) + 1;
-                        info.snippet = text
-                            .substring(Math.max(0, pos - 30), Math.min(text.length, pos + 30))
-                            .replace(/\n/g, '↵');
-                    }
+                // No position means the text simply ended (a truncated reply),
+                // so the end of it is where to look.
+                let pos = posMatch ? parseInt(posMatch[1], 10) : text.length;
+                if (!isNaN(pos) && pos >= 0 && pos <= text.length) {
+                    let before = text.substring(0, pos);
+                    info.line = (before.match(/\n/g) || []).length + 1;
+                    info.column = pos - (before.lastIndexOf('\n') + 1) + 1;
+                    info.snippet = text
+                        .substring(Math.max(0, pos - 30), Math.min(text.length, pos + 30))
+                        .replace(/\n/g, '↵');
                 }
                 return info;
             }

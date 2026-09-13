@@ -37,6 +37,7 @@ is the order `npm test` runs them in.
 | `incremental_apply` | An edit touches only what it edits. The work done is asserted — which entities were removed, which nodes were handed to `import()`, which links were cut and made — not just the end state. |
 | `node_checkpoint` | A flow change made by the Agent node is undoable: its checkpoint is saved with `chatId: null` and `meta.source: 'node-apply'`, so it is neither filed under an unrelated chat nor deleted with one. |
 | `http_transport` | The two server-side HTTP callers against a real loopback server: a timeout still surfaces as `code === 'ETIMEDOUT'`, and both schemes go through one path. |
+| `json_repair` | A reply whose JSON is not quite JSON: what is recovered (an unterminated string, unescaped quotes inside a value) and what is left to fail loudly — a block that was already valid is never "repaired", and a block that was recovered is not also reported as a failure. |
 | `ui_templates` | The seam between `llm_plugin.html` and `ui_core.js`: every id the JS clones exists, every template has a single well-formed root, and the classes reached for after cloning are in the markup. |
 | `checkpoint_api` | The restore-point endpoints through the real route handlers. The Agent node's checkpoints have no message, so the listing is the only way to find them. |
 | `apply_queue` | Ordering between everything that writes to the same flow: an applied-but-undeployed flow is held, others targeting it wait in arrival order, and different flows never wait for each other. |
@@ -138,6 +139,7 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 | `incremental_apply` | 編集が編集対象しか触らないこと。結果だけでなく「何をしたか」(削除した要素、`import()` に渡したノード、切った/張ったリンク)を検証する。 |
 | `node_checkpoint` | Agent ノードによるフロー変更が元に戻せること。チェックポイントは `chatId: null` と `meta.source: 'node-apply'` で保存され、無関係なチャットに紐付いたり一緒に消えたりしない。 |
 | `http_transport` | サーバ側の 2 つの HTTP 呼び出しを実際のループバックサーバ相手に検証。タイムアウトが `code === 'ETIMEDOUT'` として届くこと、http/https が同じ経路を通ること。 |
+| `json_repair` | 「ほぼ JSON」な応答の扱い。何を復元し(閉じられていない文字列、値の中の未エスケープのクォート)、何を復元せずに失敗として出すか。もともと妥当なブロックは決して「修復」せず、復元できたブロックを失敗として報告もしない。 |
 | `ui_templates` | `llm_plugin.html` と `ui_core.js` の継ぎ目。JS が複製する id がすべて存在し、各テンプレートのルートが単一かつ整形式で、複製後に参照するクラスがマークアップ側にあること。 |
 | `checkpoint_api` | リストアポイントのエンドポイントを実際のルートハンドラ経由で検証。Agent ノードのチェックポイントにはメッセージがないので、一覧こそが唯一の発見手段である。 |
 | `apply_queue` | 同じフローに書き込むもの同士の順序。適用済みで未デプロイのフローは保持され、同じフローを狙う他の要求は到着順に待ち、別のフロー同士は待たない。 |
