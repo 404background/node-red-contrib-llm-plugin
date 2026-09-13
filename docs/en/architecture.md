@@ -352,7 +352,19 @@ templates in `llm_plugin.html`; `initializeClientApp()` wires events:
   line.
 - **Flow selector**: subscribes to `flows:add` / `flows:change` /
   `flows:remove` and `workspace:change`, prunes stale ids, displays
-  *Current Open Flow* when only the active tab is selected.
+  *Current Open Flow* when only the active tab is selected. The panel
+  opens with an **All flows** row (select-all / clear-all, shown
+  indeterminate while only some are selected) followed by the **active
+  flow pinned first** — it is the default context and the one reached
+  for most often, and a long tab bar otherwise buries it wherever tab
+  order puts it. The remaining flows keep tab order, so nothing else
+  moves between openings.
+- **A new chat resets the selection to the open flow**
+  (`ChatManager.onNewChat` → `selectActiveFlowOnly`). The flow context
+  belongs to the conversation: it is the scope every edit may write to
+  and the scope each checkpoint covers, so inheriting a selection made
+  for an earlier question silently widens both. Loading an existing
+  chat does not touch the selection.
 - **Session preferences** (browser `localStorage`): model input
   (`llm-plugin-last-model`), mode dropdown (`llm-plugin-last-mode`),
   and flow selection (`llm-plugin-selected-flows`) are restored on

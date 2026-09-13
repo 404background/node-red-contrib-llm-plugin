@@ -503,7 +503,39 @@
             }
 
             let active = getActiveWorkspaceId();
-            workspaces.forEach(function(ws) {
+
+            // Select-all / clear-all. Its own state mirrors the list, so it
+            // doubles as "how much of this is selected" at a glance: checked
+            // when everything is, indeterminate when only some of it is.
+            let masterRow = buildFlowOption({
+                label: 'All flows',
+                checked: isEverySelected(workspaces),
+                indeterminate: isSomeSelected(workspaces) && !isEverySelected(workspaces),
+                onToggle: function(checked) {
+                    Object.keys(selectedFlowIds).forEach(function(id) {
+                        delete selectedFlowIds[id];
+                    });
+                    if (checked) {
+                        workspaces.forEach(function(ws) { selectedFlowIds[ws.id] = true; });
+                    }
+                    selectionInitialized = true;
+                    saveSelectedFlows();
+                    renderFlowPanel();
+                    updateFlowLabel(workspaces);
+                }
+            });
+            masterRow.classList.add('flow-selector-all');
+            flowPanel.appendChild(masterRow);
+            let masterCb = masterRow.querySelector('input');
+
+            // The flow being looked at first: it is the default context and
+            // the one reached for most, and a long tab bar otherwise buries it
+            // wherever the tab order happens to put it. The rest keep tab
+            // order, so nothing else moves around between openings.
+            let ordered = workspaces.filter(function(ws) { return ws.id === active; })
+                .concat(workspaces.filter(function(ws) { return ws.id !== active; }));
+
+            ordered.forEach(function(ws) {
                 let row = buildFlowOption({
                     label: ws.label,
                     checked: !!selectedFlowIds[ws.id],
@@ -511,12 +543,34 @@
                     onToggle: function(checked) {
                         if (checked) selectedFlowIds[ws.id] = true;
                         else delete selectedFlowIds[ws.id];
+                        selectionInitialized = true;
                         saveSelectedFlows();
+                        syncMasterCheckbox(masterCb, workspaces);
                         updateFlowLabel(workspaces);
                     }
                 });
                 flowPanel.appendChild(row);
             });
+        }
+
+        function isEverySelected(workspaces) {
+            return workspaces.length > 0 && workspaces.every(function(ws) {
+                return !!selectedFlowIds[ws.id];
+            });
+        }
+
+        function isSomeSelected(workspaces) {
+            return workspaces.some(function(ws) { return !!selectedFlowIds[ws.id]; });
+        }
+
+        // One click on a flow changes one other thing - this box - so it is
+        // updated in place. The all-flows row re-renders instead, because
+        // there every row's state changed and patching them one by one would
+        // just be renderFlowPanel written twice.
+        function syncMasterCheckbox(masterCb, workspaces) {
+            if (!masterCb) return;
+            masterCb.checked = isEverySelected(workspaces);
+            masterCb.indeterminate = isSomeSelected(workspaces) && !masterCb.checked;
         }
 
         function buildFlowOption(opts) {
@@ -526,6 +580,8 @@
             let cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.checked = !!opts.checked;
+            // Property, not attribute: there is no HTML for "indeterminate".
+            cb.indeterminate = !!opts.indeterminate;
             cb.addEventListener('change', function() { opts.onToggle(cb.checked); });
             let span = document.createElement('span');
             span.textContent = opts.label;
@@ -582,9 +638,28 @@
             window.removeEventListener('scroll', repositionOnScroll, true);
         }
 
+        // Back to just the open flow. The flow context belongs to the
+        // conversation, so a new one starts from what the user is looking at
+        // rather than inheriting a selection made for an older question - that
+        // selection is also the scope every edit and checkpoint is confined
+        // to, which makes a stale one more than a convenience.
+        function selectActiveFlowOnly() {
+            Object.keys(selectedFlowIds).forEach(function(id) {
+                delete selectedFlowIds[id];
+            });
+            let active = getActiveWorkspaceId();
+            if (active) selectedFlowIds[active] = true;
+            selectionInitialized = true;
+            saveSelectedFlows();
+            refreshFlowSelector();
+        }
+
         function initFlowSelector() {
             ensureDefaultSelection();
             updateFlowLabel();
+            if (typeof LLMPlugin.ChatManager.onNewChat === 'function') {
+                LLMPlugin.ChatManager.onNewChat(selectActiveFlowOnly);
+            }
             flowToggleBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 if (isPanelOpen()) closeFlowPanel(); else openFlowPanel();

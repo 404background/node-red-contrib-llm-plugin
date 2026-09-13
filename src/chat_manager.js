@@ -66,10 +66,22 @@
         return chatHistory;
     };
 
+    // Starting a chat resets more than the transcript - the sidebar's flow
+    // selection belongs to the conversation too. The listeners live outside
+    // this module, so it announces rather than reaches.
+    let newChatListeners = [];
+    ChatManager.onNewChat = function(fn) {
+        if (typeof fn === 'function') newChatListeners.push(fn);
+    };
+
     ChatManager.startNewChat = function() {
         currentChatId = generateChatId();
         chatHistory[currentChatId] = newChatObject(currentChatId);
         clearChatArea();
+        newChatListeners.forEach(function(fn) {
+            // One bad listener must not leave the chat half-started.
+            try { fn(currentChatId); } catch (e) { /* ignore */ }
+        });
         Common.notify('Started new chat', 'success');
     };
 

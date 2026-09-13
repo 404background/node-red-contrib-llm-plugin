@@ -516,6 +516,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.flow-selector-all {
+    font-weight: 600;
+    border-bottom: 1px solid #ddd;
+    margin-bottom: 2px;
+    padding-bottom: 5px;
+}
 .flow-selector-current {
     font-weight: 600;
 }
