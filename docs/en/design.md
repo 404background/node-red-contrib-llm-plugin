@@ -146,7 +146,11 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
 ## 5. Config Node Protection
 
 - The LLM can **neither create nor delete** config nodes (broker, venv-config, etc.). It may only reference existing ones by alias. Enforced both in the prompt (`prompt_system.txt`) and on the apply side (`applyNodeDeletions` / Phase 2).
+- A reference is resolved in this order: the target flow's own alias table, then the alias table of **all** the context flows, then a singleton reuse by type.
+  - The middle step exists because a config node has no flow. The prompt numbers aliases across every context flow at once, so the model can read `ui_group_test_2` straight out of its context while the target flow's own table calls that node `ui_group_test` — or does not list it at all. Rebuilding the model's own table (from the same `UI.getFlowsByIds` export the prompt was built from) is what makes the reference it was given resolve to the node it was given. Node *identity* deliberately does not widen this way: aliases collide across flows and the apply may only write to the target (§6).
+  - Any prop whose value is exactly a config node's alias is resolved, not only the key names `toNodeRed` recognises (`broker`, `group`, …). A contrib node nobody here has heard of names its config property whatever it likes, and `toIntermediate` already wrote an alias there on the way out; this is the other half of that round trip. Guarded by "a different type than the referring node", the same rule that keeps an `mqtt-broker`'s `broker: "localhost"` a hostname.
 - A singleton config reuses the single existing match by type (prevents duplicate creation).
+- A reference that resolves to **nothing** is cleared and reported ("Config node(s) not found: …"). The alternative was to leave the generated stub id in place, which pointed at a node that does not exist: invalid in a way that reads as a broken node rather than an unconfigured one, and silent either way.
 - **Reason**: Config nodes are shared resources (credentials, endpoints) whose breakage has wide impact. Preventing the LLM from creating/deleting them avoids accidents that drag in other flows. All configs are put into the context as "free to reference, cannot create/delete".
 
 ---

@@ -156,6 +156,61 @@
     function isConfigNodeType(type)   { return Converter.isConfigType(type); }
     function isConfigNodeObj(node)    { return Converter.isConfigNode(node); }
 
+    // Alias -> live config node, built from the flows the MODEL was shown.
+    //
+    // Node identity is resolved per-flow, and must stay that way: aliases are
+    // unique only within a flow and the target is the only flow this import
+    // may write to. A config node is the exception — it has no flow, it is
+    // referenced rather than written, and the prompt numbers aliases across
+    // every context flow at once. So 'ui_group_test_2' exists only in this
+    // wider table, and resolving it here is what stops a reference the model
+    // read straight out of its context from landing as a dangling id.
+    function buildConfigAliasIndex(allowedWorkspaceIds) {
+        let index = {};
+        try {
+            if (!window.RED || !RED.nodes) return index;
+            let ids = (Array.isArray(allowedWorkspaceIds) && allowedWorkspaceIds.length > 0)
+                ? allowedWorkspaceIds
+                : null;
+            // No includeCanvasExtras: the context the model saw did not have
+            // junctions or groups in it, and adding entities here would shift
+            // the very numbering this table exists to reproduce.
+            let context = ids
+                ? LLMPlugin.UI.getFlowsByIds(ids)
+                : LLMPlugin.UI.getCurrentFlow();
+            if (!Array.isArray(context) || context.length === 0) return index;
+            let inter = Converter.toIntermediate(context, { includeIdMap: true });
+            let idToAlias = (inter && inter._meta && inter._meta.idToAlias) || {};
+            Object.keys(idToAlias).forEach(function(id) {
+                let live = RED.nodes.node(id);
+                if (live && isConfigNodeObj(live)) {
+                    index[idToAlias[id]] = { id: id, type: live.type };
+                }
+            });
+        } catch (e) { /* best effort: the stub strategies still run */ }
+        return index;
+    }
+
+    // Is this string a config reference we can resolve? Alias-shaped, known in
+    // the context, and pointing at a type OTHER than the referring node's own
+    // — an mqtt-broker's 'broker' prop is its hostname, not a broker ref.
+    function resolveConfigAlias(index, value, ownType) {
+        if (typeof value !== 'string' || !value) return null;
+        if (!/^[a-z][a-z0-9_]*$/i.test(value)) return null;
+        let hit = index[value];
+        if (!hit || hit.type === ownType) return null;
+        return hit;
+    }
+
+    // Props that are never a config reference, in either direction.
+    let NON_REF_KEYS = { id: 1, type: 1, wires: 1, z: 1, name: 1, x: 1, y: 1, g: 1 };
+
+    // The importer's own bookkeeping (_llmAlias, _autoStub, ...), never a node
+    // property and never a reference.
+    function isMetaKey(key) {
+        return typeof key === 'string' && key.charAt(0) === '_';
+    }
+
     // Drop wires targeting nodes with no inputs (inject / comment / ...).
     function pruneInvalidInputWires(flowNodes) {
         if (!Array.isArray(flowNodes)) return;
@@ -1765,6 +1820,12 @@
             let existingConfigByType = {};
             let claimedExistingIds = {};
             let remappedIds = {};
+            // Aliases as the model was shown them. Only config references are
+            // resolved through this - see buildConfigAliasIndex.
+            let configAliases = buildConfigAliasIndex(options.allowedWorkspaceIds);
+            // Stub ids whose config node could not be found at all, so the
+            // props pointing at them can be cleared rather than left dangling.
+            let unresolvedStubs = {};
 
             if (window.RED && RED.nodes) {
                 RED.nodes.eachNode(function(n) { existingIds.add(n.id); });
@@ -1818,6 +1879,25 @@
                     }
                 }
 
+                // 1b. Config nodes only: the same alias against the wider
+                // context table. The model reads config aliases out of a
+                // listing that spans every context flow, so the one it wrote
+                // may not exist in the target flow's own numbering at all.
+                if (!replacedExisting && nn._llmAlias && isConfigNodeObj(nn)) {
+                    let hit = resolveConfigAlias(configAliases, nn._llmAlias, null);
+                    if (hit && !claimedExistingIds[hit.id]) {
+                        let live = RED.nodes.node(hit.id);
+                        // A stub's type is a GUESS the converter made from the
+                        // property name ('somethingConfig' -> 'something-config'),
+                        // so it is not evidence; the alias is. A config node the
+                        // schema declared itself states its own type, and that
+                        // has to agree.
+                        if (live && (nn._autoStub || live.type === nn.type)) {
+                            replacedExisting = live;
+                        }
+                    }
+                }
+
                 // 2. Singleton config node: reuse the lone existing match
                 //    by type to avoid duplicating it.
                 if (!replacedExisting && isConfigNodeObj(nn)) {
@@ -1861,6 +1941,12 @@
                     }
                 } else {
                     if (nn._autoStub) {
+                        // Invented by the converter for a reference the schema
+                        // never defined, and nothing on this instance matches
+                        // it. It must not be created (the LLM may not add
+                        // config nodes), so the reference to it is cleared
+                        // below instead of being left pointing at a phantom.
+                        unresolvedStubs[nn.id] = nn._llmAlias || nn.type;
                         existingIds.add(nn.id);
                         return null;
                     }
@@ -1888,12 +1974,57 @@
                     }
                     // Update string properties that reference remapped IDs
                     Object.keys(n).forEach(function(key) {
-                        if (key === 'id' || key === 'type' || key === 'wires' || key === 'z' || key === 'name') return;
+                        if (NON_REF_KEYS[key]) return;
                         if (typeof n[key] === 'string' && remappedIds[n[key]]) {
                             n[key] = remappedIds[n[key]];
                         }
                     });
                 });
+            }
+
+            // Config references the converter never recognised as such.
+            //
+            // Its stub strategies know a fixed set of key names (broker, group,
+            // tab, ...) plus anything ending in "config". A node type nobody
+            // here has heard of names its config property whatever it likes,
+            // and that reference would keep the alias string and point at
+            // nothing. Any value that is exactly the alias of a config node in
+            // the context IS that node: toIntermediate wrote the alias there in
+            // the first place, and this is the other half of that round trip.
+            newNodes.forEach(function(n) {
+                if (!n) return;
+                Object.keys(n).forEach(function(key) {
+                    if (NON_REF_KEYS[key] || isMetaKey(key)) return;
+                    let hit = resolveConfigAlias(configAliases, n[key], n.type);
+                    if (hit) n[key] = hit.id;
+                });
+            });
+
+            // References to a config node that exists nowhere. Clearing them is
+            // the difference between a node the editor reports as needing
+            // configuration and one pointing at an id that does not exist -
+            // and, either way, the user is told which node was missing rather
+            // than left to find a quietly broken node later.
+            if (Object.keys(unresolvedStubs).length > 0) {
+                let missing = {};
+                newNodes.forEach(function(n) {
+                    if (!n) return;
+                    Object.keys(n).forEach(function(key) {
+                        if (NON_REF_KEYS[key] || isMetaKey(key)) return;
+                        if (typeof n[key] !== 'string') return;
+                        let alias = unresolvedStubs[n[key]];
+                        if (!alias) return;
+                        missing[alias] = true;
+                        n[key] = '';
+                    });
+                });
+                let names = Object.keys(missing);
+                if (names.length > 0) {
+                    notify('Config node(s) not found: ' + names.join(', ') +
+                        '. The node(s) referring to them were left unconfigured.', 'warning');
+                    postTerminalLog('warn', 'config-ref-unresolved',
+                        'A schema referenced config nodes that do not exist', { aliases: names });
+                }
             }
 
             // Remove tab nodes
@@ -1968,8 +2099,19 @@
 
             // One toast per import: two in a row (and a 'warning' severity for
             // what is really a success detail) just buried the result.
-            notify(addedNodes.length > 0
-                ? 'Flow updated (' + addedNodes.length + ' node(s) added)'
+            //
+            // It counts what the edit DID, not only what is new. An edit that
+            // reuses an alias rewrites that node in place — same id, same
+            // position — so a toast that only counts additions says "Flow
+            // updated" over an edit that looks, on the canvas, like nothing
+            // happened at all. The counts come from the incremental apply; the
+            // destructive fallback does not report them, hence the guards.
+            let summary = [];
+            if (addedNodes.length > 0) summary.push(addedNodes.length + ' added');
+            if (rebuiltResult.updated > 0) summary.push(rebuiltResult.updated + ' changed');
+            if (rebuiltResult.removed > 0) summary.push(rebuiltResult.removed + ' removed');
+            notify(summary.length > 0
+                ? 'Flow updated (' + summary.join(', ') + ')'
                 : 'Flow updated', 'success');
 
             return {

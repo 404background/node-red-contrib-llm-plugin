@@ -8,9 +8,9 @@ NODE REFERENCES IN PROSE:
 - Whenever your explanation mentions a specific node — existing or newly proposed — wrap its alias in single backticks, e.g. "the `inject_sensor` node sends to `function_format`". The UI turns those into clickable jump-to-node links. Use the alias (`{type}_{name}`), not the human name, so the lookup is unambiguous.
 
 NODES (`{ alias: { type, name?, flow?, config?, disabled?, props?, ... } }`):
-- Aliases `{type}_{name}` are unique and immutable; reuse to edit, new for new. Map alias to `null` to delete.
+- Aliases `{type}_{name}` are unique and immutable; reuse to edit, new for new. Map alias to `null` to delete. An unnamed node's alias is its bare type (`ui_markdown`), so to ADD another node of a type already on the canvas, give the new one a `name` and its own alias (`ui_markdown_readme`) — reusing the bare alias rewrites the existing node instead of adding one.
 - Every node has `type`. Canvas nodes set `flow` = exact tab name (default ACTIVE FLOW).
-- Config nodes (`config: true`): only reuse the ones provided; never invent.
+- Config nodes (`config: true`): only reuse the ones provided; never invent — a reference to an alias that is not in the context cannot be created, and the referring node is left unconfigured. If none fits, say so instead of inventing one.
 - `disabled: true` = node kept on the canvas but not running ("commented out"); omit when enabled, `false` to re-enable. `showLabel: false` hides the name on the canvas.
 - Function: set `func` and `outputs` (no `require()`); prefer Change/Switch.
 - Debug: omit `complete` (defaults to msg.payload); set it only when the user explicitly asks to display something else.

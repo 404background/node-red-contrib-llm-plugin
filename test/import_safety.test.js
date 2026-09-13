@@ -10,6 +10,10 @@
 //     and through array properties.
 // (D) A failed import restores the config nodes it had already rewritten.
 //     They have no `z`, so the workspace rollback cannot reach them.
+// (E) A config REFERENCE resolves to the node the model was actually shown -
+//     including one it knows only by an alias numbered across every context
+//     flow - whatever the property is called, and is cleared and reported when
+//     it resolves to nothing rather than left pointing at a generated id.
 const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
 // The shared editor mock models links as their own registry, which is what
@@ -268,6 +272,109 @@ async function scenarioRollbackRestoresConfigNodes() {
   ok(!brk.changed, 'the config node is not left marked as changed');
 }
 
+// ------------------------------------------------------------------ //
+//  (E) Config references resolve to what the model was shown          //
+// ------------------------------------------------------------------ //
+
+// Two same-named groups, one per flow. The alias the model reads is numbered
+// across BOTH flows, while the target flow's own table numbers only its own -
+// so the reference it writes cannot be resolved there at all.
+const REF_TABS = [
+  { id: 'tab1', type: 'tab', label: 'Flow 1' },
+  { id: 'tab2', type: 'tab', label: 'Flow 2' },
+];
+const REF_CONFIGS = [
+  { id: 'g1', type: 'ui-group', name: 'test', page: 'p1' },
+  { id: 'g2', type: 'ui-group', name: 'test', page: 'p1' },
+  { id: 'p1', type: 'ui-page', name: 'Test', ui: 'b1' },
+  { id: 'b1', type: 'ui-base', name: 'Base' },
+];
+const REF_CANVAS = [
+  { id: 'n1', type: 'ui-text', z: 'tab1', name: '', group: 'g1', x: 100, y: 100, wires: [[]] },
+  { id: 'n2', type: 'ui-text', z: 'tab2', name: '', group: 'g2', x: 100, y: 100, wires: [[]] },
+];
+
+async function scenarioCrossFlowConfigAliasResolves() {
+  console.log('\nScenario E1: a config alias numbered across the context flows resolves');
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: REF_TABS, nodes: REF_CANVAS, configs: REF_CONFIGS, activeId: 'tab1',
+  });
+
+  // The alias table the prompt is built from - the same export the sidebar
+  // POSTs as flow context. WHICH group it calls `ui_group_test_2` depends on
+  // reference discovery order, so the expectation is read from it rather than
+  // assumed: the point is that the import agrees with the prompt, not that
+  // either one picks a particular group.
+  const context = LLMPlugin.UI.getFlowsByIds(['tab1', 'tab2']);
+  const shown = LLMPlugin.FlowConverterCore.toIntermediate(
+    context.filter((n) => n.type !== 'tab'), { includeIdMap: true })._meta.idToAlias;
+  const expected = Object.keys(shown).filter((id) => shown[id] === 'ui_group_test_2')[0];
+  ok(!!expected, 'the model is shown a group under the numbered alias');
+
+  const msg = 'Adding a widget.\n' + fence({
+    nodes: { ui_markdown_readme: { type: 'ui-markdown', flow: 'Flow 1',
+      props: { group: 'ui_group_test_2', content: '# R' } } },
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
+    mode: 'agent', allowedWorkspaceIds: ['tab1', 'tab2'],
+  });
+  ok(res && res.ok, 'the import succeeded');
+
+  const md = snapshot('tab1').filter((n) => n.type === 'ui-markdown')[0];
+  ok(!!md, 'the widget landed on the tagged flow');
+  ok(md && md.group === expected,
+    'and points at the group the model was shown (' + (md && md.group) + ')');
+}
+
+async function scenarioUnknownConfigAliasIsClearedAndReported() {
+  console.log('\nScenario E2: a config alias that exists nowhere is cleared, not left dangling');
+  const notes = [];
+  const { LLMPlugin, RED, snapshot } = loadSandbox({
+    tabs: REF_TABS, nodes: REF_CANVAS, configs: REF_CONFIGS, activeId: 'tab1',
+  });
+  RED.notify = function (text) { notes.push(String(text)); };
+
+  const msg = 'Adding a widget.\n' + fence({
+    nodes: { ui_markdown_readme: { type: 'ui-markdown', flow: 'Flow 1',
+      props: { group: 'ui_group_nowhere', content: '# R' } } },
+  });
+  await LLMPlugin.Importer.importFlowFromMessage(msg, {
+    mode: 'agent', allowedWorkspaceIds: ['tab1', 'tab2'],
+  });
+
+  const md = snapshot('tab1').filter((n) => n.type === 'ui-markdown')[0];
+  ok(!!md, 'the node is still created');
+  ok(md && md.group === '', 'with the reference cleared rather than pointing at a stub id');
+  ok(!RED.nodes.node('ui_group_nowhere'), 'and no config node was invented for it');
+  ok(notes.some((t) => /ui_group_nowhere/.test(t)),
+    'the missing config node is named in a notification');
+}
+
+async function scenarioUnknownRefKeyStillResolves() {
+  console.log('\nScenario E3: a config reference under a property nobody knows still resolves');
+  // `device` is in no CONFIG_REF_KEYS list and does not end in "config", so
+  // the converter never stubs it. Every unfamiliar contrib node is this case.
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: [REF_TABS[0]], activeId: 'tab1',
+    nodes: [{ id: 'n9', type: 'acme-thing', z: 'tab1', name: '', device: 'd1',
+      x: 100, y: 100, wires: [[]] }],
+    configs: [{ id: 'd1', type: 'acme-device', name: 'main' }],
+  });
+
+  const msg = 'One more.\n' + fence({
+    nodes: { acme_thing_two: { type: 'acme-thing', name: 'two',
+      props: { device: 'acme_device_main', mode: 'fast' } } },
+  });
+  await LLMPlugin.Importer.importFlowFromMessage(msg, {
+    mode: 'agent', allowedWorkspaceIds: ['tab1'],
+  });
+
+  const added = snapshot('tab1').filter((n) => n.id !== 'n9')[0];
+  ok(!!added, 'the node was added');
+  ok(added && added.device === 'd1', 'the reference resolved to the config node id');
+  ok(added && added.mode === 'fast', 'and a plain string property was left alone');
+}
+
 async function run() {
   await scenarioDeleteReachesItsOwnFlow();
   await scenarioNullAliasDeleteIsRoutedToo();
@@ -275,6 +382,9 @@ async function run() {
   await scenarioRollbackRestoresCanvasExtras();
   await scenarioRollbackRestoresConfigNodes();
   scenarioSidebarConfigContextIsComplete();
+  await scenarioCrossFlowConfigAliasResolves();
+  await scenarioUnknownConfigAliasIsClearedAndReported();
+  await scenarioUnknownRefKeyStillResolves();
   summary();
 }
 
