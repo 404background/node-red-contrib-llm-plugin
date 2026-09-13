@@ -47,6 +47,12 @@ Restart Node-RED after install.
 It is highly recommended to add custom or non-core nodes to your flow before passing them to the LLM. Since the LLM does not inherently know the required properties of custom nodes, keeping a small sample flow in the active tab ensures it is sent as the *Current Open Flow*.
 The model will then follow real node/property patterns from that sample instead of relying on fixed per-node prompt rules.
 
+This covers **wiring as well as properties**. How many outputs a node has, and
+what each one carries (stdout / stderr / status, …), lives in the node's editor
+definition — not in the flow JSON — so it never reaches the model on its own. A
+sample with every output already connected is what tells it, and is the
+difference between three outputs wired one each and two links on the first one.
+
 The demo video above shows this pattern with the
 [python-venv](https://flows.nodered.org/node/@background404/node-red-contrib-python-venv)
 node: a minimal inject → venv → debug flow kept in the active tab.

@@ -206,6 +206,16 @@ schema wins over the alias, and only boolean-ish values (`true`, `false`,
 (`inject_trigger`, `inject_trigger_2`, …). Aliases are immutable —
 the importer matches them against existing node `_llmAlias` markers.
 
+### What the schema does not carry
+
+A node type's **port count and port meanings**. `connections` can name any
+`fromPort`, but nothing in the schema says how many a type has or which one is
+which: that lives in the node's editor definition, which the flow JSON does not
+include. For an unfamiliar multi-output node the practical answer is to keep a
+sample with every output connected in the flow context — the model then follows
+the wiring it can see. The same is true of a config node the context does not
+reference (see [design.md §5](./design.md)).
+
 ### Edit semantics
 
 The importer always merges: nodes/connections listed are added or updated
