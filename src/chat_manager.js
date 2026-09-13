@@ -124,20 +124,19 @@
 
     let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
 
-    // What this restore point was taken before. This is the line the list is
-    // read by, so it has to name THIS one: which node, or which conversation.
+    // What this restore point was taken before: the node, or the conversation.
+    // The name only — the badge already says which producer it was, and a
+    // sentence would push the identifying part off the end of the line.
     function describeCheckpoint(cp) {
         let meta = (cp && cp.meta) || {};
         if (meta.source === 'node-apply') {
             let node = meta.node || {};
-            return 'before ' + (node.name || node.id || 'an llm-request node') + ' edited the flow';
+            return node.name || node.id || 'llm-request node';
         }
         let chat = (cp && cp.chatId) ? chatHistory[cp.chatId] : null;
         let title = (chat && typeof chat.title === 'string') ? chat.title.trim() : '';
-        if (title && title !== 'New Chat') {
-            return 'before an import in "' + title + '"';
-        }
-        return 'before an import from the sidebar';
+        if (title && title !== 'New Chat') return title;
+        return 'Sidebar import';
     }
 
     // Flow NAMES, not ids — the ids mean nothing to the person deciding
