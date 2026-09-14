@@ -29,8 +29,10 @@ JSON-stringified). **Outputs:** `payload` (text reply — do not `JSON.parse` it
 
 The `llm-request` node runs on the runtime side, so it can't edit the browser
 canvas directly. It publishes the reply over Node-RED's comms channel instead,
-and the node's editor half (`llm-request.html`) applies it with the plugin's
-importer — the same path as the sidebar.
+and the plugin's own `src/agent_apply.js` applies it with the plugin's
+importer — the same path as the sidebar. The editor half lives with the
+plugin rather than in the node so the node stays a thin caller: everything
+it would need is the plugin's already.
 
 - The `llm-request` node's **Flows** selection is passed to the importer as the write scope, exactly as the sidebar passes a message's `targetFlowIds`: the flows sent to the model are the only flows the reply may modify. Selecting nothing sends no flow context and keeps the legacy active-tab behaviour. See [docs/en/architecture.md](./architecture.md) — `importer.js`, guarantee 2.
 - An **editor must be open** with the plugin loaded; headless runs have no canvas.
@@ -66,12 +68,16 @@ The files that make up the `llm-request` node:
 ```
 node/
   lib/admin_api.js              GET /flows client (read flow context; auto-detects the instance)
-  llm-request/llm-request.js    runtime side: prompt build + provider call + comms publish
-  llm-request/llm-request.html  editor side: config UI + comms subscriber that applies via the importer
+  llm-request/llm-request.js    runtime side: msg -> prompt, provider call, comms publish
+  llm-request/llm-request.html  editor side: the config dialog and the help panel, nothing else
+src/
+  agent_apply.js                editor half: subscribes to the comms topic and applies the reply
 ```
 
-The shared LLM engine (settings, credentials, provider adapters, prompt build)
-lives in [`src/llm_core.js`](../../src/llm_core.js) and is reused by the sidebar.
+The shared LLM engine (settings, credentials, provider adapters, prompt build,
+flow-context selection, redaction) lives in
+[`src/llm_core.js`](../../src/llm_core.js) and is reused by the sidebar. The node
+owns only what is node-shaped: `msg` in, status, timeout, config.
 
 ## Examples
 

@@ -32,6 +32,10 @@ const CLONERS = [
   ['vibe_ui.js', VIBE_UI],
 ];
 const CSS = fs.readFileSync(path.join(ROOT, 'llm-plugin_styles.css'), 'utf8');
+const CLIENT = fs.readFileSync(path.join(ROOT, 'src', 'client.js'), 'utf8');
+const AGENT_APPLY = fs.readFileSync(path.join(ROOT, 'src', 'agent_apply.js'), 'utf8');
+const NODE_JS = fs.readFileSync(path.join(ROOT, 'node', 'llm-request', 'llm-request.js'), 'utf8');
+const NODE_HTML = fs.readFileSync(path.join(ROOT, 'node', 'llm-request', 'llm-request.html'), 'utf8');
 
 // id -> inner markup, for every <script type="text/html"> block.
 function readTemplates(html) {
@@ -191,6 +195,55 @@ function scenarioQueuePanelIsWired() {
   ok(CSS.indexOf('.llm-queue-panel {') !== -1, 'the panel has a stylesheet rule');
 }
 
+// The way out of the sidebar to the documentation. It is one static link, so
+// what can rot is the icon (an FA5-only name renders as an empty box) and the
+// rel that keeps the opened tab from reaching back into the editor.
+function scenarioDocsLinkIsWired() {
+  console.log('\nThe sidebar links out to the documentation');
+  const shell = templates['llm-plugin-sidebar-template'] || '';
+  const link = /<a[^>]*class="header-link"[^>]*>/.exec(shell);
+  ok(!!link, 'the header has the docs link');
+  const tag = link ? link[0] : '';
+  ok(/href="https:\/\/github\.com\/[^"]+#readme"/.test(tag),
+    'pointing at the README on GitHub');
+  ok(/target="_blank"/.test(tag) && /rel="noopener"/.test(tag),
+    'opening in a new tab without handing it a window reference');
+  // fa-github is Font Awesome 4.7, which is what the editor bundles.
+  ok(/fa-github/.test(shell), 'using an icon that exists in FA 4.7');
+  ok(CSS.indexOf('.header-link {') !== -1, 'and the link has a stylesheet rule');
+}
+
+// The llm-request node is meant to be a thin caller of the plugin: the runtime
+// half publishes a reply, and the PLUGIN applies it. The seam between them is
+// a comms topic spelled out in two files, and the node's html is where editor
+// logic creeps back in.
+function scenarioNodeLeansOnThePlugin() {
+  console.log('\nThe llm-request node stays a thin caller of the plugin');
+  const topicOf = (src) => (/'(llm-plugin\/agent-apply)'/.exec(src) || [])[1];
+  ok(!!topicOf(NODE_JS) && topicOf(NODE_JS) === topicOf(AGENT_APPLY),
+    'the node publishes on the topic the plugin subscribes to');
+  ok(!/LLMPlugin/.test(NODE_HTML) && !/RED\.comms/.test(NODE_HTML),
+    'and its html holds no plugin logic of its own');
+  // agent_apply.js enqueues the moment a reply arrives, so it has to load
+  // after the modules it reaches for.
+  const order = (f) => CLIENT.indexOf('src/' + f);
+  ['apply_queue.js', 'chat_manager.js', 'importer.js'].forEach((dep) => {
+    ok(order(dep) !== -1 && order(dep) < order('agent_apply.js'),
+      'client.js loads ' + dep + ' before agent_apply.js');
+  });
+}
+
+// A help panel nobody reads documents nothing. What a user needs at the node
+// is what to wire and what it costs; the rest belongs in docs/, one link away.
+function scenarioNodeHelpStaysShort() {
+  console.log('\nThe node help says what the node needs, and links out for the rest');
+  const help = (/<script[^>]*data-help-name="llm-request">([\s\S]*?)<\/script>/.exec(NODE_HTML) || [])[1] || '';
+  ok(help.length > 0, 'the node has a help panel');
+  ok(help.length < 3000, 'that is still short enough to read (' + help.length + ' chars)');
+  ok(/github\.com\/[^"]*docs\/en\/llm-request\.md/.test(help),
+    'and points at the full documentation on GitHub');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
@@ -198,6 +251,9 @@ function run() {
   scenarioMissingTemplateIsLoud();
   scenarioRestorePointsButtonIsWired();
   scenarioQueuePanelIsWired();
+  scenarioDocsLinkIsWired();
+  scenarioNodeLeansOnThePlugin();
+  scenarioNodeHelpStaysShort();
   summary();
 }
 

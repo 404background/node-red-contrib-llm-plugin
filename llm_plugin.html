@@ -10,7 +10,13 @@
      markup lives in HTML, not JS strings. -->
 <script type="text/html" id="llm-plugin-sidebar-template">
     <div class="llm-plugin-header">
-        <h3 class="llm-plugin-title">LLM Plugin Chat</h3>
+        <div class="llm-plugin-heading">
+            <h3 class="llm-plugin-title">LLM Plugin Chat</h3>
+            <a class="header-link" href="https://github.com/404background/node-red-contrib-llm-plugin#readme"
+               target="_blank" rel="noopener" title="Documentation on GitHub">
+                <i class="fa fa-github" aria-hidden="true"></i>
+            </a>
+        </div>
         <div class="header-buttons">
             <button class="header-btn" data-action="new-chat">New Chat</button>
             <button class="header-btn" data-action="chat-list">Chats</button>

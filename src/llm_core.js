@@ -319,9 +319,49 @@ function createLLMCore(RED) {
         return text;
     }
 
+    // A lighter touch than redactSecrets for a log line that has to stay
+    // useful: the URL survives, the `user:pass@` in it does not.
+    function scrubUrlCredentials(text) {
+        return String(text).replace(/(\bhttps?:\/\/)[^\s/@"']*@/gi, '$1');
+    }
+
     // ------------------------------------------------------------------ //
     //  Prompt construction & flow context                                  //
     // ------------------------------------------------------------------ //
+
+    // The selected tabs plus the config nodes they reference, transitively,
+    // out of a whole `/flows` export. Null when nothing is selected. What
+    // this returns is what leaves the machine. See docs/{en,jp}/design.md §6.
+    function flowContextFor(allFlows, ids) {
+        if (!Array.isArray(ids) || ids.length === 0 || !Array.isArray(allFlows)) return null;
+        const set = new Set(ids);
+        const selected = [];
+        const configById = new Map();
+        allFlows.forEach(function(n) {
+            if (!n || !n.type) return;
+            if (n.type === 'tab') { if (set.has(n.id)) selected.push(n); }
+            else if (n.z) { if (set.has(n.z)) selected.push(n); }
+            else configById.set(n.id, n);
+        });
+
+        const wanted = new Set();
+        const queue = selected.slice();
+        while (queue.length > 0) {
+            const node = queue.pop();
+            Object.keys(node).forEach(function(key) {
+                const value = node[key];
+                const candidates = Array.isArray(value) ? value : [value];
+                candidates.forEach(function(v) {
+                    if (typeof v !== 'string' || wanted.has(v) || !configById.has(v)) return;
+                    wanted.add(v);
+                    queue.push(configById.get(v));
+                });
+            });
+        }
+
+        const ctx = selected.concat(Array.from(wanted).map(function(id) { return configById.get(id); }));
+        return ctx.length > 0 ? ctx : null;
+    }
 
     // Build a flow context description for the prompt.
     // Converts the Node-RED flow to Vibe Schema (intermediate JSON) so the LLM
@@ -611,7 +651,9 @@ function createLLMCore(RED) {
         savePluginSettings: savePluginSettings,
         maskApiKey: maskApiKey,
         redactSecrets: redactSecrets,
+        scrubUrlCredentials: scrubUrlCredentials,
         // prompt construction
+        flowContextFor: flowContextFor,
         buildMessages: buildMessages,
         buildChatMessages: buildChatMessages,
         // generation

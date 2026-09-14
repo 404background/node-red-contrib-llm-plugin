@@ -222,14 +222,14 @@ async function scenarioUntaggedNodesFollowTheContextFlow() {
 function scenarioProviderContextIsScoped() {
   console.log('\nScenario 8: the flow context sent to the provider is scoped too');
 
-  // Load the node module and let it register, so the helper is attached.
-  const nodeModule = require(path.join(ROOT, 'node', 'llm-request', 'llm-request.js'));
-  nodeModule({
+  // The selection lives in the plugin core; the node only calls it.
+  const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
+  const RED = {
     nodes: { createNode() {}, registerType() {} },
     settings: { userDir: require('os').tmpdir(), get: () => undefined, set: () => {} },
     log: { info() {}, warn() {}, error() {} },
-  });
-  const flowContextFor = nodeModule._flowContextFor;
+  };
+  const flowContextFor = createLLMCore(RED).flowContextFor;
 
   // Alpha's mqtt node points at one broker, Beta's at another. `tls-shared`
   // is referenced by Alpha's broker (a config node referencing another),

@@ -19,6 +19,12 @@
     color: #333;
     font-size: 16px;
 }
+.llm-plugin-heading {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
 .header-buttons {
     display: flex;
     gap: 5px;
@@ -34,6 +40,21 @@
 }
 .header-btn:hover {
     background: #005a9c;
+}
+/* Quiet by design: a way out to the docs, not a fifth control. It sits by
+   the title rather than in the button row, which is already close to the
+   sidebar's default width. */
+.header-link {
+    display: flex;
+    align-items: center;
+    padding: 0 2px;
+    color: #999;
+    font-size: 15px;
+    text-decoration: none;
+}
+.header-link:hover {
+    color: #333;
+    text-decoration: none;
 }
 .chat-modal {
     position: fixed;

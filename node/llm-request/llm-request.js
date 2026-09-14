@@ -10,13 +10,9 @@ module.exports = function(RED) {
     const core = createLLMCore(RED);
     const adminApi = createAdminApi(RED);
 
-    // Comms topic shared with the editor-side subscriber in llm-request.html.
+    // Comms topic shared with the editor half, which is the plugin's own
+    // src/agent_apply.js — the node publishes, the plugin applies.
     const AGENT_APPLY_TOPIC = 'llm-plugin/agent-apply';
-
-    // The API URL may carry `user:pass@`; the log is not the place for it.
-    function scrubUrlCredentials(text) {
-        return String(text).replace(/(\bhttps?:\/\/)[^\s/@"']*@/gi, '$1');
-    }
 
     // `done(err)` is a flow-visible exit and a provider error can carry the
     // API key. `code` survives so timeouts stay detectable.
@@ -43,40 +39,6 @@ module.exports = function(RED) {
         if (typeof payload === 'number' || typeof payload === 'boolean') return String(payload);
         try { return normaliseText(JSON.stringify(payload, null, 2)); }
         catch (e) { return normaliseText(String(payload)); }
-    }
-
-    // The selected tabs plus the config nodes they reference, transitively.
-    // Null when nothing is selected. What this returns is what leaves the
-    // machine. See docs/{en,jp}/design.md §6.
-    function flowContextFor(allFlows, ids) {
-        if (!Array.isArray(ids) || ids.length === 0 || !Array.isArray(allFlows)) return null;
-        const set = new Set(ids);
-        const selected = [];
-        const configById = new Map();
-        allFlows.forEach(function(n) {
-            if (!n || !n.type) return;
-            if (n.type === 'tab') { if (set.has(n.id)) selected.push(n); }
-            else if (n.z) { if (set.has(n.z)) selected.push(n); }
-            else configById.set(n.id, n);
-        });
-
-        const wanted = new Set();
-        const queue = selected.slice();
-        while (queue.length > 0) {
-            const node = queue.pop();
-            Object.keys(node).forEach(function(key) {
-                const value = node[key];
-                const candidates = Array.isArray(value) ? value : [value];
-                candidates.forEach(function(v) {
-                    if (typeof v !== 'string' || wanted.has(v) || !configById.has(v)) return;
-                    wanted.add(v);
-                    queue.push(configById.get(v));
-                });
-            });
-        }
-
-        const ctx = selected.concat(Array.from(wanted).map(function(id) { return configById.get(id); }));
-        return ctx.length > 0 ? ctx : null;
     }
 
     // Seconds, 0 = no limit. An hour by default: local LLMs are slow.
@@ -165,16 +127,16 @@ module.exports = function(RED) {
                             if (!editorUrl) throw e;
                             // A URL that doesn't serve the admin API, e.g. the
                             // httpNodeRoot base. Retry auto-detection.
-                            node.warn(scrubUrlCredentials('[llm-request] Flow context fetch failed for "' +
+                            node.warn(core.scrubUrlCredentials('[llm-request] Flow context fetch failed for "' +
                                 editorUrl + '" (' + (e && e.message ? e.message : e) +
                                 '); retrying with auto-detection.'));
                             current = await adminApi.getFlows();
                         }
                         if (current && Array.isArray(current.flows)) {
-                            context = flowContextFor(current.flows, targetFlows);
+                            context = core.flowContextFor(current.flows, targetFlows);
                         }
                     } catch (e) {
-                        node.warn(scrubUrlCredentials('[llm-request] Could not fetch flow context (' +
+                        node.warn(core.scrubUrlCredentials('[llm-request] Could not fetch flow context (' +
                             (e && e.message ? e.message : e) + '); continuing without it.'));
                     }
                 }
@@ -228,8 +190,4 @@ module.exports = function(RED) {
     }
 
     RED.nodes.registerType('llm-request', LLMRequestNode);
-
-    // Test seams: cross_flow_isolation, node_secret_exit.
-    module.exports._flowContextFor = flowContextFor;
-    module.exports._scrubUrlCredentials = scrubUrlCredentials;
 };

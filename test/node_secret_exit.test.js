@@ -95,8 +95,12 @@ async function theErrorExitCarriesNoKey() {
 
 function urlUserinfoIsScrubbedFromLogs() {
     console.log('\nA log line never republishes a URL\'s userinfo');
-    const nodeModule = require(path.join(ROOT, 'node', 'llm-request', 'llm-request.js'));
-    const scrub = nodeModule._scrubUrlCredentials;
+    const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
+    const scrub = createLLMCore({
+        nodes: { createNode() {}, registerType() {} },
+        settings: { userDir: os.tmpdir(), get: () => undefined, set: () => {} },
+        log: { info() {}, warn() {}, error() {} },
+    }).scrubUrlCredentials;
 
     const line = scrub('fetch failed for "http://admin:hunter2@10.0.0.4:1880/red" (ECONNREFUSED)');
     ok(!line.includes('hunter2') && !line.includes('admin:'),

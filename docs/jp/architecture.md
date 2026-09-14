@@ -54,11 +54,13 @@ src/
   importer.js           LLM 出力の抽出、再構築、エディタへの import
   ui_core.js            メッセージ描画、フローエクスポート
   vibe_ui.js            サイドバー構築 + 生成ワークフロー
-  llm_core.js           共有 LLM エンジン(設定/認証/プロバイダ/プロンプト)
+  agent_apply.js        `llm-request` ノードのエディタ側: 通信チャネル → インポータ
+  llm_core.js           共有 LLM エンジン(設定/認証/プロバイダ/プロンプト/コンテキスト)
   server.js             HTTP エンドポイント + チャット/チェックポイント永続化
 node/                   `llm-request` ノード(パレットカテゴリ: llm-plugin)
   lib/admin_api.js      ローカル Node-RED Admin API クライアント(読み取り専用 GET /flows)
-  llm-request/          「LLM」ノード — msg.payload に対する Ask / Agent
+  llm-request/          「LLM」ノード — msg.payload に対する Ask / Agent。
+                        Agent モードのエディタ側は src/agent_apply.js にある
 ```
 
 ## 読み込み順(クライアント)
@@ -68,12 +70,15 @@ node/                   `llm-request` ノード(パレットカテゴリ: llm-pl
 
 ```
 common → canvas_layout → flow_converter_core → llm_json_parser
-       → chat_manager → importer → ui_core → vibe_ui
+       → apply_queue → chat_manager → importer → ui_core → vibe_ui
+       → agent_apply
 ```
 
 レイアウトエンジンは変換器より前でなければならない。変換器がノードの座標決めを
-レイアウトエンジンに任せているためである。全モジュールは即時実行関数で自身を包み、
-共通のグローバル名前空間を介して互いを参照する。
+レイアウトエンジンに任せているためである。同じ理由で apply_queue は、それを通して
+適用を並べる2つのモジュールより前に来る。agent_apply が最後なのは、束縛した瞬間に
+`llm-request` の応答が届きうるうえ、その適用に上のすべてを使うからである。
+全モジュールは即時実行関数で自身を包み、共通のグローバル名前空間を介して互いを参照する。
 
 ## HTTP エンドポイント
 

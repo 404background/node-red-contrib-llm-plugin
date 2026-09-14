@@ -56,11 +56,13 @@ src/
   importer.js           Extract LLM output, rebuild & import into editor
   ui_core.js            Message rendering, flow export
   vibe_ui.js            Sidebar build + generation workflow
-  llm_core.js           Shared LLM engine (settings/creds/providers/prompts)
+  agent_apply.js        Editor half of the `llm-request` node: comms → importer
+  llm_core.js           Shared LLM engine (settings/creds/providers/prompts/context)
   server.js             HTTP endpoints + chat/checkpoint persistence
 node/                   The `llm-request` node (palette category: llm-plugin)
   lib/admin_api.js      Local Node-RED Admin API client (read-only GET /flows)
-  llm-request/          "LLM" node — Ask / Agent against msg.payload
+  llm-request/          "LLM" node — Ask / Agent against msg.payload; the
+                        editor half of Agent mode is src/agent_apply.js
 ```
 
 ## Loading sequence (client)
@@ -70,12 +72,16 @@ which fetches and runs the rest **in order**:
 
 ```
 common → canvas_layout → flow_converter_core → llm_json_parser
-       → chat_manager → importer → ui_core → vibe_ui
+       → apply_queue → chat_manager → importer → ui_core → vibe_ui
+       → agent_apply
 ```
 
 `canvas_layout` must precede `flow_converter_core` because the
-converter's `toNodeRed` delegates layout to it. All modules use the IIFE
-pattern and communicate via `window.LLMPlugin`.
+converter's `toNodeRed` delegates layout to it, and `apply_queue` precedes
+the two modules that enqueue through it. `agent_apply` is last: an
+`llm-request` reply can arrive the moment it binds, and applying one uses
+everything above. All modules use the IIFE pattern and communicate via
+`window.LLMPlugin`.
 
 ## HTTP endpoints
 
