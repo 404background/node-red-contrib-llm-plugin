@@ -598,7 +598,8 @@ function createLLMPluginServer(RED) {
                 clientId: body.clientId,
                 source: body.source,
                 label: body.label,
-                targetFlowIds: body.targetFlowIds
+                targetFlowIds: body.targetFlowIds,
+                undo: body.undo
             }));
         } catch (error) {
             return res.status(500).json({ error: redactSecrets(error.message || 'Failed to queue the apply') });

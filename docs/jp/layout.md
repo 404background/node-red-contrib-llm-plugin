@@ -86,6 +86,7 @@ const positions = Layout.layoutNodes(
 | `estimateNodeWidth(node, options?)` | ラベルベースの幅推定。`gridSize` にスナップ。 |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` があればそれ、なければ `estimateNodeWidth`。 |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | 縦積みのためのコンポーネントごとの Y オフセット。`spacingY` と `gap` はエッジ間。行ピッチは `nodeHeight + spacingY`、コンポーネントステップは `nodeHeight + gap`。`nodeHeight` のデフォルトは `LAYOUT_DEFAULTS.nodeHeight`。 |
+| `fitGroups(nodes, options?)` | メンバーを収めきれなくなったグループの枠を合わせ直す。[グループの枠](#グループの枠)を参照。 |
 | `LAYOUT_DEFAULTS` | デフォルト定数。 |
 
 ## デフォルト
@@ -100,7 +101,8 @@ LAYOUT_DEFAULTS = {
     minNodeWidth:  100,    // Node-RED MIN_NODE_WIDTH
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
-    maxColumns:      5
+    maxColumns:      5,
+    groupPadding:   25     // the editor's own clearance between a group's box and its members
 };
 ```
 
@@ -162,6 +164,26 @@ w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
 インポート時の既定である `edgeGap = 40` では、既定名のままの約 120px のノード2つは中心間で
 約 160px に並び、あいだにグリッド2マス分の余白が残る。ユーザーが Node-RED でノードを1つずつ
 ドラッグして置いたときにできる間隔とほぼ同じである。
+
+## グループの枠
+
+グループの枠は**グループ自身に保存される**(`x` / `y` / `w` / `h`)。Node-RED がこれを
+再計算するのは、ユーザーがメンバーを枠へ、あるいは枠の中でドラッグしたときだけである。
+つまり、メンバーを動かした側が枠の責任を持つ。`0 × 0` の枠でインポートしたグループは、
+ユーザーにも `0 × 0` に見えるし、レイアウトで下へ押し出されたメンバーは枠を置いていく。
+`fitGroups` はレイアウトの各パスのあとに走り、これを決着させる。
+
+- 枠はメンバーの外接矩形を四方に `groupPadding`(25)だけ広げたものである。
+  `RED.group.addToGroup` が付けるクリアランスと同じなので、プラグインが合わせた枠と
+  エディタが合わせた枠は同じ見た目になる。
+- ノードの端は中心と `getNodeWidth` / `nodeHeight` から求める。**入れ子**のグループは
+  `x` / `y` がすでに左上隅なので、内側の枠を先に(深い順に)合わせ、そのあと外側が
+  それを包む。
+- すでに全メンバーを**収めている**枠は、必要より大きくてもそのままにする。ユーザーが
+  広げた結果であり、縮め直すのはその操作を取り消すことになる。
+- グループはノードとしてはレイアウトしない(`isLayoutNode` が除外する)ので、何かを
+  押しのけることはない。2つのコンポーネントを囲む2つの枠がぶつかることもない。
+  `componentGap`(80)がパディング2つ分(25 + 25)より広いからである。
 
 ## コメント配置
 

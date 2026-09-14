@@ -155,12 +155,13 @@
             let ids = (Array.isArray(allowedWorkspaceIds) && allowedWorkspaceIds.length > 0)
                 ? allowedWorkspaceIds
                 : null;
-            // No includeCanvasExtras: the context the model saw did not have
-            // junctions or groups in it, and adding entities here would shift
-            // the very numbering this table exists to reproduce.
+            // The same export the model was sent — includeGroups, no junctions.
+            // Adding an entity the context did not have would shift the very
+            // numbering this table exists to reproduce.
+            let ctxOpts = { includeGroups: true };
             let context = ids
-                ? LLMPlugin.UI.getFlowsByIds(ids)
-                : LLMPlugin.UI.getCurrentFlow();
+                ? LLMPlugin.UI.getFlowsByIds(ids, ctxOpts)
+                : LLMPlugin.UI.getCurrentFlow(undefined, ctxOpts);
             if (!Array.isArray(context) || context.length === 0) return index;
             let inter = Converter.toIntermediate(context, { includeIdMap: true });
             let idToAlias = (inter && inter._meta && inter._meta.idToAlias) || {};
@@ -461,8 +462,10 @@
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
 
         // Never carried over from existing to proposed: something else
-        // supplies each. `g` is deliberately absent — nothing else restores
-        // group membership. See docs/{en,jp}/design.md §4.2 and §12.
+        // supplies each. `g` is deliberately absent — the group pass below
+        // only writes the members a schema named, so every other node's
+        // membership has to survive here. See docs/{en,jp}/design.md §4.2,
+        // §12 and §15.
         let MERGE_SKIP_KEYS = {
             id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1,
             dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
@@ -581,6 +584,84 @@
             });
         })();
 
+        // `groups: { alias: { nodes: [aliases] } }` -> real membership. Runs
+        // after the merge, so a member may be a node this schema adds or one
+        // already on the canvas. Membership is ADDITIVE, like wires: a
+        // re-declared group keeps the members it had. The box itself is fitted
+        // after the layout. See docs/{en,jp}/design.md §15.
+        (function resolveGroupMembers() {
+            let groups = rebuilt.filter(function(n) { return n && n.type === 'group'; });
+            let byId = {};
+            rebuilt.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+
+            if (groups.length > 0) {
+                let newByAlias = {};
+                rebuilt.forEach(function(n) {
+                    if (n && n.id && typeof n._llmAlias === 'string') newByAlias[n._llmAlias] = n.id;
+                });
+                let lookup = buildFlowLookup(rebuilt);
+
+                groups.forEach(function(g) {
+                    let members = (Array.isArray(g.nodes) ? g.nodes : []).filter(function(id) {
+                        return typeof id === 'string' && byId[id] && byId[id] !== g;
+                    });
+                    (Array.isArray(g._llmMembers) ? g._llmMembers : []).forEach(function(token) {
+                        let id = newByAlias[token]
+                              || (lookup.aliasToId && lookup.aliasToId[token])
+                              || lookup.resolve(token);
+                        let member = id ? byId[id] : null;
+                        // A config node has no box to sit in, and a group
+                        // cannot span tabs.
+                        if (!member || member === g || !isCanvasNode(member)) return;
+                        if (member.z !== g.z) return;
+                        if (members.indexOf(id) === -1) members.push(id);
+                        // Membership is two-sided: the id in the group's list,
+                        // `g` on the member. Only the members THIS schema named
+                        // are written — an existing group's own bookkeeping is
+                        // not this edit's business.
+                        member.g = g.id;
+                    });
+
+                    // A caption heads the sequence it names, so it belongs in
+                    // the box: left out, it lands exactly on the top edge (the
+                    // padding is one row) and reads as a stray label. Only
+                    // comments THIS schema added, and only into a group this
+                    // schema declared — pulling an existing comment in would
+                    // register as a membership change nobody asked for.
+                    if (members.length > 0) {
+                        let inBox = {};
+                        members.forEach(function(id) { inBox[id] = true; });
+                        rebuilt.forEach(function(c) {
+                            if (!c || c.type !== 'comment' || baseIds[c.id]) return;
+                            if (typeof c.g === 'string' && c.g) return;
+                            if (!inBox[c._llmAboveId]) return;
+                            members.push(c.id);
+                            c.g = g.id;
+                        });
+                    }
+                    g.nodes = members;
+                });
+            }
+
+            // A `g` naming a group that is no longer here is what a deleted
+            // group leaves behind, and the editor draws from it.
+            let groupById = {};
+            groups.forEach(function(g) { groupById[g.id] = true; });
+            rebuilt.forEach(function(n) {
+                if (n && typeof n.g === 'string' && !groupById[n.g]) delete n.g;
+            });
+
+            // An empty box is noise on the canvas, and a group the LLM named
+            // but whose members all failed to resolve would be exactly that.
+            let empty = {};
+            groups.forEach(function(g) {
+                if (!g.nodes || g.nodes.length === 0) empty[g.id] = true;
+            });
+            if (Object.keys(empty).length > 0) {
+                rebuilt = rebuilt.filter(function(n) { return !(n && empty[n.id]); });
+            }
+        })();
+
         // Metadata sweep #1: no `_`-prefixed property may reach the canvas.
         // These two survive until the layout passes below are done.
         let LAYOUT_META_KEYS = { _llmOrder: 1, _llmAboveId: 1 };
@@ -636,6 +717,10 @@
         if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
             repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts);
         }
+
+        // Whoever moved the members owns the boxes: the editor recomputes a
+        // group's box only when the user drags something into or inside it.
+        layout.fitGroups(rebuilt, layoutOpts);
 
         // Metadata sweep #2: the layout passes have consumed what they needed,
         // so drop the remainder. After this point no node carries a `_` key.
@@ -885,14 +970,21 @@
         return ak.length === bk.length && ak.every(function(k) { return b[k]; });
     }
 
-    // A live entity by id, whichever registry it lives in. Junctions are NOT
-    // in RED.nodes.node()'s lookup — they have their own — and a wire may
-    // perfectly well end at one.
+    // A live entity by id, whichever registry it lives in. Junctions and
+    // groups are NOT in RED.nodes.node()'s lookup — each has its own — and a
+    // wire may perfectly well end at a junction, while a group is what an
+    // alias resolves to when the schema edits a box.
     function liveEntity(id) {
         let n = RED.nodes.node(id);
         if (n) return n;
         if (typeof RED.nodes.junction === 'function') {
-            try { return RED.nodes.junction(id) || null; } catch (e) { /* ignore */ }
+            try {
+                let j = RED.nodes.junction(id);
+                if (j) return j;
+            } catch (e) { /* ignore */ }
+        }
+        if (typeof RED.nodes.group === 'function') {
+            try { return RED.nodes.group(id) || null; } catch (e) { /* ignore */ }
         }
         return null;
     }
@@ -1335,6 +1427,38 @@
             nodes: subNodes,
             connections: subConns
         };
+
+        // A group belongs to the flow its members are in, so its member list is
+        // narrowed to this slice. When NO member is declared in the schema at
+        // all ("group these nodes I already have"), the group is forwarded to
+        // every slice and the per-workspace pass drops the members — and then
+        // the empty box — that do not live there.
+        let srcGroups = (schema.groups && typeof schema.groups === 'object' &&
+                         !Array.isArray(schema.groups)) ? schema.groups : null;
+        if (srcGroups) {
+            let subGroups = {};
+            Object.keys(srcGroups).forEach(function(galias) {
+                let gspec = srcGroups[galias];
+                if (gspec === null) {
+                    if (deletionBelongsHere(galias)) subGroups[galias] = null;
+                    return;
+                }
+                if (typeof gspec !== 'object' || Array.isArray(gspec)) return;
+                let members = Array.isArray(gspec.nodes) ? gspec.nodes
+                            : (Array.isArray(gspec.members) ? gspec.members : []);
+                members = members.filter(function(m) { return typeof m === 'string' && m.trim(); });
+                let mine = members.filter(function(m) { return !!subNodes[m]; });
+                let declaredElsewhere = members.some(function(m) {
+                    return !subNodes[m] && !!(schema.nodes && schema.nodes[m]);
+                });
+                if (mine.length === 0 && declaredElsewhere) return;
+                let copy = { nodes: (mine.length > 0 ? mine : members) };
+                if (typeof gspec.name === 'string') copy.name = gspec.name;
+                subGroups[galias] = copy;
+            });
+            if (Object.keys(subGroups).length > 0) out.groups = subGroups;
+        }
+
         if (typeof schema.description === 'string') out.description = schema.description;
         if (Array.isArray(schema.remove)) {
             out.remove = schema.remove.filter(deletionBelongsHere);
@@ -1734,7 +1858,9 @@
                 if (!n || !n._llmAlias) return;
                 let exactId = lookup.resolve(n._llmAlias, { exactOnly: true });
                 if (!exactId || claimedExistingIds[exactId]) return;
-                let existing = RED.nodes.node(exactId);
+                // liveEntity, not RED.nodes.node: a group alias resolves to a
+                // box, which lives in its own registry.
+                let existing = liveEntity(exactId);
                 if (!existing) return;
                 if (!currentWorkspace || existing.z === currentWorkspace || !existing.z) {
                     preResolvedAlias[idx] = exactId;
@@ -1754,7 +1880,7 @@
                 if (nn._llmAlias) {
                     let aliasId = preResolvedAlias[idx] || null;
                     if (aliasId) {
-                        let byAlias = RED.nodes.node(aliasId);
+                        let byAlias = liveEntity(aliasId);
                         // Allow matching for: same workspace nodes, OR config nodes
                         // (config nodes have no z / empty z — they live outside workspaces)
                         if (byAlias && (!currentWorkspace || byAlias.z === currentWorkspace || !byAlias.z)) {
@@ -2066,6 +2192,31 @@
         });
     }
 
+    // The workspaces a snapshot will write to — the restore's queue scope.
+    function checkpointWorkspaceIds(nodes) {
+        let ids = LLMPlugin.UI ? LLMPlugin.UI.extractWorkspaceIds(nodes) : [];
+        if (ids.length > 0) return ids;
+        let active = getActiveWorkspaceId();
+        return active ? [active] : [];
+    }
+
+    // Through the queue, as an undo: a restore must not interleave with an
+    // apply that is running, and it ends the hold on the flows it rewinds
+    // rather than owing a deploy for them. See design.md §13.
+    function queuedRestore(nodes) {
+        let Queue = LLMPlugin.ApplyQueue;
+        if (!Queue || typeof Queue.enqueue !== 'function') {
+            return restoreMultiFlowCheckpoint(nodes);
+        }
+        return Queue.enqueue({
+            source: 'sidebar',
+            label: 'Restore flow',
+            targetFlowIds: checkpointWorkspaceIds(nodes),
+            undo: true,
+            apply: function() { return restoreMultiFlowCheckpoint(nodes); }
+        });
+    }
+
     Importer.restoreCheckpoint = function(checkpointId) {
         if (!checkpointId) return Promise.resolve({ ok: false, error: 'checkpointId is required' });
         return Common.apiFetch('llm-plugin/checkpoint/' + encodeURIComponent(checkpointId))
@@ -2081,7 +2232,7 @@
                 if (!cp || !Array.isArray(cp.flow)) {
                     return { ok: false, error: 'Invalid checkpoint data' };
                 }
-                return restoreMultiFlowCheckpoint(cp.flow);
+                return queuedRestore(cp.flow);
             })
             .catch(function(err) {
                 return { ok: false, error: err && err.message ? err.message : String(err) };

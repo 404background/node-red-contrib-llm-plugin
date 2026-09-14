@@ -86,6 +86,7 @@ const positions = Layout.layoutNodes(
 | `estimateNodeWidth(node, options?)` | Label-based width estimate, snapped to `gridSize`. |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
+| `fitGroups(nodes, options?)` | Refit every group box that no longer contains its members. See [Group boxes](#group-boxes). |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
@@ -100,7 +101,8 @@ LAYOUT_DEFAULTS = {
     minNodeWidth:  100,    // Node-RED MIN_NODE_WIDTH
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
-    maxColumns:      5
+    maxColumns:      5,
+    groupPadding:   25     // the editor's own clearance between a group's box and its members
 };
 ```
 
@@ -179,6 +181,27 @@ With the importer's default `edgeGap = 40` two default-named ~120 px
 nodes sit ~160 px centre-to-centre, leaving 2 grid squares of visible
 clearance between them — close to the spacing Node-RED itself produces
 when you drag nodes onto the canvas one at a time.
+
+## Group boxes
+
+A group's box is **stored on the group** (`x` / `y` / `w` / `h`) and Node-RED
+recomputes it only when the user drags a member into or inside it. So whoever
+moves the members owns the box: a group imported with a `0 × 0` box is one the
+user sees at `0 × 0`, and a member pushed down by a layout pass leaves the box
+behind. `fitGroups` runs after the layout passes and settles it:
+
+- The box is the members' bounding box grown by `groupPadding` (25) on all four
+  sides — the same clearance `RED.group.addToGroup` applies, so a box the plugin
+  fits and one the editor fits look the same.
+- A node's edges come from its centre and `getNodeWidth` / `nodeHeight`; a
+  **nested** group's `x` / `y` is already its top-left corner, so inner boxes
+  are fitted first (deepest first) and the outer one then contains them.
+- A box that **already contains** every member is left alone, even when it is
+  larger than it needs to be: the user resized it, and shrinking it back would
+  undo that.
+- Groups are not laid out as nodes (`isLayoutNode` excludes them), so they never
+  displace anything. Two boxes around two components cannot collide either:
+  `componentGap` (80) is wider than two paddings (25 + 25).
 
 ## Comment placement
 

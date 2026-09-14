@@ -116,7 +116,7 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 |----------|---------|
 | `toIntermediate(nodeRedJson, options?)` | Node-RED → Vibe Schema。`options.includeIdMap = true` で `_meta.idToAlias` を付与。 |
 | `toNodeRed(intermediate, options?)` | Vibe Schema → Node-RED。オプション: `workspace`, `startX`, `startY`, `spacingY`, `edgeGap`, `maxColumns`, `preserveAlias`。 |
-| `isVibeSchema(obj)` | `obj.nodes` がプレーンオブジェクト、または `obj.connections` が配列のとき `true`(どちらか単独でも有効 — ノードプロパティのみの編集は connections を省略、配線の微修正は nodes を省略)。トップレベルに `reposition` / `relayout` / `reflow` 配列を持つディレクティブのみの形も該当。 |
+| `isVibeSchema(obj)` | `obj.nodes` がプレーンオブジェクト、`obj.connections` が配列、`obj.groups` がプレーンオブジェクトのいずれかで `true`(それぞれ単独でも有効 — ノードプロパティのみの編集は connections を省略、配線の微修正は nodes を省略、「この2つを枠で囲む」はどちらも省略する)。トップレベルに `reposition` / `relayout` / `reflow` 配列を持つディレクティブのみの形も該当。 |
 | `isConfigType(type)` / `isConfigNode(node)` | Config ノード判定(ランタイム + 構造的)。 |
 | `isCanvasNode(node)` | `!tab && !subflow: && !isConfigNode`。 |
 | `isNoInputType(type)` | ソース専用ノード(`inject`, `catch`, `comment`, …)で true。 |
@@ -134,6 +134,13 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
   description? : string                 // toIntermediate が自動生成
   nodes        : { <alias>: NodeEntry | null }
   connections  : Array<ConnEntry | RemoveEntry>
+  groups?      : { <alias>: GroupEntry | null }
+}
+
+GroupEntry = {
+  name?  : string                       // 枠のラベル
+  nodes? : Array<alias>                 // メンバー(各ノードのエイリアスで指定)
+  flow?  : string                       // タブラベル(toIntermediate が付与)
 }
 
 NodeEntry = {
@@ -224,6 +231,47 @@ LLM も中身を確認して編集できる。
 それ以外の接続はすべて足し算として扱われる。マージ規則の全体は
 [docs/jp/architecture.md](./architecture.md) の「importer.js」を参照。
 
+### グループ — 「一連のフロー」という意味のフロー
+
+Node-RED は2つの別物をどちらもフローと呼ぶ。**タブ**と、**一連のつながったノード**である。
+スキーマではこれを分けている。ノードの `flow` は常にタブのラベルであり、一連のつながりは
+**グループ**、すなわちエディタがノードの集まりに描く枠である。だから「ここにフローを3つ」は
+1つのタブに3本の独立した並びを作り、それぞれを自分のグループに入れることを意味し、タブを
+意味するのは「新しいタブに」と言われたときだけである。システムプロンプトにもこの区別を
+そのまま書いている。[design.md §15](./design.md#15-フロー・タブ・グループ)を参照。
+
+```json
+{
+  "nodes": {
+    "inject_tick":  { "type": "inject", "name": "tick" },
+    "debug_out":    { "type": "debug",  "name": "out" }
+  },
+  "connections": [{ "from": "inject_tick", "to": "debug_out" }],
+  "groups": {
+    "group_collector": { "name": "Collector", "nodes": ["inject_tick", "debug_out"] }
+  }
+}
+```
+
+- エイリアスはノードと同じ `{type}_{name}` の規則(`group_collector`)で、一意かつ不変。
+  後の回でその枠を編集するときは、このエイリアスを使い回す。
+- メンバーは**エイリアス**で指定する。そのスキーマが追加するノードでも、すでにキャンバスに
+  あるノードでもよい。`groups` だけのスキーマも単独で有効である。「この2つを枠で囲んで」は
+  ノードを1つも名乗らない。
+- メンバーシップはワイヤと同じく**加算**である。挙げたエイリアスが枠に加わり、すでに入っていた
+  メンバーはそのまま残る。config ノードや別タブのノードに解決したメンバーは落とす。グループは
+  タブをまたげない。
+- `{ "groups": { "group_collector": null } }` は**枠**を削除する。中のノードはキャンバスに
+  残り、指していた所属情報は消される。
+- 省略したキーは現状のままになる。`nodes` だけを書いて再宣言しても名前は失われない。
+- **枠そのものはこちらで計算する。** Node-RED はグループに `x`/`y`/`w`/`h` を保存し、
+  ユーザーがメンバーをドラッグしたときにしか再計算しない。したがってレイアウトのあとに
+  プラグイン側で枠を合わせる([layout.md](./layout.md#グループの枠))。
+- `toIntermediate` はグループをこのマップに出す。`nodes` のエントリには決して混ぜない。
+  こうすることで、コンテキストに枠があってもなくてもノードのエイリアスは同一になる。
+  インポート側が再現しなければならない連番を動かさずに、LLM コンテキストへグループを
+  含められるのはこのためである。
+
 ### reposition ディレクティブ
 
 ```json
@@ -284,7 +332,9 @@ ID もプロパティも接続も保たれ、変わるのは座標だけであ�
 4. 各ノードの接続配列を走査し、接続先ごとに1つのエントリを出力する。出力ポートが 0 以外のときは
    ポート番号も添える。
 5. 「3 node(s): inject, function, debug」のような短い説明を自動生成する。
-6. 呼び出し元が求めた場合は、ID からエイリアスへの対応表も添える。
+6. グループのノードは `nodes` から引き上げ、`groups` マップにメンバーをエイリアスで並べる。
+   手順2でエイリアスは付ける。メンバーが枠を名指し、枠がメンバーを名指すためである。
+7. 呼び出し元が求めた場合は、ID からエイリアスへの対応表も添える(グループも含む)。
 
 ### `toNodeRed(intermediate, options?)`
 
@@ -313,3 +363,8 @@ ID もプロパティも接続も保たれ、変わるのは座標だけであ�
 9. **型ごとの整形** — inject は内部のルール配列を作り直す。function は必要な外部モジュール宣言を
    取り出し、コードを整形し、出力数の既定を補う。change と switch はルール配列を、template は
    既定値を整える。
+10. **グループを組み立てる** — `groups` の各エントリにつき `group` 型のノードを1つ作り、
+    メンバーの**エイリアス**の申し送りと空の枠を載せる。メンバーはここでは解決できない。
+    エイリアスはすでにキャンバスにあるノードを指すことがあり、その ID を知っているのは
+    インポート側だけである。名前の申し送りは、スキーマが名前を書いたときにだけ付ける。
+    再宣言した枠が元の名前を失わないようにするためである。

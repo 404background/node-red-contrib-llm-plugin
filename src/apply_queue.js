@@ -85,6 +85,8 @@
     // Queue one flow-modifying apply. `apply` runs when the turn is granted
     // and returns the importer's result; the queue reads `ok` off it.
     // `targetFlowIds` is the write scope — empty means unknown.
+    // `undo: true` marks a restore: it takes its turn like anything else, but
+    // a hold cannot block it — ending that hold is what it is for.
     ApplyQueue.enqueue = function(options) {
         options = options || {};
         let targets = Array.isArray(options.targetFlowIds) ? options.targetFlowIds : [];
@@ -93,7 +95,8 @@
             clientId: clientId,
             source: options.source || 'sidebar',
             label: options.label || 'Flow edit',
-            targetFlowIds: targets
+            targetFlowIds: targets,
+            undo: !!options.undo
         }).then(function(out) {
             if (!out || !out.entryId) {
                 // Tagged so a caller can tell "never got a turn" from

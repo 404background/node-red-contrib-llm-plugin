@@ -124,6 +124,48 @@
         return out.join('');
     }
 
+    // In JSONata a string literal is glued to what surrounds it by an
+    // operator, so the code between two literals both starts and ends with
+    // one. That is what tells the two readings of a repaired value apart.
+    let OPERATOR_AFTER  = /^\s*(&|\+|-|\*|\/|%|!=|<=|>=|=|<|>|\?|:|,|\)|\]|\}|~>|\.|and\b|or\b|in\b)/;
+    let OPERATOR_BEFORE = /(&|\+|-|\*|\/|%|!=|<=|>=|=|<|>|\?|:|,|\(|\[|\{|~>|\.|\band|\bor|\bin)\s*$/;
+
+    // `segs` are a value's text runs, split at each quote the repair escaped.
+    // `openLiteral` is the reading where the value starts INSIDE a literal
+    // (segs[0] literal, segs[1] code, …); the other one starts outside it.
+    function readingHolds(segs, openLiteral) {
+        for (let i = openLiteral ? 1 : 0; i < segs.length; i += 2) {
+            let seg = segs[i];
+            let literalLeft  = i > 0;
+            let literalRight = i < segs.length - 1;
+            if (!seg.trim()) {
+                // Two literals with nothing between them is not an expression;
+                // at either end it is a value that begins or ends with one.
+                if (literalLeft && literalRight) return false;
+                continue;
+            }
+            if (literalLeft && !OPERATOR_AFTER.test(seg)) return false;
+            if (literalRight && !OPERATOR_BEFORE.test(seg)) return false;
+        }
+        return true;
+    }
+
+    // Which of its own quotes an expression lost to the repair, as
+    // { open, close }. Null when neither reading is an expression, or when
+    // the value already reads as one. See docs/{en,jp}/design.md §14.
+    function missingExpressionQuotes(segs) {
+        if (segs.length < 2) return null;
+        let openLiteral;
+        if (readingHolds(segs, false)) openLiteral = false;
+        else if (readingHolds(segs, true)) openLiteral = true;
+        else return null;
+        // The last run is a literal — left unclosed — when its index has the
+        // same parity as the first literal's.
+        let endsInLiteral = ((segs.length - 1) % 2) === (openLiteral ? 0 : 1);
+        if (!openLiteral && !endsInLiteral) return null;
+        return { open: openLiteral, close: endsInLiteral };
+    }
+
     // Repair unescaped double quotes inside JSON string values: models embed
     // f"text {var}" and code snippets that JSON.parse rejects.
     //
@@ -138,6 +180,35 @@
         let len = text.length;
         let inString = false;
         let isValueString = false;
+        let valueStart = -1;        // result index just after the opening quote
+        let escapedQuotes = [];     // result indices of the quotes we escaped
+        // Which container the cursor is in. A string inside an ARRAY is always a
+        // value — there are no keys there — and reading one as a key is how a
+        // `["a", "b"]` came out with its commas swallowed.
+        let containers = [];
+
+        function valueSegments(end) {
+            let segs = [];
+            let from = valueStart;
+            for (let q = 0; q < escapedQuotes.length; q++) {
+                segs.push(result.slice(from, escapedQuotes[q]).join(''));
+                from = escapedQuotes[q] + 1;
+            }
+            segs.push(result.slice(from, end).join(''));
+            return segs;
+        }
+
+        // Give an expression back the delimiters this pass ate. Returns `end`
+        // shifted by what was inserted, so the caller can still close there.
+        function restoreExpressionQuotes(end) {
+            if (!isValueString || escapedQuotes.length === 0) return end;
+            let missing = missingExpressionQuotes(valueSegments(end));
+            if (!missing) return end;
+            let added = 0;
+            if (missing.close) { result.splice(end, 0, '\\"'); added++; }
+            if (missing.open) { result.splice(valueStart, 0, '\\"'); added++; }
+            return end + added;
+        }
 
         // Close the open string at the end of the line just walked: before a
         // trailing comma when there is one, since a line ending in a comma
@@ -145,8 +216,8 @@
         function closeAtLineEnd() {
             let k = result.length - 1;
             while (k >= 0 && (result[k] === ' ' || result[k] === '\t')) k--;
-            if (k >= 0 && result[k] === ',') result.splice(k, 0, '"');
-            else result.splice(k + 1, 0, '"');
+            let at = (k >= 0 && result[k] === ',') ? k : k + 1;
+            result.splice(restoreExpressionQuotes(at), 0, '"');
             inString = false;
         }
 
@@ -154,11 +225,17 @@
             let ch = text[i];
             if (!inString) {
                 result.push(ch);
-                if (ch === '"') {
+                if (ch === '{' || ch === '[') containers.push(ch);
+                else if (ch === '}' || ch === ']') containers.pop();
+                else if (ch === '"') {
                     inString = true;
                     let j = result.length - 2;
                     while (j >= 0 && /\s/.test(result[j])) j--;
-                    isValueString = (j >= 0 && result[j] === ':');
+                    isValueString = (containers[containers.length - 1] === '[')
+                        ? true
+                        : (j >= 0 && result[j] === ':');
+                    valueStart = result.length;
+                    escapedQuotes = [];
                 }
                 i++;
             } else {
@@ -179,10 +256,12 @@
                         isEnd = next === '' || next === ':';
                     }
                     if (isEnd) {
+                        restoreExpressionQuotes(result.length);
                         result.push('"');
                         inString = false;
                         i++;
                     } else {
+                        if (isValueString) escapedQuotes.push(result.length);
                         result.push('\\"');
                         i++;
                     }
@@ -218,6 +297,17 @@
             try { return attempts[i](); } catch (e) { lastError = e; }
         }
         throw lastError;
+    }
+
+    // One block of a reply, read the way the importer reads it: strict JSON
+    // first, then the repairs. `repaired` says the text as written was not
+    // valid JSON. Null when even the repairs cannot read it.
+    function parseJsonBlock(text) {
+        let src = stripJsonComments(String(text || ''));
+        try { return { value: JSON.parse(src), repaired: false }; }
+        catch (e) { /* fall through to the repairs */ }
+        try { return { value: parseJsonRelaxed(src), repaired: true }; }
+        catch (e) { return null; }
     }
 
     // ================================================================== //
@@ -330,6 +420,15 @@
         Object.keys(parsed.nodes || {}).forEach(function(alias) {
             if (parsed.nodes[alias] === null) directives.removeTokens.push(alias);
         });
+        // `groups: { alias: null }` removes the BOX. Its members are nodes in
+        // their own right and stay on the canvas; the importer clears the `g`
+        // they were left pointing at.
+        let groups = parsed.groups;
+        if (groups && typeof groups === 'object' && !Array.isArray(groups)) {
+            Object.keys(groups).forEach(function(alias) {
+                if (groups[alias] === null) directives.removeTokens.push(alias);
+            });
+        }
         // `reposition` accepts either a flat alias array
         //   "reposition": ["a", "b"]
         // or grouped sequences (e.g. when the LLM wants to make the
@@ -488,7 +587,8 @@
             };
             // Preserve directive fields the merger doesn't otherwise touch
             // so a reposition-only agent message survives the merge.
-            ['reposition', 'relayout', 'reflow', 'remove', 'delete', 'removeNodes', 'deleted'].forEach(function(k) {
+            ['reposition', 'relayout', 'reflow', 'remove', 'delete', 'removeNodes', 'deleted',
+             'groups'].forEach(function(k) {
                 if (schema[k] !== undefined) merged[k] = schema[k];
             });
 
@@ -589,6 +689,21 @@
                 fromPort: (typeof c.fromPort === 'number' && c.fromPort >= 0) ? c.fromPort : 0
             });
         });
+
+        // Groups carry through as declared: the converter reads the member
+        // ALIASES and the importer resolves them. A `null` entry is a deletion
+        // directive and is left for extractFlowDirectives.
+        let groups = schema && schema.groups;
+        if (groups && typeof groups === 'object' && !Array.isArray(groups)) {
+            let outGroups = {};
+            Object.keys(groups).forEach(function(alias) {
+                let spec = groups[alias];
+                if (spec === null) return;
+                if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return;
+                outGroups[alias] = JSON.parse(JSON.stringify(spec));
+            });
+            if (Object.keys(outGroups).length > 0) out.groups = outGroups;
+        }
         return out;
     }
 
@@ -609,7 +724,9 @@
                 }
 
                 let conversionSchema = normalizeSchemaForConversion(sourceSchema, options, cfg);
-                if (Object.keys(conversionSchema.nodes).length === 0) return [];
+                // A groups-only schema is still work: a box around nodes that
+                // are already on the canvas names no node of its own.
+                if (Object.keys(conversionSchema.nodes).length === 0 && !conversionSchema.groups) return [];
 
                 // preserveAlias is always on: the importer matches a comment's
                 // `above: <alias>` against `_llmAlias` to find its target, and
@@ -717,9 +834,14 @@
     //  Public API                                                         //
     // ================================================================== //
 
-    // Token normalization, JSON repair and schema resolution are internal
-    // steps of the entry points below, not part of the callable surface.
+    // Token normalization and schema resolution are internal steps of the
+    // entry points below, not part of the callable surface. The repairs are
+    // reachable only through parseJsonBlock, so the sidebar can read a block
+    // exactly as the importer will.
     return {
+        // One block of reply text → its JSON, repairs included
+        parseJsonBlock: parseJsonBlock,
+
         // Vibe Schema extraction (requires cfg with isVibeSchema)
         extractVibeSchema: extractVibeSchema,
         extractConnectionHints: extractConnectionHints,

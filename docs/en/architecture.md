@@ -138,6 +138,7 @@ Schema extraction from prose-mixed responses.
 
 | Export | Purpose |
 |--------|---------|
+| Block reading | `parseJsonBlock(text)` → `{ value, repaired }`, or null when even the repairs cannot read it. `repaired` says the text as written was not valid JSON. The sidebar folds a JSON block on this, so the panel and the import read a reply the same way. |
 | Schema extraction | `extractVibeSchema`, `extractConnectionHints`, `extractFlowDirectives` |
 | Flow lookup | `buildFlowLookup` (alias / name / ID → node ID, fuzzy fallback) |
 | Node extraction | `extractFlowNodes` |
@@ -154,9 +155,17 @@ yields valid JSON is used, and a block that was already valid never reaches a
 repair at all. One dropped quote in a forty-node schema otherwise costs the
 whole reply. Guarded by `test/json_repair.test.js`.
 
+**Expression values.** A value the quote repair had to touch is then tested
+against the two readings of where its string literals begin and end, because
+the repair's own reading eats the outer quotes of a JSONata expression — which
+Node-RED rejects. See
+[docs/en/design.md §14](./design.md#14-two-readings-of-a-value-the-model-broke).
+
 Token normalization, JSON repair (comment stripping, quote fixing,
 balanced-snippet scanning) and the Agent partial-schema merge are internal
-steps of those four entry points — they are not exported.
+steps of those entry points. The repairs are reachable only through
+`parseJsonBlock`, which exists so the sidebar can read a block exactly as the
+importer will.
 
 ### `apply_queue_server.js` (server) + `apply_queue.js` (client)
 
@@ -170,10 +179,10 @@ Admin API cannot clear the open editor's unsaved state.
 
 | Function | Purpose |
 |----------|---------|
-| `request({ clientId, targetFlowIds, source, label })` | Take a place in the queue. Granted straight away unless a target flow is applied-but-not-deployed, or an earlier waiting entry wants an overlapping flow. An empty `targetFlowIds` means the scope is unknown and conflicts with everything, both ways. |
-| `complete(entryId, ok)` | The client has applied (or failed). On success its flows are held until the next deploy; on failure nothing is held, because the importer rolled back and waiting for a deploy that has no reason to happen would wedge the queue. |
+| `request({ clientId, targetFlowIds, source, label, undo })` | Take a place in the queue. Granted straight away unless a target flow is applied-but-not-deployed, or an earlier waiting entry wants an overlapping flow. An empty `targetFlowIds` means the scope is unknown and conflicts with everything, both ways. `undo: true` marks a restore: a hold cannot block it (ending that hold is what it is for), but it still waits behind an earlier request for the same flows. |
+| `complete(entryId, ok)` | The client has applied (or failed). On success its flows are held until the next deploy; on failure nothing is held, because the importer rolled back and waiting for a deploy that has no reason to happen would wedge the queue. A successful **undo** releases the holds on the flows it names instead of taking new ones — a blanket hold survives, since the apply behind it may have touched flows the snapshot says nothing about. |
 | `cancel(entryId)` | Drop a waiting entry. An entry already granted is mid-apply and is left alone. |
-| `releaseHold()` | End the hold without a deploy, for an edit undone by hand or a restored checkpoint. |
+| `releaseHold()` | End the hold without a deploy, for an edit undone by hand. |
 | `state()` | The queue plus the held flows. Also sweeps expired grants and stale holds. |
 | `bindDeployListener()` | Release every hold on `runtime-event` / `runtime-deploy` — emitted by the flow engine, so it covers a Deploy from any editor, the node's auto deploy, and a deploy made through the Admin API. |
 
@@ -184,8 +193,9 @@ Routes: `GET /llm-plugin/apply-queue`, and `POST .../request`, `.../complete`,
 **Client** — same `enqueue` / `list` / `cancel` / `releaseHold` / `onChange`
 surface as before, plus `connect()` to subscribe. `enqueue` asks for a turn,
 waits to be granted it (a grant arrives in a pushed state), runs `apply`, and
-reports the outcome. Entries carry the client that asked, so the panel can tell
-this editor's requests from another's.
+reports the outcome. `enqueue({ undo: true })` is how a restore asks. Entries
+carry the client that asked, so the panel can tell this editor's requests from
+another's.
 
 See [docs/en/design.md](./design.md#13-ordering-two-producers-against-one-canvas).
 ### `chat_manager.js`
@@ -322,18 +332,33 @@ Full import workflow with these guarantees:
    reflows just the named canvas-node subset while keeping IDs, props,
    and wires. The subset is anchored to its previous top-left so the
    rest of the canvas doesn't visibly shift.
-12. **Metadata sweep** — every `_`-prefixed property the converter added
+12. **Group membership and boxes** — a `groups` entry arrives as a
+   `type: 'group'` node carrying `_llmMembers` (member ALIASES). After the
+   merge, each alias is resolved against both the nodes this schema adds and
+   the ones already on the canvas; membership is **additive**, a member on
+   another tab or a config node is dropped, an empty box is discarded, and a
+   `g` naming a group that is gone is cleared. A comment this schema added that
+   heads a member joins the box, since the padding is one row and it would
+   otherwise sit on the top edge. `CanvasLayout.fitGroups` then
+   fits the box around the members' final positions. See
+   [docs/en/design.md](./design.md#15-a-flow-a-tab-and-a-group).
+13. **Metadata sweep** — every `_`-prefixed property the converter added
    is stripped before the nodes reach the canvas: once right after the
    merge (keeping only `_llmOrder` / `_llmAboveId`, which the layout
    passes still consume) and once after layout. Nothing metadata-shaped
    is ever imported. See [docs/en/design.md](./design.md) §0.1.
-13. Apply the end state to the target workspace as a diff (with the
+14. Apply the end state to the target workspace as a diff (with the
    destructive rebuild as the fallback); layout is delegated to
    `CanvasLayout`.
 
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and
 replace the workspace flow (with a deferred SVG redraw to avoid the
-"wires-only" render race).
+"wires-only" render race). Runs **through the apply queue as an `undo`**,
+scoped to the workspaces the snapshot writes to: a restore must not interleave
+with an apply in flight, and finishing it releases those flows rather than
+holding them. Every caller gets that from here — the per-message Restore
+button, the restore-point list, and Retry, which restores before re-asking.
+See [docs/en/design.md](./design.md#a-restore-is-an-apply-and-it-is-the-way-out-of-a-hold).
 
 ### `ui_core.js`
 
@@ -341,12 +366,13 @@ replace the workspace flow (with a deferred SVG redraw to avoid the
 |-----|---------|
 | `addMessageToUI(content, isUser, messageMeta?)` | Render message + import buttons; assistant messages show a `mode / model / 1.5s` badge. Also runs `annotateNodeReferences` on assistant messages so inline backtick'd node names become clickable, and ends with `refreshRetryButton()`. |
 | `refreshRetryButton()` | Move the single Retry button onto the last message in the panel, dropping every other copy. Retry always re-sends the **last** user prompt, so a button on an older message would lie about what it does; keeping placement in one pass — rather than at render time — is also what gives the button to a chat reloaded from history (rendered with no buttons at all before), to an `Error: …` reply, and to a turn the user stopped. Skipped while the `Generating...` placeholder is last, since there is nothing to retry yet. Called at the end of `addMessageToUI`, right after the placeholder is marked, and in the request's `finally` (the cancel path removes the placeholder without adding a reply). |
-| `formatMessage(text)` | `marked.parse` with XSS-safe pre-escape of `<` / `>`. |
+| `formatMessage(text)` | `marked.parse` with a renderer whose `html()` escapes raw HTML to text, then `sanitizeRenderedHtml`. The escape belongs to the renderer, not to the source text: pre-escaping `<` / `>` before parsing put `&lt;` inside code blocks, where marked escapes again and the reader is shown `&lt;`. A reply that is nothing but JSON is emitted as one `language-json` block instead — its indented lines are not prose. |
+| `collapseJsonBlocks(container)` | Fold each JSON code block into `<details class="json-collapsible">`, labelled `Vibe Schema JSON` / `Flow JSON (n nodes)` / `JSON`, and lift a schema's `description` out of the fold as prose. The block is read with `LLMJsonParser.parseJsonBlock`, so a reply the importer repaired folds too — labelled `(repaired)`, since the block then shows that reading and not the text the model sent. A block fenced as `json` that cannot be read at all still folds (`JSON (could not be read)`): a reply the model broke is the one a reader most needs out of the way. |
 | `annotateNodeReferences(rootEl, targetFlowIds?)` | Two-pass scan that makes node mentions clickable. **Pass 1**: every inline `<code>` (skipping `<pre>`-nested ones) is resolved via `LlmJsonParser.buildFlowLookup(...).resolve`; matches become `code.llm-node-ref` with a focus handler. **Pass 2**: walks the remaining text nodes (skipping `<code>/<pre>/<a>/<script>/<style>`) and replaces any token that exactly matches a known alias (length ≥ 3) — this catches plain-prose mentions when the LLM forgets to backtick. Both singleton aliases (`inject`, `debug`) and compound ones (`change_create_sensor_json`) are matched; sort-longest-first plus `\b` boundaries make sure `change_temperature_series` beats `change` on overlapping spans. Tabs are skipped; config nodes ARE included (they open the edit dialog on click). When `targetFlowIds` is provided, the alias map is rebuilt from `UI.getFlowsByIds(targetFlowIds)` — the exact same export the LLM saw — so numbered duplicate aliases (`change_2`, …) resolve back to the same node IDs. Without it, every node on the canvas is scanned. The system prompt also instructs the LLM to backtick node aliases, so Pass 1 is the primary path. |
 | `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)`. Notifies if the node has since been deleted. A single try/catch wraps the whole routine — focus is best-effort, so every failure has the same answer (stop and log). |
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
-| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions and groups — used by the rebuild/checkpoint callers, NOT by the LLM-context path, so the alias numbering the model sees is unchanged. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
+| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions **and** groups — for the rebuild/checkpoint callers. `opts.includeGroups` appends groups only: that is the LLM-context path, which has to see the boxes it may extend. Either way the alias numbering the model sees is unchanged, because the converter gives groups a map of their own ([§15](./design.md#15-a-flow-a-tab-and-a-group)); junctions would have to appear among the nodes, so they stay out. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
@@ -451,6 +477,17 @@ No chat history is sent — each request is stateless to the LLM.
   `src/*`) stay unauthenticated because `<script>` / `<link>` tags cannot
   send an auth header; they serve only the plugin's own published client
   code and `src/*` is restricted to `.js` / `.css` / `.json`.
+- **Reply rendering.** A reply is Markdown, rendered inside the editor, which
+  holds admin privileges — so raw HTML in it is text, never markup. That is
+  enforced in the renderer (`html()` escapes the token) rather than by
+  escaping `<` / `>` in the source text, which had the side effect of
+  double-escaping every entity a code block contained. Markdown's own link
+  and image syntax survives the renderer, so `sanitizeRenderedHtml` then
+  resolves each `href` / `src` **through the DOM** of an inert document and
+  drops any that is not `http(s)` / `mailto:` / `tel:` — resolving through
+  the DOM rather than matching a regex is what makes entity-encoded
+  `javascript:` no different from the plain spelling. There is deliberately
+  no fallback path: the only one available is the `innerHTML` this avoids.
 - API keys (OpenAI and Custom-endpoint) are stored encrypted in
   `<userDir>/llm-plugin/credentials.json` using AES-256-GCM, in a
   plugin-owned file so `cleanCredentials` can't strip them on deploy.

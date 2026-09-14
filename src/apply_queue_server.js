@@ -68,7 +68,7 @@ function createApplyQueue(RED) {
 
     function blockedReason(entry) {
         if (entry.state === 'granted') return null;
-        if (heldConflict(entry.targets)) return 'deploy';
+        if (!entry.undo && heldConflict(entry.targets)) return 'deploy';
         if (blockedByEarlier(entry)) return 'queue';
         return null;
     }
@@ -85,6 +85,15 @@ function createApplyQueue(RED) {
     function releaseHolds() {
         holds = {};
         holdAll = null;
+    }
+
+    // An undo (a restore) ends the hold on what it rewound: the canvas is back
+    // to what the runtime already has, so no deploy is owed for those flows.
+    // A blanket hold is left alone — an apply whose scope was unknown may have
+    // touched flows this restore says nothing about. See design.md §13.
+    function releaseHoldsFor(targets) {
+        if (targets.length === 0) { releaseHolds(); return; }
+        targets.forEach(function(id) { delete holds[id]; });
     }
 
     // Drop grants whose client never came back, and holds old enough that the
@@ -119,7 +128,9 @@ function createApplyQueue(RED) {
         for (let i = 0; i < entries.length; i++) {
             let e = entries[i];
             if (e.state !== 'waiting') continue;
-            if (heldConflict(e.targets)) continue;
+            // An undo is what ENDS a hold, so a hold cannot be what stops it.
+            // It still waits behind an earlier request for the same flows.
+            if (!e.undo && heldConflict(e.targets)) continue;
             if (blockedByEarlier(e)) continue;
             e.state = 'granted';
             e.grantedAt = now();
@@ -140,6 +151,7 @@ function createApplyQueue(RED) {
                     targets: e.targets.slice(),
                     queuedAt: e.queuedAt,
                     state: e.state,
+                    undo: !!e.undo,
                     blockedBy: blockedReason(e)
                 };
             }),
@@ -197,7 +209,10 @@ function createApplyQueue(RED) {
                 label: String(opts.label || 'Flow edit').slice(0, 120),
                 targets: normaliseTargets(opts.targetFlowIds),
                 queuedAt: new Date().toISOString(),
-                state: 'waiting'
+                state: 'waiting',
+                // A restore, not an edit: it gives a flow back to the state the
+                // runtime already has, rather than owing a deploy.
+                undo: !!opts.undo
             };
             entries.push(entry);
             settle();
@@ -206,14 +221,16 @@ function createApplyQueue(RED) {
 
         /**
          * The client has finished (or failed). A FAILED apply holds nothing:
-         * the importer rolled back, so no deploy is owed.
+         * the importer rolled back, so no deploy is owed. A successful UNDO
+         * releases instead of holding — see releaseHoldsFor.
          */
         complete: function(entryId, ok) {
             let i = entries.findIndex(function(e) { return e.id === entryId; });
             if (i === -1) return { ok: false, error: 'Unknown queue entry' };
             let entry = entries[i];
             entries.splice(i, 1);
-            if (ok) holdTargets(entry);
+            if (ok && entry.undo) releaseHoldsFor(entry.targets);
+            else if (ok) holdTargets(entry);
             return { ok: true, queue: settle() };
         },
 

@@ -74,6 +74,10 @@
         return !isConfigNode(node);
     }
 
+    function isGroupNode(node) {
+        return !!node && node.type === 'group';
+    }
+
     function isNoOutputType(type) {
         if (typeof type !== 'string') return false;
         if (_runtimeGetType) {
@@ -184,6 +188,10 @@
 
         nodes.forEach(function(node) {
             let alias = idToAlias[node.id];
+            // A group is a box around members, not a node with wires, so it
+            // goes in its own map (below) rather than into `nodes`. It keeps
+            // its alias from pass 1: the members name it, and it names them.
+            if (isGroupNode(node)) return;
 
             // Collect type-specific properties
             let props = {};
@@ -261,6 +269,21 @@
             connections: connections
         };
 
+        // Groups: `{ alias: { name?, nodes: [member aliases] } }`. A member the
+        // context does not carry is dropped rather than named by an id the LLM
+        // could not resolve.
+        let groups = {};
+        nodes.forEach(function(node) {
+            if (!isGroupNode(node)) return;
+            let entry = {};
+            if (node.name) entry.name = node.name;
+            entry.nodes = (Array.isArray(node.nodes) ? node.nodes : [])
+                .map(function(id) { return idToAlias[typeof id === 'string' ? id : (id && id.id)]; })
+                .filter(Boolean);
+            groups[idToAlias[node.id]] = entry;
+        });
+        if (Object.keys(groups).length > 0) result.groups = groups;
+
         if (opts.includeIdMap) {
             result._meta = { idToAlias: idToAlias };
         }
@@ -276,7 +299,12 @@
     // Vibe Schema → Node-RED nodes. `options.workspace` sets `z`; the layout
     // options fall back to LAYOUT_DEFAULTS.
     function toNodeRed(intermediate, options) {
-        if (!intermediate || !intermediate.nodes) return [];
+        if (!intermediate) return [];
+        // A schema may carry groups alone — "put these nodes in a group" names
+        // no node of its own.
+        let declaredNodes = (intermediate.nodes && typeof intermediate.nodes === 'object' &&
+                             !Array.isArray(intermediate.nodes)) ? intermediate.nodes : null;
+        if (!declaredNodes && groupSpecsOf(intermediate).length === 0) return [];
 
         let opts = options || {};
         let workspace      = opts.workspace || '';
@@ -291,8 +319,8 @@
         // Drop `null` entries early: they're deletion directives consumed by
         // the importer's flow-directives path, not nodes to assemble.
         let nodeSpecs = {};
-        Object.keys(intermediate.nodes).forEach(function(k) {
-            let spec = intermediate.nodes[k];
+        Object.keys(declaredNodes || {}).forEach(function(k) {
+            let spec = declaredNodes[k];
             if (spec === null) return;
             nodeSpecs[k] = spec;
         });
@@ -378,7 +406,9 @@
         })();
 
         let aliases = Object.keys(nodeSpecs);
-        if (aliases.length === 0) return [];
+        // Groups alone are still work to do; everything below tolerates
+        // there being no nodes.
+        if (aliases.length === 0 && groupSpecsOf(intermediate).length === 0) return [];
 
         // --- Generate real IDs ---
         let aliasToId = {};
@@ -888,7 +918,53 @@
             result.push(node);
         });
 
+        // --- Groups -----------------------------------------------------
+        // One box per declared group. The members are carried as the ALIAS
+        // list: an alias may name a node this schema adds or one already on
+        // the canvas, and only the importer knows the latter's id. The box
+        // (x / y / w / h) is fitted by CanvasLayout once the members have
+        // their final positions. See docs/{en,jp}/vibe-schema.md — Groups.
+        groupSpecsOf(intermediate).forEach(function(spec) {
+            let node = {
+                id: genId(),
+                type: 'group',
+                name: spec.name || '',
+                style: { label: true },
+                nodes: [],
+                x: 0, y: 0, w: 0, h: 0,
+                // A re-declared group keeps the name, membership and styling it
+                // already had; only what this schema states is the LLM's.
+                _llmSpecKeys: spec.named ? ['name'] : [],
+                _llmMembers: spec.members
+            };
+            if (workspace) node.z = workspace;
+            if (preserveAlias) node._llmAlias = spec.alias;
+            result.push(node);
+        });
+
         return result;
+    }
+
+    // `groups: { alias: { name?, nodes: [aliases] } }` → one spec per group,
+    // in declaration order. A `null` entry is a deletion directive, read by
+    // the parser's flow directives, not a group to build.
+    function groupSpecsOf(intermediate) {
+        let declared = intermediate && intermediate.groups;
+        if (!declared || typeof declared !== 'object' || Array.isArray(declared)) return [];
+        let out = [];
+        Object.keys(declared).forEach(function(alias) {
+            let spec = declared[alias];
+            if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return;
+            let members = Array.isArray(spec.nodes) ? spec.nodes
+                        : (Array.isArray(spec.members) ? spec.members : []);
+            out.push({
+                alias: alias,
+                name: (typeof spec.name === 'string') ? spec.name : '',
+                named: typeof spec.name === 'string',
+                members: members.filter(function(m) { return typeof m === 'string' && m.trim(); })
+            });
+        });
+        return out;
     }
 
     // ------------------------------------------------------------------ //
@@ -905,7 +981,12 @@
             obj.nodes !== null &&
             !Array.isArray(obj.nodes);
         let hasConnectionsArr = Array.isArray(obj.connections);
-        if (hasNodesObj || hasConnectionsArr) return true;
+        // Groups alone: "wrap these existing nodes in a group" names no node.
+        let hasGroupsObj =
+            typeof obj.groups === 'object' &&
+            obj.groups !== null &&
+            !Array.isArray(obj.groups);
+        if (hasNodesObj || hasConnectionsArr || hasGroupsObj) return true;
         let repo = obj.reposition || obj.relayout || obj.reflow;
         if (Array.isArray(repo)) return true;
         // A deletion-only reply. The prompt asks for the `nodes: {alias: null}`

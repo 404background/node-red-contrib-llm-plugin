@@ -287,6 +287,40 @@ async function scenarioListenersAreNotified() {
   ok(seen[seen.length - 1] === 1, 'with the entry count the panel renders');
 }
 
+// A restore is declared as an undo so the server can grant it despite a hold
+// — the rule is the server's, but it can only apply it if the flag gets there.
+async function scenarioRestoreIsDeclaredAsAnUndo() {
+  console.log('\nA restore asks for its turn as an undo');
+  const c = loadClient();
+  c.setResponse({ entryId: 'e1', state: 'granted', queue: stateWith([
+    { id: 'e1', clientId: c.Q._clientId(), source: 'sidebar', label: 'Restore flow',
+      targets: ['tabA'], state: 'granted', undo: true, blockedBy: null },
+  ]) });
+
+  const p = c.Q.enqueue({ label: 'Restore flow', targetFlowIds: ['tabA'], undo: true,
+    apply: function () { return { ok: true }; } });
+  await tick();
+
+  const req = c.posts.find((x) => /request$/.test(x.url));
+  ok(!!req && req.body.undo === true, 'the request says so');
+  ok(!!req && req.body.label === 'Restore flow', 'and names itself for the panel');
+
+  c.setResponse({ ok: true, queue: emptyState() });
+  await p;
+
+  // The default matters as much: an ordinary edit must never claim to be one.
+  const d = loadClient();
+  d.setResponse({ entryId: 'e2', state: 'granted', queue: stateWith([
+    { id: 'e2', clientId: d.Q._clientId(), source: 'sidebar', label: 'Import Flow',
+      targets: ['tabA'], state: 'granted', undo: false, blockedBy: null },
+  ]) });
+  const q = d.Q.enqueue({ targetFlowIds: ['tabA'], apply: function () { return { ok: true }; } });
+  await tick();
+  ok(d.posts[0].body.undo === false, 'an ordinary edit does not');
+  d.setResponse({ ok: true, queue: emptyState() });
+  await q;
+}
+
 async function run() {
   await scenarioWaitsForTheGrant();
   await scenarioGrantIsNotAppliedTwice();
@@ -296,6 +330,7 @@ async function run() {
   await scenarioRefusedRequestIsTagged();
   await scenarioConnectSubscribesAndSeeds();
   await scenarioListenersAreNotified();
+  await scenarioRestoreIsDeclaredAsAnUndo();
   summary();
 }
 

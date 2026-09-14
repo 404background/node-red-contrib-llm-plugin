@@ -56,8 +56,9 @@ User input
    ▼
 vibe_ui.js  ──POST /llm-plugin/generate──►  server.js ─► llm_core.js ─► Ollama / OpenAI / Custom
    │                                                          │
-   │   ┌── LLM context: getCurrentFlow(targets) → toIntermediate(Vibe Schema)
-   │   │   (junction/group NOT included = the alias numbering the model sees is unchanged)
+   │   ┌── LLM context: getCurrentFlow(targets, {includeGroups}) → toIntermediate(Vibe Schema)
+   │   │   (junctions NOT included; groups come as their own map, so the alias
+   │   │    numbering the model sees is unchanged either way — §15)
    ▼   ▼
 Response text (explanation + optionally a ```json``` Vibe Schema block)
    │
@@ -134,7 +135,7 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
   - Vibe Schema path → `_llmSpecKeys` (recorded at conversion time)
   - raw JSON path → keys whose value is not `undefined`
 - All other keys are restored from the existing node (`preserveUnmentionedProperties`).
-- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0.1) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — nothing else restores it (§12, "Where it declines").
+- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0.1) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — the group pass writes only the members a schema named (§15), so every other node's membership has to survive the merge (§12, "Where it declines").
 - **Reason**: Even when a normaliser fills in a default value (e.g. debug's `complete`), it must not overwrite a value the user set earlier. Guarantees "settings you didn't touch are preserved."
 
 ### 4.3 Node matching: exact-alias only, no fuzzy
@@ -445,9 +446,9 @@ panel rather than left to deadlock:
 - **A failed apply holds nothing.** The importer rolls back, so nothing was
   committed; holding its flows would make the next request wait for a deploy that
   has no reason to happen.
-- **An edit undone by hand, or a restored checkpoint**, ends the edit without a
-  deploy. **Release** clears the hold manually. A waiting request can also be
-  cancelled, and its caller is told rather than left hanging.
+- **An edit undone by hand** ends it without a deploy. **Release** clears the hold
+  manually. A waiting request can also be cancelled, and its caller is told rather
+  than left hanging.
 - **A browser that takes its turn and closes** would hold everyone up. A grant that
   is not completed within `GRANT_TIMEOUT_MS` expires, and a hold older than
   `HOLD_MAX_AGE_MS` is dropped as a backstop. The cost of being wrong about an
@@ -457,6 +458,36 @@ panel rather than left to deadlock:
 An apply with **no declared scope** (no flow context was selected) conflicts with
 everything in both directions: it may read or write any flow, and guessing otherwise
 is how an edit lands somewhere nobody looked.
+
+### A restore is an apply, and it is the way out of a hold
+Restore writes to the canvas exactly as an import does — the button under a message,
+the restore-point list, and **Retry**, which rewinds to the retried turn's checkpoint
+before re-asking. So it goes through the queue too: rewinding the canvas under an
+apply that is mid-flight is the same collision as two imports, and the queue is the
+only thing that can see it.
+
+But it is not another edit owing a deploy — it is the remedy. A restore is queued as
+an **undo**, and the two rules differ from an edit's on exactly two points:
+
+- **A hold cannot block it.** Ending that hold is what it is for. It still waits
+  behind an earlier request for the same flows.
+- **Completing it releases** the holds on the flows it rewound, instead of taking
+  new ones. Those flows now match what the runtime has, so no deploy is owed for
+  them. A restore that **failed** releases nothing, for the same reason a failed
+  apply holds nothing: the canvas did not change.
+
+Without this, Retry was the worst of both: it rewound the flow and then queued its
+new edit behind a deploy nobody was going to make, so from the user's side the canvas
+simply stopped changing. A **blanket** hold (an apply whose scope was unknown)
+survives a scoped restore — that apply may have touched flows the snapshot says
+nothing about — and the panel's Release is still the way out of one.
+
+- Regression tests: `test/apply_queue.test.js` for the server rules (an undo is
+  granted while the flow is held, still waits behind a running apply, releases only
+  the flows it names, and releases nothing when it failed) and
+  `test/restore_queue.test.js` for the importer: the turn is requested as an undo
+  with the snapshot's own flows as its scope, and **nothing is restored until the
+  turn is granted**.
 
 ### Saying that a turn is waiting
 Waiting is the normal outcome of the rule above, and from the outside it looks
@@ -490,3 +521,137 @@ an edit sits applied and undeployed, which the revision check cannot see.
   applied before the turn is granted, that a re-pushed grant does not apply twice,
   that a failure is still reported so the turn is given up, and that another editor's
   grant is not run locally.
+
+## 14. Two readings of a value the model broke
+
+A reply's JSON arrives with a quote missing, or one too many, far more often
+than it arrives truncated, so `llm_json_parser` repairs it rather than losing
+the whole reply. The quote repair reads a value the way a person would:
+everything from the opening quote up to the quote that is followed by a `,`,
+`}` or `]` is the value, and the quotes in between are escaped.
+
+That reading is right for a string. It is wrong for an expression.
+
+```
+"to": "WARN " & payload.line & "C",
+```
+
+The model meant the JSONata expression `"WARN " & payload.line & "C"`, whose
+own first and last characters are quotes. The repair reads those two as the
+value's delimiters and escapes the two in the middle, which yields valid JSON,
+a valid Vibe Schema, and an expression Node-RED rejects — the node imports and
+then reports a JSONata error. Nothing downstream can catch it, because by then
+the expression is just a string that happens not to parse.
+
+Both readings are real, so the parser does not prefer one on principle. It asks
+which one is an expression at all. In JSONata a string literal is glued to what
+surrounds it by an operator, so the code between two literals both starts and
+ends with one; split the value at each quote the repair escaped, and only one
+reading survives that test:
+
+| Value the repair produced | Read as written | Read as an expression |
+|---|---|---|
+| `WARN " & payload.line & "C` | `WARN ` is not code ✗ | `" & payload.line & "` — an operator at each end ✓ |
+| `payload.a & "x" & payload.b` | `payload.a & ` … ` & payload.b` ✓ | `x` is not code ✗ |
+
+When exactly one reading holds, the parser takes it and gives back whichever
+quote that reading says was the expression's own — the leading one, the
+trailing one, or both. When neither holds — the `f"text {var}"` in a function
+body, a sentence quoting a phrase — the value is left exactly as the repair
+produced it. A guess that could go either way is not made.
+
+The system prompt asks for single quotes in expression fields (`tot` / `vt` =
+`jsonata`) for the same reason: a JSONata literal written `'C'` needs no JSON
+escaping, which keeps most replies out of this path altogether.
+
+One more thing the repair has to know, because a single broken value sends the
+**whole** block through it: a string inside an **array** is a value, not a key.
+The repair decided that by looking back for a `:`, and inside `["a", "b"]` there
+is none — so each element was read as a key, whose end is a `:` rather than a
+`,`, and the commas were swallowed into the string. One malformed expression
+could therefore corrupt every `reposition` or group member list in the same
+reply. The container the cursor is in is now tracked, and a string inside an
+array is always a value.
+
+- Regression tests: `test/json_repair.test.js` — an expression keeps the quotes
+  of its own literals (both the case that loses two and the case that loses only
+  the trailing one); a concatenation and a ternary that already read correctly
+  are not re-quoted; the f-string inside a function body is still left alone.
+
+## 15. A flow, a tab, and a group
+
+Node-RED calls two different things a flow: a **tab**, and one **connected
+sequence** of nodes. Users mean both, often in the same sentence, and the
+ambiguity lands in the one place it does damage — "make me three flows in here"
+was read as three tabs, or as one chain with three branches, when what was asked
+for was three independent sequences side by side.
+
+So the schema takes a side. `flow` on a node is **always the tab label**; a
+sequence is a **group** — the box the editor draws around a set of nodes. A tab
+holds any number of unconnected sequences, and the layout already gives each its
+own band, so nothing had to change about the canvas: what was missing was a way
+to *say* which nodes belong to the same sequence, and an instruction not to wire
+separate sequences into one chain just because they were asked for together.
+
+Both halves are needed, and they fix different failures:
+
+- **The prompt** now states the distinction, tells the model to build that many
+  independent sequences when asked for several flows / sequences / pipelines /
+  groups, and to wrap each in its own group. Without this the model reached for
+  the shape it knows best — one chain from one trigger.
+- **The schema** grew `groups: { alias: { name, nodes: [aliases] } }`
+  ([vibe-schema.md](./vibe-schema.md#groups--a-flow-in-the-sequence-sense)).
+  A group is addressed by alias like a node, so a later turn edits the box it was
+  shown rather than adding a second one beside it.
+
+### Why membership is additive, and the box is ours
+
+Two decisions inside that are worth stating.
+
+**Membership is additive**, like wires (§4.1). The aliases a schema lists join
+the box; the members already in it stay. A partial re-declaration is the normal
+case — the model names the node it just added, not the six that were already
+there — and under replace semantics that would silently empty the group. Taking
+a node *out* of a box therefore needs the box deleted (`groups: { alias: null }`,
+which keeps the nodes) or a hand edit, which is the same trade the wire rule
+makes: additive by default, removal only when asked for explicitly.
+
+**The box is computed here, not by the editor.** Node-RED stores `x`/`y`/`w`/`h`
+on the group and recomputes them only when the user drags a member, so a group
+imported with an empty box is one the user sees empty. `CanvasLayout.fitGroups`
+fits it after the layout passes, with the editor's own 25px padding
+([layout.md](./layout.md#group-boxes)). The same pass is what keeps an existing
+box around members a layout pass moved — and it deliberately leaves a box the
+user made larger alone.
+
+A **caption joins the box it heads.** The padding is one row, so a comment
+anchored to the first member lands exactly on the top edge and reads as a stray
+label rather than a heading. Only a comment *this schema added*, and only into a
+group *this schema declared*, is pulled in — an existing comment would register
+as a membership change nobody asked for.
+
+Membership is also two-sided in the editor: `g` on the member, the id in the
+group's `nodes` list. Only the members a schema named get their `g` written — an
+existing group's own bookkeeping is not an unrelated edit's business, and
+"repairing" it would register as a change and send the whole apply down the
+rebuild path. A `g` naming a group that is no longer there is cleared, because
+that is what a deleted box leaves behind.
+
+### What the model sees
+
+The LLM context now carries groups (`includeGroups`), and `toIntermediate` emits
+them as their own map rather than as entries in `nodes`. That ordering matters:
+node aliases are then identical whether or not the context has boxes in it, so
+including groups cannot move the numbering the importer has to reproduce (§6).
+Junctions stay out of the context for exactly the reason groups no longer need
+to: they would have to appear among the nodes.
+
+- Regression tests: `test/group_schema.test.js` — a declared group becomes a box
+  around its members with both halves of membership set; a groups-only schema
+  boxes nodes that are already there; re-declaring a group adds to it instead of
+  emptying it, and keeps its name; deleting the box keeps the nodes and clears
+  their `g`; two sequences get two boxes that do not overlap; a new caption is
+  drawn inside the box it heads; and the context presents a group as a group
+  while leaving every node alias where it was. `test/json_repair.test.js` also
+  pins the array rule above, because a group's member list is exactly the kind
+  of array a broken expression elsewhere in the reply used to take down.

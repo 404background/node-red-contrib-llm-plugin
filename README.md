@@ -64,6 +64,7 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
 - **Forgiving import**: the flow in a reply is found whether it is fenced or not and whatever prose surrounds it.
 - **Edits are merges**: what the reply lists is added or updated, what it maps to `null` is deleted, and the rest of your flow is left alone — so a partial answer never rewrites the whole tab.
+- **Sequences as groups**: ask for several flows in one tab and you get several independent sequences, each wrapped in its own Node-RED group (`flow` in the schema always means the tab). Say "group" and you get a group.
 
 ## `llm-request` node
 

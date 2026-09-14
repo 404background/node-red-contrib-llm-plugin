@@ -131,6 +131,87 @@ function scenarioFirstComeFirstServed() {
   ok(entryFor(Q.state(), third.entryId).state === 'granted', 'and is granted after it');
 }
 
+// Restore, and the Retry button that restores before re-asking, are the way
+// OUT of a hold — so a hold cannot be what stops them. Without this the retry
+// rewound the flow and then queued its new edit behind a deploy nobody was
+// going to make, and the canvas simply never changed again.
+function scenarioRestoreIsNotBlockedByAHold() {
+  console.log('\nA restore runs while the flow is held, and ends the hold');
+  const { Q } = boot();
+
+  const edit = Q.request({ clientId: 'c1', source: 'sidebar', targetFlowIds: ['tabA'] });
+  Q.complete(edit.entryId, true);
+  ok(Q.state().heldFlows.indexOf('tabA') !== -1, 'the edit holds the flow');
+
+  const undo = Q.request({
+    clientId: 'c1', source: 'sidebar', label: 'Restore flow',
+    targetFlowIds: ['tabA'], undo: true,
+  });
+  ok(undo.state === 'granted', 'the restore is granted anyway (' + undo.state + ')');
+  ok(entryFor(Q.state(), undo.entryId).undo === true, 'and is marked as an undo');
+
+  Q.complete(undo.entryId, true);
+  ok(Q.state().heldFlows.indexOf('tabA') === -1,
+    'and the flow is no longer held — it is back to what the runtime has');
+
+  // The point of the whole exercise: the retried turn can now apply.
+  const retried = Q.request({ clientId: 'c1', targetFlowIds: ['tabA'] });
+  ok(retried.state === 'granted', 'so the edit that follows it is granted (' + retried.state + ')');
+}
+
+function scenarioRestoreStillTakesItsTurn() {
+  console.log('\nA restore still waits behind an apply already running');
+  const { Q } = boot();
+
+  // Granted, not completed: an apply in flight. Rewinding the canvas
+  // underneath it is exactly the interleaving the queue exists to prevent.
+  const running = Q.request({ clientId: 'c1', targetFlowIds: ['tabA'] });
+  ok(running.state === 'granted', 'the first apply is running');
+
+  const undo = Q.request({
+    clientId: 'c2', label: 'Restore flow', targetFlowIds: ['tabA'], undo: true,
+  });
+  ok(undo.state === 'waiting', 'the restore waits (' + undo.state + ')');
+  ok(entryFor(Q.state(), undo.entryId).blockedBy === 'queue',
+    'for the request ahead of it, not for a deploy (' +
+      entryFor(Q.state(), undo.entryId).blockedBy + ')');
+
+  Q.complete(running.entryId, true);
+  ok(entryFor(Q.state(), undo.entryId).state === 'granted',
+    'and goes as soon as that one is done, hold or no hold');
+}
+
+function scenarioFailedRestoreLeavesTheHold() {
+  console.log('\nA restore that failed releases nothing');
+  const { Q } = boot();
+
+  const edit = Q.request({ clientId: 'c1', targetFlowIds: ['tabA'] });
+  Q.complete(edit.entryId, true);
+
+  const undo = Q.request({ clientId: 'c1', targetFlowIds: ['tabA'], undo: true });
+  Q.complete(undo.entryId, false);
+  ok(Q.state().heldFlows.indexOf('tabA') !== -1,
+    'the flow is still held: nothing was rewound, so the deploy is still owed');
+}
+
+function scenarioRestoreReleasesOnlyItsOwnFlows() {
+  console.log('\nA restore releases only the flows it rewound');
+  const { Q } = boot();
+
+  const a = Q.request({ clientId: 'c1', targetFlowIds: ['tabA'] });
+  Q.complete(a.entryId, true);
+  const b = Q.request({ clientId: 'c1', targetFlowIds: ['tabB'] });
+  Q.complete(b.entryId, true);
+
+  const undo = Q.request({ clientId: 'c1', targetFlowIds: ['tabA'], undo: true });
+  Q.complete(undo.entryId, true);
+
+  const held = Q.state().heldFlows;
+  ok(held.indexOf('tabA') === -1, 'tabA was restored, so it is released');
+  ok(held.indexOf('tabB') !== -1,
+    'tabB still owes a deploy — its edit is untouched (' + held.join(',') + ')');
+}
+
 // A failed apply commits nothing (the importer rolls back), so holding its
 // flows would make the next request wait for a deploy that has no reason to
 // happen — the queue would wedge on an error.
@@ -263,6 +344,10 @@ function run() {
   scenarioSameFlowWaitsForDeploy();
   scenarioDeployFromAnywhereReleases();
   scenarioFirstComeFirstServed();
+  scenarioRestoreIsNotBlockedByAHold();
+  scenarioRestoreStillTakesItsTurn();
+  scenarioFailedRestoreLeavesTheHold();
+  scenarioRestoreReleasesOnlyItsOwnFlows();
   scenarioFailedApplyHoldsNothing();
   scenarioUnknownScopeIsConservative();
   scenarioCancelAndRelease();

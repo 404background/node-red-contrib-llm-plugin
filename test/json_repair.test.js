@@ -95,9 +95,109 @@ function scenarioUnescapedQuotesStillRepaired() {
     'with the quoted text intact');
 }
 
+function scenarioJsonataKeepsItsOwnQuotes() {
+  console.log('\nA JSONata expression keeps the quotes of its own literals');
+  // The repair reads a value as "everything between the first quote and the
+  // last one", which for an expression eats the delimiters of its first and
+  // last string literal — and Node-RED then rejects the expression. Both
+  // readings parse as JSON; only one of them is JSONata.
+  const s = schema([
+    '{',
+    '  "nodes": {',
+    '    "change_warn": {',
+    '      "type": "change",',
+    '      "name": "format warning",',
+    '      "props": { "rules": [{',
+    '        "t": "set", "p": "payload.summary", "pt": "msg",',
+    '        "to": "WARN " & payload.line & " over " & $string(payload.temp) & "C",',
+    '        "tot": "jsonata"',
+    '      }] }',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n'));
+
+  const to = s && s.nodes.change_warn.props.rules[0].to;
+  ok(!!s, 'the schema is recovered');
+  ok(to === '"WARN " & payload.line & " over " & $string(payload.temp) & "C"',
+    'and the expression is whole, outer quotes included (' + JSON.stringify(to) + ')');
+
+  // The other half of the same mistake: here it is only the LAST literal's
+  // closing quote that the repair read as the end of the value.
+  const t = schema([
+    '{',
+    '  "nodes": {',
+    '    "change_suffix": {',
+    '      "type": "change",',
+    '      "props": { "rules": [{ "t": "set", "p": "payload.x", "pt": "msg",',
+    '        "to": "payload.a & "-suffix", "tot": "jsonata" }] }',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n'));
+  const suffix = t && t.nodes.change_suffix.props.rules[0].to;
+  ok(suffix === 'payload.a & "-suffix"',
+    'the trailing literal is closed again (' + JSON.stringify(suffix) + ')');
+}
+
 // ------------------------------------------------------------------ //
 //  Not guessed at                                                     //
 // ------------------------------------------------------------------ //
+
+function scenarioUnambiguousExpressionsAreLeftAlone() {
+  console.log('\nAn expression that already reads correctly is not re-quoted');
+  // Each of these is the OTHER reading: the value starts outside a literal,
+  // so what the repair produced is already the expression the model meant.
+  const s = schema([
+    '{',
+    '  "nodes": {',
+    '    "change_concat": {',
+    '      "type": "change",',
+    '      "props": { "rules": [{ "t": "set", "p": "payload.x", "pt": "msg",',
+    '        "to": "payload.a & "-" & payload.b", "tot": "jsonata" }] }',
+    '    },',
+    '    "change_ternary": {',
+    '      "type": "change",',
+    '      "props": { "rules": [{ "t": "set", "p": "payload.s", "pt": "msg",',
+    '        "to": "payload.t >= 85 ? "alert" : "ok"", "tot": "jsonata" }] }',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n'));
+
+  ok(!!s, 'the schema is recovered');
+  ok(!!s && s.nodes.change_concat.props.rules[0].to === 'payload.a & "-" & payload.b',
+    'a concatenation keeps its shape (' +
+    (s && JSON.stringify(s.nodes.change_concat.props.rules[0].to)) + ')');
+  ok(!!s && s.nodes.change_ternary.props.rules[0].to === 'payload.t >= 85 ? "alert" : "ok"',
+    'and so does a ternary (' +
+    (s && JSON.stringify(s.nodes.change_ternary.props.rules[0].to)) + ')');
+}
+
+function scenarioArrayOfStringsSurvivesTheRepair() {
+  console.log('\nAn array of strings is not read as a row of keys');
+  // One broken value sends the WHOLE block through the quote repair, and the
+  // repair used to decide "key or value" by looking back for a `:`. Inside an
+  // array there is none, so every element was read as a key — whose end is a
+  // `:`, not a `,` — and the commas were swallowed into the string.
+  const s = schema([
+    '{',
+    '  "nodes": {',
+    '    "change_warn": { "type": "change", "props": { "rules": [{ "t": "set",',
+    '      "p": "payload.s", "pt": "msg", "to": "WARN " & payload.line, "tot": "jsonata" }] } }',
+    '  },',
+    '  "groups": { "group_seq": { "name": "Seq", "nodes": ["change_warn", "debug_out"] } },',
+    '  "reposition": ["change_warn", "debug_out"]',
+    '}',
+  ].join('\n'));
+
+  ok(!!s, 'the schema is recovered');
+  const members = s && s.groups && s.groups.group_seq && s.groups.group_seq.nodes;
+  ok(Array.isArray(members) && members.length === 2,
+    'the group still lists two members (' + JSON.stringify(members) + ')');
+  ok(Array.isArray(s && s.reposition) && s.reposition.length === 2,
+    'and reposition still lists two aliases (' + JSON.stringify(s && s.reposition) + ')');
+}
 
 function scenarioValidJsonIsUntouched() {
   console.log('\nValid JSON is never "repaired"');
@@ -148,9 +248,42 @@ function scenarioRepairedBlockIsNotReportedAsFailed() {
     'diagnose agrees with the parser, so no warning contradicts a successful import');
 }
 
+// ------------------------------------------------------------------ //
+//  The sidebar's own reading of a block                               //
+// ------------------------------------------------------------------ //
+
+function scenarioParseJsonBlockReportsTheRepair() {
+  console.log('\nparseJsonBlock reads a block the way the import will');
+  // The sidebar folds a JSON block into <details> on this. Reading it any
+  // more strictly than the importer does is how a reply the plugin went on
+  // to import correctly was left unfoldable, filling the panel.
+  const clean = P.parseJsonBlock('{ "nodes": { "debug_out": { "type": "debug" } } }');
+  ok(!!clean && clean.repaired === false, 'valid JSON is read as written');
+  ok(!!clean && clean.value.nodes.debug_out.type === 'debug', 'and parsed');
+
+  const broken = P.parseJsonBlock([
+    '{ "nodes": { "change_warn": { "type": "change", "props": { "rules": [',
+    '  { "t": "set", "p": "payload.s", "pt": "msg",',
+    '    "to": "WARN " & payload.line & "!", "tot": "jsonata" }',
+    '] } } } }',
+  ].join('\n'));
+  ok(!!broken && broken.repaired === true, 'a block that needed repair says so');
+  ok(!!broken && broken.value.nodes.change_warn.props.rules[0].to ===
+    '"WARN " & payload.line & "!"', 'and carries the repaired value (' +
+    (broken && JSON.stringify(broken.value.nodes.change_warn.props.rules[0].to)) + ')');
+
+  ok(P.parseJsonBlock('{ "nodes": { "inject_a": { "type": ') === null,
+    'a block beyond repair reads as nothing');
+  ok(P.parseJsonBlock('not json at all') === null, 'and so does prose');
+}
+
+scenarioParseJsonBlockReportsTheRepair();
 scenarioUnterminatedStringBeforeComma();
 scenarioMultiLineStringIsEscaped();
 scenarioUnescapedQuotesStillRepaired();
+scenarioJsonataKeepsItsOwnQuotes();
+scenarioUnambiguousExpressionsAreLeftAlone();
+scenarioArrayOfStringsSurvivesTheRepair();
 scenarioValidJsonIsUntouched();
 scenarioBeyondRepairIsReported();
 scenarioRepairedBlockIsNotReportedAsFailed();

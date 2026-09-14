@@ -36,31 +36,36 @@
         return holder.innerHTML;
     }
 
+    // Raw HTML in a reply is text, not markup. Escaping it here rather than in
+    // the source text is what keeps marked's own escaping of code off it: a
+    // pre-escaped `&gt;` came back out of a code block as a visible `&gt;`.
+    let _renderer = null;
+    function markdownRenderer() {
+        if (_renderer || typeof marked.Renderer !== 'function') return _renderer;
+        _renderer = new marked.Renderer();
+        _renderer.html = function(token) {
+            return escapeHtml((token && token.text) || '');
+        };
+        return _renderer;
+    }
+
     function formatMessage(text) {
         // Run with marked.js (assumed present in modern Node-RED environments)
         if (typeof marked !== 'undefined' && marked.parse) {
             let raw = String(text || '').trim();
-            if (raw && (raw.charAt(0) === '{' || raw.charAt(0) === '[')) {
-                try {
-                    let parsedRaw = JSON.parse(raw);
-                    if (parsedRaw && typeof parsedRaw === 'object') {
-                        let descHtml = '';
-                        let displayObj = parsedRaw;
-                        if (parsedRaw.nodes && parsedRaw.connections &&
-                            parsedRaw.description && typeof parsedRaw.description === 'string') {
-                            descHtml = '<p>' + escapeHtml(parsedRaw.description) + '</p>';
-                            displayObj = JSON.parse(JSON.stringify(parsedRaw));
-                            delete displayObj.description;
-                        }
-                        return descHtml + '<pre><code class="language-json">' +
-                            escapeHtml(JSON.stringify(displayObj, null, 2)) +
-                            '</code></pre>';
-                    }
-                } catch (e) { /* not raw JSON */ }
+            // A reply that is nothing but JSON: its indented lines are not
+            // prose, so it goes to collapseJsonBlocks as one block instead.
+            if (raw.charAt(0) === '{' || raw.charAt(0) === '[') {
+                let read = Parser.parseJsonBlock(raw);
+                if (read && read.value && typeof read.value === 'object') {
+                    return '<pre><code class="language-json">' +
+                        escapeHtml(raw) + '</code></pre>';
+                }
             }
 
-            let safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            let html = marked.parse(safeText);
+            let renderer = markdownRenderer();
+            let html = renderer ? marked.parse(raw, { renderer: renderer })
+                                : marked.parse(raw.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
             return sanitizeRenderedHtml(html);
         }
 
@@ -185,8 +190,10 @@
                     let p = node.parentNode;
                     while (p && p !== rootEl) {
                         let tag = p.tagName;
+                        // SUMMARY too: a node ref found in a fold's label would
+                        // swallow the click that opens it.
                         if (tag === 'CODE' || tag === 'PRE' || tag === 'A' ||
-                            tag === 'SCRIPT' || tag === 'STYLE') {
+                            tag === 'SUMMARY' || tag === 'SCRIPT' || tag === 'STYLE') {
                             return NodeFilter.FILTER_REJECT;
                         }
                         p = p.parentNode;
@@ -312,41 +319,59 @@
         return Array.isArray(ids) ? ids : null;
     }
 
-    function jsonBlockSummary(parsed) {
-        if (Converter.isVibeSchema(parsed)) return 'Vibe Schema JSON';
-        if (Array.isArray(parsed)) return 'Flow JSON (' + parsed.length + ' nodes)';
-        return 'JSON';
+    function jsonBlockSummary(parsed, repaired) {
+        let label = 'JSON';
+        if (Converter.isVibeSchema(parsed)) label = 'Vibe Schema JSON';
+        else if (Array.isArray(parsed)) label = 'Flow JSON (' + parsed.length + ' nodes)';
+        // Say so: the block below is then the repaired reading, not the text
+        // the model sent, and that is what the import will use.
+        return repaired ? label + ' (repaired)' : label;
     }
 
-    // Fold JSON replies into <details> so the prose around them stays readable.
-    function collapseJsonBlocks(container) {
-        let codeBlocks = container.querySelectorAll('pre');
-        for (let i = 0; i < codeBlocks.length; i++) {
-            let pre = codeBlocks[i];
-            let codeEl = pre.querySelector('code') || pre;
-            let parsed;
-            try { parsed = JSON.parse(codeEl.textContent || ''); }
-            catch (e) { continue; } // not JSON — leave as-is
-            if (!parsed || typeof parsed !== 'object' || !pre.parentNode) continue;
+    // Fold a JSON block into <details> so the prose around it stays readable.
+    // It folds on the same reading the importer uses, repairs included — a
+    // block the model broke is the one a reader most needs to get out of the
+    // way, so a `json` block that cannot be read at all folds too.
+    function foldJsonBlock(pre) {
+        let codeEl = pre.querySelector('code') || pre;
+        let text = codeEl.textContent || '';
+        let labelled = codeEl.classList && codeEl.classList.contains('language-json');
+        if (!labelled && !/^\s*[[{]/.test(text)) return;
 
+        let read = Parser.parseJsonBlock(text);
+        let parsed = read && read.value;
+        let summaryText;
+        if (parsed && typeof parsed === 'object') {
+            let display = parsed;
             // A description inside the JSON is prose, so lift it out of the
             // block the reader would have to expand to find it.
             if (Converter.isVibeSchema(parsed) && typeof parsed.description === 'string') {
                 let descPara = document.createElement('p');
                 descPara.textContent = parsed.description;
                 pre.parentNode.insertBefore(descPara, pre);
-                let display = JSON.parse(JSON.stringify(parsed));
+                display = JSON.parse(JSON.stringify(parsed));
                 delete display.description;
-                codeEl.textContent = JSON.stringify(display, null, 2);
             }
+            codeEl.textContent = JSON.stringify(display, null, 2);
+            summaryText = jsonBlockSummary(parsed, read.repaired);
+        } else {
+            if (!labelled) return;
+            summaryText = 'JSON (could not be read)';
+        }
 
-            let summary = document.createElement('summary');
-            summary.textContent = jsonBlockSummary(parsed);
-            let details = document.createElement('details');
-            details.className = 'json-collapsible';
-            pre.parentNode.insertBefore(details, pre);
-            details.appendChild(summary);
-            details.appendChild(pre);
+        let summary = document.createElement('summary');
+        summary.textContent = summaryText;
+        let details = document.createElement('details');
+        details.className = 'json-collapsible';
+        pre.parentNode.insertBefore(details, pre);
+        details.appendChild(summary);
+        details.appendChild(pre);
+    }
+
+    function collapseJsonBlocks(container) {
+        let codeBlocks = container.querySelectorAll('pre');
+        for (let i = 0; i < codeBlocks.length; i++) {
+            if (codeBlocks[i].parentNode) foldJsonBlock(codeBlocks[i]);
         }
     }
 
@@ -610,12 +635,17 @@
                 });
             });
 
-            // filterNodes returns neither, so a caller that will REBUILD the
-            // flow has to opt in. The LLM-context path stays out: it would
-            // change the alias numbering the model sees.
-            if (opts && opts.includeCanvasExtras) {
+            // filterNodes returns neither, so a caller has to opt in.
+            // `includeCanvasExtras` (junctions AND groups) is for a caller that
+            // will REBUILD the flow; `includeGroups` is the LLM-context path,
+            // which needs to see the boxes it may extend but not junctions.
+            // Groups leave node aliases alone either way — the converter gives
+            // them a map of their own. See docs/{en,jp}/vibe-schema.md.
+            if (opts && (opts.includeCanvasExtras || opts.includeGroups)) {
+                let withJunctions = !!(opts && opts.includeCanvasExtras);
                 ids.forEach(function(zid) {
-                    let extras = (RED.nodes.junctions(zid) || []).concat(RED.nodes.groups(zid) || []);
+                    let extras = withJunctions ? (RED.nodes.junctions(zid) || []) : [];
+                    extras = extras.concat(RED.nodes.groups(zid) || []);
                     extras.forEach(function(node) {
                         if (node && node.id && !seenIds[node.id]) {
                             seenIds[node.id] = true;

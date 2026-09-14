@@ -24,7 +24,8 @@
         nodeHeight:    30,    // Node-RED's standard rendered node height
         gridSize:      20,
         maxColumns:     5,
-        topMargin:     20     // min clearance between canvas top (y=0) and the topmost node edge
+        topMargin:     20,    // min clearance between canvas top (y=0) and the topmost node edge
+        groupPadding:  25     // the editor's own clearance between a group's box and its members
     };
 
     // Default predicate when caller doesn't supply `options.isCanvasNode`.
@@ -1141,6 +1142,95 @@
         return nodes;
     }
 
+    // ------------------------------------------------------------------ //
+    //  Group boxes                                                        //
+    // ------------------------------------------------------------------ //
+
+    // A group's box is STORED on the group (x / y / w / h) and the editor only
+    // recomputes it when the user drags a member, so whoever moves the members
+    // owns the box. See docs/{en,jp}/layout.md — Group boxes.
+
+    // Edges of one member: a node is centred on x / y, a nested group's x / y
+    // is its top-left corner. Null when it has no usable position.
+    function memberEdges(member, opts, nodeHeight) {
+        if (!member || typeof member.x !== 'number' || typeof member.y !== 'number') return null;
+        if (member.type === 'group') {
+            let w = (typeof member.w === 'number' && member.w > 0) ? member.w : 0;
+            let h = (typeof member.h === 'number' && member.h > 0) ? member.h : 0;
+            if (w === 0 || h === 0) return null;   // not fitted yet
+            return { minX: member.x, minY: member.y, maxX: member.x + w, maxY: member.y + h };
+        }
+        let w = getNodeWidth(member, opts);
+        let h = (typeof member.h === 'number' && member.h > 0) ? member.h : nodeHeight;
+        return {
+            minX: member.x - w / 2, minY: member.y - h / 2,
+            maxX: member.x + w / 2, maxY: member.y + h / 2
+        };
+    }
+
+    function membersBBox(group, byId, opts, nodeHeight) {
+        let ids = Array.isArray(group.nodes) ? group.nodes : [];
+        let box = null;
+        ids.forEach(function(id) {
+            let edges = memberEdges(byId[id], opts, nodeHeight);
+            if (!edges) return;
+            if (!box) { box = edges; return; }
+            box.minX = Math.min(box.minX, edges.minX);
+            box.minY = Math.min(box.minY, edges.minY);
+            box.maxX = Math.max(box.maxX, edges.maxX);
+            box.maxY = Math.max(box.maxY, edges.maxY);
+        });
+        return box;
+    }
+
+    // How deep a group sits inside other groups, so the inner boxes are fitted
+    // before the outer one that has to contain them.
+    function groupDepth(group, byId) {
+        let depth = 0;
+        let parent = byId[group.g];
+        while (parent && parent.type === 'group' && depth < 32) {
+            depth++;
+            parent = byId[parent.g];
+        }
+        return depth;
+    }
+
+    // Refit every group box that no longer holds its members — a new group has
+    // no box at all, and a layout pass moves members out of the box they had.
+    // A box the user made LARGER than it needs to be is left alone: it still
+    // contains everything, and its size is their decision.
+    function fitGroups(nodes, options) {
+        let opts = options || {};
+        let pad = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+
+        let byId = {};
+        let groups = [];
+        (nodes || []).forEach(function(n) {
+            if (!n || !n.id) return;
+            byId[n.id] = n;
+            if (n.type === 'group') groups.push(n);
+        });
+        if (groups.length === 0) return nodes;
+
+        groups.sort(function(a, b) { return groupDepth(b, byId) - groupDepth(a, byId); });
+        groups.forEach(function(g) {
+            let box = membersBBox(g, byId, opts, nodeHeight);
+            if (!box) return;
+            let fitted = typeof g.x === 'number' && typeof g.y === 'number' &&
+                         typeof g.w === 'number' && g.w > 0 &&
+                         typeof g.h === 'number' && g.h > 0;
+            if (fitted &&
+                g.x <= box.minX && g.y <= box.minY &&
+                g.x + g.w >= box.maxX && g.y + g.h >= box.maxY) return;
+            g.x = box.minX - pad;
+            g.y = box.minY - pad;
+            g.w = (box.maxX - box.minX) + pad * 2;
+            g.h = (box.maxY - box.minY) + pad * 2;
+        });
+        return nodes;
+    }
+
     return {
         LAYOUT_DEFAULTS:              LAYOUT_DEFAULTS,
         estimateNodeWidth:            estimateNodeWidth,
@@ -1150,6 +1240,7 @@
         reflowCanvasNodes:            reflowCanvasNodes,
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,
-        applyCommentAnchors:          applyCommentAnchors
+        applyCommentAnchors:          applyCommentAnchors,
+        fitGroups:                    fitGroups
     };
 });
