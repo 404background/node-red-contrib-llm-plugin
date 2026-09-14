@@ -1,6 +1,7 @@
 // Canvas Layout - standalone layout engine for Node-RED node arrays.
 // Public API: layoutNodes, reflowCanvasNodes, placeAddedNodesNearNeighbors,
-// estimateNodeWidth, getNodeWidth, pairSpacing. See docs/{en,jp}/layout.md.
+// fitGroups, getNodeWidth, and the two passes the converter shares
+// (computeComponentYOffsets, computeLeftEdges). See docs/{en,jp}/layout.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -233,6 +234,47 @@
             nextY = nextY + (c.maxRow - c.minRow) * rowPitch + compStep;
         });
         return offsets;
+    }
+
+    // Per-predecessor left edges, NOT shared column widths: each key sits
+    // `edgeGap` right of `max(pred.rightEdge)`, roots at `startX`. Column 0
+    // and branch siblings still align, but a wide label in one chain no
+    // longer drags a parallel chain right.
+    //
+    // Keyed by whatever the caller uses — node ids here, aliases in the
+    // converter, which has no ids yet. Both have to produce the same
+    // coordinates, so they run the same pass rather than two copies of it.
+    // See docs/{en,jp}/layout.md — Width-aware spacing.
+    function computeLeftEdges(keys, positions, incoming, widthOf, startX, edgeGap) {
+        let leftEdges = {};
+        let buckets = {};
+        keys.forEach(function(key) {
+            let ci = (positions[key] || {}).comp || 0;
+            (buckets[ci] = buckets[ci] || []).push(key);
+        });
+        Object.keys(buckets).forEach(function(ci) {
+            let ordered = buckets[ci].slice().sort(function(a, b) {
+                let pa = positions[a] || { col: 0, row: 0 };
+                let pb = positions[b] || { col: 0, row: 0 };
+                return (pa.col - pb.col) || (pa.row - pb.row);
+            });
+            ordered.forEach(function(key) {
+                let preds = (incoming[key] || []).filter(function(p) {
+                    return leftEdges[p] !== undefined;
+                });
+                if (preds.length === 0) {
+                    leftEdges[key] = startX;
+                    return;
+                }
+                let maxRight = -Infinity;
+                preds.forEach(function(p) {
+                    let r = leftEdges[p] + widthOf(p);
+                    if (r > maxRight) maxRight = r;
+                });
+                leftEdges[key] = maxRight + edgeGap;
+            });
+        });
+        return leftEdges;
     }
 
     function resolveCanvasFilter(opts) {
@@ -586,40 +628,9 @@
         let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
         let incoming = adj.incoming;
 
-        // Per-predecessor left edges, NOT shared column widths: each node
-        // sits `edgeGap` right of `max(pred.rightEdge)`, roots at `startX`.
-        // Column 0 and branch siblings still align, but a wide label in one
-        // chain no longer drags a parallel chain right.
-        let leftEdgeById = {};
-        let compBuckets = {};
-        ids.forEach(function(id) {
-            let ci = (positions[id] || {}).comp || 0;
-            (compBuckets[ci] = compBuckets[ci] || []).push(id);
-        });
-        Object.keys(compBuckets).forEach(function(ci) {
-            let compIds = compBuckets[ci].slice().sort(function(a, b) {
-                let pa = positions[a] || { col: 0, row: 0 };
-                let pb = positions[b] || { col: 0, row: 0 };
-                return (pa.col - pb.col) || (pa.row - pb.row);
-            });
-            compIds.forEach(function(id) {
-                let preds = (incoming[id] || []).filter(function(p) {
-                    return leftEdgeById[p] !== undefined;
-                });
-                let leftEdge;
-                if (preds.length === 0) {
-                    leftEdge = startX;
-                } else {
-                    let maxRight = -Infinity;
-                    preds.forEach(function(p) {
-                        let r = leftEdgeById[p] + getNodeWidth(byId[p], opts);
-                        if (r > maxRight) maxRight = r;
-                    });
-                    leftEdge = maxRight + edgeGap;
-                }
-                leftEdgeById[id] = leftEdge;
-            });
-        });
+        let leftEdgeById = computeLeftEdges(ids, positions, incoming, function(id) {
+            return getNodeWidth(byId[id], opts);
+        }, startX, edgeGap);
 
         let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight);
 
@@ -1237,6 +1248,7 @@
         getNodeWidth:                 getNodeWidth,
         layoutNodes:                  layoutNodes,
         computeComponentYOffsets:     computeComponentYOffsets,
+        computeLeftEdges:             computeLeftEdges,
         reflowCanvasNodes:            reflowCanvasNodes,
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,

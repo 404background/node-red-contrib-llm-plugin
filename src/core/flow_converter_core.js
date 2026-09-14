@@ -756,45 +756,19 @@
             canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap, nodeHeight
         );
 
-        // Per-predecessor left edges, mirroring the matching pass in
-        // CanvasLayout.reflowCanvasNodes so that converting and then
-        // reflowing yields the same coordinates.
+        // The same pass reflowCanvasNodes runs, keyed by alias because there
+        // are no ids yet — converting and then reflowing has to land on the
+        // same coordinates.
         let nodeWidthByAlias = {};
         canvasAliases.forEach(function(alias) {
             let spec = nodeSpecs[alias];
             let probe = { type: spec.type, name: spec.name || '' };
             nodeWidthByAlias[alias] = CanvasLayout.getNodeWidth(probe, opts);
         });
-        let leftEdgeByAlias = {};
-        let compBuckets = {};
-        canvasAliases.forEach(function(alias) {
-            let ci = (layout[alias] || {}).comp || 0;
-            (compBuckets[ci] = compBuckets[ci] || []).push(alias);
-        });
-        Object.keys(compBuckets).forEach(function(ci) {
-            let compAliases = compBuckets[ci].slice().sort(function(a, b) {
-                let pa = layout[a] || { col: 0, row: 0 };
-                let pb = layout[b] || { col: 0, row: 0 };
-                return (pa.col - pb.col) || (pa.row - pb.row);
-            });
-            compAliases.forEach(function(alias) {
-                let preds = (incoming[alias] || []).filter(function(p) {
-                    return leftEdgeByAlias[p] !== undefined;
-                });
-                let leftEdge;
-                if (preds.length === 0) {
-                    leftEdge = startX;
-                } else {
-                    let maxRight = -Infinity;
-                    preds.forEach(function(p) {
-                        let r = leftEdgeByAlias[p] + (nodeWidthByAlias[p] || 0);
-                        if (r > maxRight) maxRight = r;
-                    });
-                    leftEdge = maxRight + edgeGap;
-                }
-                leftEdgeByAlias[alias] = leftEdge;
-            });
-        });
+        let leftEdgeByAlias = CanvasLayout.computeLeftEdges(
+            canvasAliases, layout, incoming,
+            function(alias) { return nodeWidthByAlias[alias] || 0; },
+            startX, edgeGap);
 
         // --- Assemble Node-RED nodes ---
         let result = [];

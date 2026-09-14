@@ -5,6 +5,7 @@
 // scenario captures are the point of that suite.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vm = require('vm');
 
@@ -69,12 +70,13 @@ function fence(obj) {
 
 // A FRESH context per scenario — the client modules hold singletons.
 // → the sandbox's `window.LLMPlugin`
-function loadPluginSandbox(RED) {
+function loadPluginSandbox(RED, opts) {
   const sandbox = {
     console: { log() {}, warn() {}, error() {} },
     setTimeout,
     requestAnimationFrame: (cb) => cb(),
-    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+    fetch: (opts && opts.fetch) ||
+      (() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
     document: {
       getElementById: () => null,
       querySelectorAll: () => [],
@@ -89,6 +91,22 @@ function loadPluginSandbox(RED) {
     vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
   }
   return sandbox.window.LLMPlugin;
+}
+
+// The runtime side has a mock too, for the modules that only need to be
+// constructed: llm_core and the llm-request node. `userDir` defaults to the
+// OS temp dir so a suite never writes to the developer's own Node-RED
+// directory; pass `userDir: null` for llm_core's memory-only mode.
+function coreRED(settings) {
+  return {
+    nodes: { createNode() {}, registerType() {} },
+    settings: Object.assign({
+      userDir: os.tmpdir(),
+      get: () => undefined,
+      set: () => Promise.resolve(),
+    }, settings || {}),
+    log: { info() {}, warn() {}, error() {} },
+  };
 }
 
 // ------------------------------------------------------------------ //
@@ -334,5 +352,5 @@ function buildEditorMock(opts) {
 module.exports = {
   ROOT,
   ok, assert, it, describe, summary,
-  clone, fence, loadPluginSandbox, buildEditorMock,
+  clone, fence, loadPluginSandbox, buildEditorMock, coreRED,
 };

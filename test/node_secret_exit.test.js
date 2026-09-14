@@ -10,7 +10,7 @@ const http = require('http');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { ROOT, ok, summary } = require('./helpers.js');
+const { ROOT, ok, summary, coreRED } = require('./helpers.js');
 
 const KEY = 'f3a91c4e-77bd-4a2e-9c10-8de55b0f1a22'; // not sk-shaped: only the
                                                     // literal-value redaction
@@ -96,11 +96,7 @@ async function theErrorExitCarriesNoKey() {
 function urlUserinfoIsScrubbedFromLogs() {
     console.log('\nA log line never republishes a URL\'s userinfo');
     const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
-    const scrub = createLLMCore({
-        nodes: { createNode() {}, registerType() {} },
-        settings: { userDir: os.tmpdir(), get: () => undefined, set: () => {} },
-        log: { info() {}, warn() {}, error() {} },
-    }).scrubUrlCredentials;
+    const scrub = createLLMCore(coreRED()).scrubUrlCredentials;
 
     const line = scrub('fetch failed for "http://admin:hunter2@10.0.0.4:1880/red" (ECONNREFUSED)');
     ok(!line.includes('hunter2') && !line.includes('admin:'),

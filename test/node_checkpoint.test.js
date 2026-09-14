@@ -12,28 +12,12 @@
 // checkpoint is saved with `chatId: null` and `meta.source: 'node-apply'`,
 // which is also what the server's pruning uses to give node-driven
 // checkpoints their own budget.
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
-const { ok, summary, clone, buildEditorMock, ROOT } = require('./helpers.js');
+const { ok, summary, clone, buildEditorMock, loadPluginSandbox } = require('./helpers.js');
 
-const CLIENT_MODULES = [
-  'src/common.js',
-  'src/core/canvas_layout.js',
-  'src/core/flow_converter_core.js',
-  'src/core/llm_json_parser.js',
-  'src/chat_manager.js',
-  'src/importer.js',
-  'src/ui_core.js',
-];
-
-// Same sandbox as the shared helper, with `fetch` recorded rather than
-// stubbed blind: what this suite asserts is the request that goes out.
+// The shared sandbox, with `fetch` recorded rather than stubbed blind:
+// what this suite asserts is the request that goes out.
 function loadWithFetchLog(RED, log) {
-  const sandbox = {
-    console: { log() {}, warn() {}, error() {} },
-    setTimeout,
-    requestAnimationFrame: (cb) => cb(),
+  return loadPluginSandbox(RED, {
     fetch: (url, opts) => {
       log.push({ url: String(url), opts: opts || {} });
       return Promise.resolve({
@@ -42,20 +26,7 @@ function loadWithFetchLog(RED, log) {
         json: () => Promise.resolve({ checkpointId: 'cp_1_abcdef' }),
       });
     },
-    document: {
-      getElementById: () => null,
-      querySelectorAll: () => [],
-      createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {} }),
-    },
-    RED,
-  };
-  sandbox.window = sandbox;
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  for (const rel of CLIENT_MODULES) {
-    vm.runInContext(fs.readFileSync(path.join(ROOT, rel), 'utf8'), sandbox, { filename: rel });
-  }
-  return sandbox.window.LLMPlugin;
+  });
 }
 
 const TABS = [{ id: 'tab1', type: 'tab', label: 'Flow 1' }];

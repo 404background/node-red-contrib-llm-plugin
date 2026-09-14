@@ -10,7 +10,7 @@
 // shipped every broker and endpoint definition to the provider.
 const path = require('path');
 
-const { ROOT, ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ROOT, ok, summary, clone, fence, loadPluginSandbox, buildEditorMock, coreRED } = require('./helpers.js');
 
 // `imported` is still the raw import() payload, because scenario 1-7 ask
 // "which workspaces did this edit WRITE to" — and under an incremental apply
@@ -224,12 +224,7 @@ function scenarioProviderContextIsScoped() {
 
   // The selection lives in the plugin core; the node only calls it.
   const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
-  const RED = {
-    nodes: { createNode() {}, registerType() {} },
-    settings: { userDir: require('os').tmpdir(), get: () => undefined, set: () => {} },
-    log: { info() {}, warn() {}, error() {} },
-  };
-  const flowContextFor = createLLMCore(RED).flowContextFor;
+  const flowContextFor = createLLMCore(coreRED()).flowContextFor;
 
   // Alpha's mqtt node points at one broker, Beta's at another. `tls-shared`
   // is referenced by Alpha's broker (a config node referencing another),

@@ -154,6 +154,12 @@ covers the canvas as a whole.
 distance(a, b) = (width(a) + width(b)) / 2 + edgeGap
 ```
 
+The pass that turns this into coordinates — `computeLeftEdges` — is shared.
+The converter runs it keyed by alias (it has no node ids yet), the reflow
+keyed by id, and both have to land on the same numbers: converting a schema
+and then reflowing it must not move anything. It was written twice before,
+with a comment on the second copy asking it to mirror the first.
+
 Width comes from `getNodeWidth` (caller hook → `options.getNodeWidth` →
 `estimateNodeWidth`). The hook lets callers feed in live measured widths
 (e.g. `RED.nodes.node(id).w` from the live editor) — with exact widths

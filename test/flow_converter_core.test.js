@@ -11,19 +11,7 @@
 
 const Cfg = require('../src/core/flow_converter_core.js');
 const assert = require('assert');
-
-let passed = 0, failed = 0;
-function it(label, fn) {
-    try {
-        fn();
-        console.log('  ok  ' + label);
-        passed++;
-    } catch (e) {
-        console.log('  FAIL ' + label);
-        console.log('       ' + (e && e.message ? e.message : e));
-        failed++;
-    }
-}
+const { it, summary } = require('./helpers.js');
 
 function byType(flow, type) {
     return flow.filter(function(n) { return n.type === type; });
@@ -169,6 +157,4 @@ it('reformatting a function body never changes anything but whitespace', functio
     });
 });
 
-console.log('');
-console.log(passed + ' passed, ' + failed + ' failed');
-if (failed > 0) process.exit(1);
+summary();
