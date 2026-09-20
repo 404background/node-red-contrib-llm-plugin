@@ -51,6 +51,8 @@ src/
     flow_converter_core.js  Vibe Schema 変換器(UMD)
     llm_json_parser.js  LLM JSON パース(UMD)
   chat_manager.js       チャットセッション CRUD + チェックポイント永続化
+  apply_queue.js        適用キューのクライアント側(ブラウザ)
+  apply_queue_server.js 適用キュー: デプロイまで1フロー1書き込み元に限る
   importer.js           LLM 出力の抽出、再構築、エディタへの import
   ui_core.js            メッセージ描画、フローエクスポート
   vibe_ui.js            サイドバー構築 + 生成ワークフロー
@@ -91,6 +93,12 @@ common → canvas_layout → flow_converter_core → llm_json_parser
 | POST | `/llm-plugin/save-chat` | write | チャットの永続化 |
 | POST | `/llm-plugin/delete-chat` | write | ファイル名またはチャット ID で削除 |
 | POST | `/llm-plugin/checkpoint/save` | write | フロースナップショットの保存 |
+| GET | `/llm-plugin/apply-queue` | read | フローごとの保持者と待ち行列 |
+| POST | `/llm-plugin/apply-queue/request` | write | 対象フロー群の順番待ちに加わる |
+| POST | `/llm-plugin/apply-queue/complete` | write | 適用済みのフローをデプロイまで保持する |
+| POST | `/llm-plugin/apply-queue/cancel` | write | 適用せずに待ち行列から外れる |
+| POST | `/llm-plugin/apply-queue/release` | write | デプロイ完了。デプロイされたフローを解放する |
+| GET | `/llm-plugin/checkpoints` | read | 復元ポイントの一覧(Agent ノードのものはメッセージを持たないため、ここからしか辿れない) |
 | GET | `/llm-plugin/checkpoint/:id` | read | 保存済みチェックポイントの読み込み |
 | POST | `/llm-plugin/client-log` | write | ブラウザ側で起きた失敗を Node-RED のログへ報告 |
 | GET | `/llm-plugin/vendor/marked.js` | **なし** | 同梱の marked.js を提供(オフライン Markdown 描画) |

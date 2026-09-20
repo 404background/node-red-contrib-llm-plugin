@@ -53,6 +53,8 @@ src/
     flow_converter_core.js  Vibe Schema converter (UMD)
     llm_json_parser.js  LLM JSON parsing (UMD)
   chat_manager.js       Chat session CRUD + checkpoint persistence
+  apply_queue.js        Client half of the apply queue (browser)
+  apply_queue_server.js Apply queue: one writer per flow until the deploy
   importer.js           Extract LLM output, rebuild & import into editor
   ui_core.js            Message rendering, flow export
   vibe_ui.js            Sidebar build + generation workflow
@@ -94,6 +96,12 @@ everything above. All modules use the IIFE pattern and communicate via
 | POST | `/llm-plugin/save-chat` | write | Persist a chat |
 | POST | `/llm-plugin/delete-chat` | write | Delete by filename or chat id |
 | POST | `/llm-plugin/checkpoint/save` | write | Save flow snapshot |
+| GET | `/llm-plugin/apply-queue` | read | Current holder and waiters, per flow |
+| POST | `/llm-plugin/apply-queue/request` | write | Join the queue for a set of flows |
+| POST | `/llm-plugin/apply-queue/complete` | write | An applied edit now holds its flows until the deploy |
+| POST | `/llm-plugin/apply-queue/cancel` | write | Leave the queue without applying |
+| POST | `/llm-plugin/apply-queue/release` | write | The deploy landed; release the flows it deployed |
+| GET | `/llm-plugin/checkpoints` | read | List restore points (the Agent node's have no message to find them by) |
 | GET | `/llm-plugin/checkpoint/:id` | read | Load saved checkpoint |
 | POST | `/llm-plugin/client-log` | write | Report a client-side failure into the Node-RED log |
 | GET | `/llm-plugin/vendor/marked.js` | **none** | Serve the bundled marked.js (offline Markdown rendering) |
