@@ -485,10 +485,13 @@
         return anchors;
     }
 
-    // Re-apply each captured anchor: comment.(x,y) = target.(x,y) + offset.
-    // Skips entries whose target was deleted from the rebuilt flow (the
+    // Re-apply each captured anchor: the caption keeps its vertical offset and
+    // takes its target's LEFT EDGE. The captured `dx` is a centre offset, and
+    // replaying it kept a caption aligned only while both widths stayed the
+    // same — rename the node it heads and the column it shared with it was
+    // gone. Skips entries whose target was deleted from the rebuilt flow (the
     // comment stays at its last position rather than vanishing).
-    function applyCommentAnchors(canvasNodes, anchors) {
+    function applyCommentAnchors(canvasNodes, anchors, opts) {
         if (!anchors) return;
         let byId = {};
         (canvasNodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
@@ -498,9 +501,33 @@
             if (!info) return;
             let target = byId[info.targetId];
             if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') return;
-            c.x = target.x + info.dx;
+            c.x = (target.x - getNodeWidth(target, opts) / 2) + getNodeWidth(c, opts) / 2;
             c.y = target.y + info.dy;
         });
+    }
+
+    // A node's `x` is its CENTRE, so a rename moves BOTH its edges: the node
+    // slid out of the column it was aligned to, and took the caption above it
+    // and its group's box with it — a long enough name pushed the left edge
+    // off the canvas. The column is what this engine aligns, so a width change
+    // must not move it. `widthsBefore` is keyed by id; a node that is not in
+    // it (a new one) is left to the layout passes. Returns the ids it moved,
+    // because a node that grew also has to stop overlapping what follows it —
+    // pass them to `placeAddedNodesNearNeighbors` as `reflowIds`.
+    function keepLeftEdges(nodes, widthsBefore, options) {
+        let changed = [];
+        if (!widthsBefore) return changed;
+        let opts = options || {};
+        (nodes || []).forEach(function(n) {
+            if (!n || !n.id || n.type === 'group' || typeof n.x !== 'number') return;
+            let was = widthsBefore[n.id];
+            if (typeof was !== 'number' || !(was > 0)) return;
+            let now = getNodeWidth(n, opts);
+            if (!(now > 0) || now === was) return;
+            n.x = n.x - was / 2 + now / 2;
+            changed.push(n.id);
+        });
+        return changed;
     }
 
     // Last resort for overlaps the directional pushes could not reach. With
@@ -648,7 +675,7 @@
         });
 
         resolveOverlaps(canvasNodes, opts);
-        applyCommentAnchors(canvasNodes, commentAnchors);
+        applyCommentAnchors(canvasNodes, commentAnchors, opts);
         repositionCommentsByLlmOrder(canvasNodes, opts);
         ensureTopMargin(canvasNodes, opts);
         return nodes;
@@ -899,6 +926,13 @@
             let cidN = compOf[n.id];
             if (cidN !== undefined) componentsNeedingReflow[cidN] = true;
         });
+        // A node that changed WIDTH is an insertion as far as the chain is
+        // concerned: it reaches further right than it did, so what follows it
+        // has to move over. See `keepLeftEdges`.
+        (Array.isArray(opts.reflowIds) ? opts.reflowIds : []).forEach(function(id) {
+            let cidN = compOf[id];
+            if (cidN !== undefined) componentsNeedingReflow[cidN] = true;
+        });
         let reflowedComponents = {};
         Object.keys(componentsNeedingReflow).forEach(function(cidStr) {
             let cid = Number(cidStr);
@@ -918,7 +952,7 @@
             // Re-glue captions first so bboxes use truthful coordinates
             // (earlier steps may have moved a target since anchors were
             // captured).
-            applyCommentAnchors(canvasNodes, commentAnchors);
+            applyCommentAnchors(canvasNodes, commentAnchors, opts);
 
             // Comments are wireless → singleton components. An ANCHORED
             // caption counts as part of its target's component here (it
@@ -1137,7 +1171,7 @@
         // Carry existing comments along with their (possibly moved)
         // anchor target. Runs before the new-comment pass so that pass
         // can stack new comments above the re-aligned existing ones.
-        applyCommentAnchors(canvasNodes, commentAnchors);
+        applyCommentAnchors(canvasNodes, commentAnchors, opts);
 
         // Place new schema comments above their resolved target. Runs
         // here, after every canvas target (including orphan-band ones)
@@ -1305,7 +1339,7 @@
         all.forEach(function(n) {
             let root = find(n.id);
             let b = blocks[root] || (blocks[root] = {
-                nodes: [], hasGroup: false,
+                nodes: [], hasGroup: false, boxLeft: Infinity,
                 top: Infinity, bottom: -Infinity, left: Infinity, right: -Infinity
             });
             b.nodes.push(n);
@@ -1314,6 +1348,7 @@
                 b.hasGroup = true;
                 top = n.y; bottom = n.y + (n.h || 0);
                 left = n.x; right = n.x + (n.w || 0);
+                if (left < b.boxLeft) b.boxLeft = left;
             } else {
                 let w = getNodeWidth(n, opts);
                 top = n.y - nodeHeight / 2; bottom = n.y + nodeHeight / 2;
@@ -1330,6 +1365,27 @@
         // above it, so one pass settles the stack.
         let ordered = Object.keys(blocks).map(function(k) { return blocks[k]; })
             .sort(function(a, b) { return (a.top - b.top) || (a.left - b.left); });
+
+        // --- Line the boxes up ---
+        // Stacked sequences read as a column, so their boxes share a left
+        // edge rather than stepping in and out by whatever their first node
+        // happens to be. Only a box that IS its block's left edge is aligned:
+        // one drawn around the middle of a chain has the upstream nodes to
+        // its left, and dragging those sideways would not be an alignment.
+        let alignable = ordered.filter(function(b) {
+            return b.hasGroup && isFinite(b.boxLeft) && Math.abs(b.boxLeft - b.left) < 0.5;
+        });
+        if (alignable.length > 1) {
+            let target = alignable.reduce(function(min, b) {
+                return Math.min(min, b.boxLeft);
+            }, Infinity);
+            alignable.forEach(function(b) {
+                let dx = target - b.boxLeft;
+                if (!dx) return;
+                b.nodes.forEach(function(n) { n.x = n.x + dx; });
+                b.left += dx; b.right += dx; b.boxLeft += dx;
+            });
+        }
 
         for (let j = 1; j < ordered.length; j++) {
             let cur = ordered[j];
@@ -1363,6 +1419,7 @@
         captureCommentAnchors:        captureCommentAnchors,
         applyCommentAnchors:          applyCommentAnchors,
         fitGroups:                    fitGroups,
-        separateGroups:               separateGroups
+        separateGroups:               separateGroups,
+        keepLeftEdges:                keepLeftEdges
     };
 });

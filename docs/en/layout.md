@@ -87,7 +87,8 @@ const positions = Layout.layoutNodes(
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
 | `fitGroups(nodes, options?)` | Refit every group box that no longer contains its members. See [Group boxes](#group-boxes). |
-| `separateGroups(nodes, options?)` | Push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
+| `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
+| `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
@@ -124,6 +125,26 @@ multiples by construction) and computes each centre as
 `leftEdge + width(node) / 2`, so siblings in a column visibly share
 the same left edge regardless of label width. The same logic gives a
 uniform `rowPitch = nodeHeight + spacingY` for vertical spacing.
+
+## Width changes keep the left edge
+
+`node.x` is a **centre**, so a rename moves both of the node's edges — and left
+edges are what this engine aligns. A renamed node therefore slid out of its
+column, stranded the caption above it, and with a long enough name pushed its
+own left edge (and any box around it) towards negative x.
+
+`keepLeftEdges(nodes, widthsBefore, options)` corrects that before the placement
+passes: for every node whose width changed it re-derives `x` from the left edge
+it had. It returns those ids, and the importer hands them to
+`placeAddedNodesNearNeighbors` as `options.reflowIds` — a node that grew reaches
+further right than it did, so its component is reflowed exactly as it would be
+around an insertion, and the chain after it moves over instead of being
+overlapped.
+
+The caption side matches: `applyCommentAnchors` gives a caption its target's
+**left edge** rather than replaying the centre offset it was captured with.
+Replaying that offset kept a caption aligned only while both widths stayed the
+same.
 
 Comment stacking uses a step of `ceil(nodeHeight / gridSize) * gridSize`
 (= 40 px with the defaults) so a stack of comments rises at a regular
@@ -214,8 +235,12 @@ behind. `fitGroups` runs after the layout passes and settles it:
   40px further up, so the boxes overlapped by 10px. `separateGroups` runs after
   `fitGroups` and is the guarantee that a box clears what is outside it.
 
-### `separateGroups` — keeping boxes apart
+### `separateGroups` — lining the boxes up, and keeping them apart
 
+- Stacked sequences read as a column, so their boxes **share a left edge**. Only
+  a box that is its own block's left edge is aligned: one drawn around the
+  middle of a chain has the upstream nodes to its left, and dragging those
+  sideways would not be an alignment.
 - Every box ends up at least `groupGap` (40, two grid squares) from anything
   outside it, whether that is another box or a plain node.
 - What moves is a **block**, not a node: everything tied together by wires, by

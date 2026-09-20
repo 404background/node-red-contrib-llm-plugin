@@ -87,7 +87,8 @@ const positions = Layout.layoutNodes(
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` があればそれ、なければ `estimateNodeWidth`。 |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | 縦積みのためのコンポーネントごとの Y オフセット。`spacingY` と `gap` はエッジ間。行ピッチは `nodeHeight + spacingY`、コンポーネントステップは `nodeHeight + gap`。`nodeHeight` のデフォルトは `LAYOUT_DEFAULTS.nodeHeight`。 |
 | `fitGroups(nodes, options?)` | メンバーを収めきれなくなったグループの枠を合わせ直す。[グループの枠](#グループの枠)を参照。 |
-| `separateGroups(nodes, options?)` | すべてのグループの枠が外側のものから `groupGap` 以上離れるまでブロックを押し下げる。`fitGroups` のあとに走る。 |
+| `separateGroups(nodes, options?)` | グループの枠の左端を揃え、外側のものから `groupGap` 以上離れるまでブロックを押し下げる。`fitGroups` のあとに走る。 |
+| `keepLeftEdges(nodes, widthsBefore, options?)` | 幅が変わったノードの中心を計算し直し、**左端**を元の位置に保つ。動かした ID を返す。 |
 | `LAYOUT_DEFAULTS` | デフォルト定数。 |
 
 ## デフォルト
@@ -138,6 +139,23 @@ LAYOUT_DEFAULTS = {
 相対的な位置関係は保たれ、フロー全体が下へスライドするだけである。位置を固定したまま1つの
 コンポーネントだけを組み直す処理はこの防止をスキップする。呼び出し元が最後にキャンバス全体を
 まとめて見るためである。
+
+## 幅が変わっても左端は動かさない
+
+ノードの `x` は**中心**なので、名前を変えると左右両方の端が動く。一方この
+エンジンが揃えているのは左端である。そのためリネームしたノードは自分の列から
+ずれ、上のキャプションだけが取り残され、名前が十分に長いと左端(とそれを囲む枠)が
+マイナス方向へはみ出していた。
+
+`keepLeftEdges(nodes, widthsBefore, options)` が配置パスの前にこれを直す。幅が
+変わったノードについて、元の左端から `x` を求め直す。戻り値は動かした ID の一覧で、
+インポータはそれを `placeAddedNodesNearNeighbors` の `options.reflowIds` として
+渡す。太くなったノードは以前より右まで届くので、挿入があったときとまったく同じ扱いで
+そのコンポーネントを組み直し、後続のノードは重ねられるのではなく右へずれる。
+
+キャプション側も同じ規則に揃えた。`applyCommentAnchors` は、記録時の中心のずれを
+再生するのではなく、対象ノードの**左端**をキャプションに与える。中心のずれの再生は、
+双方の幅が変わらない間しか整列を保てなかった。
 
 ## 幅を考慮した間隔
 
@@ -196,8 +214,11 @@ w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
   40px 上へ伸ばすので、枠は 10px 重なっていた。`separateGroups` は `fitGroups` の
   あとに走り、枠が外側のものと離れていることを保証する。
 
-### `separateGroups` — 枠同士を離す
+### `separateGroups` — 枠を揃え、離す
 
+- 縦に並んだシーケンスは1つの列として読まれるので、枠の**左端を揃える**。揃えるのは
+  「枠がそのブロックの左端そのもの」である場合だけである。チェーンの途中を囲んだ枠は
+  左側に上流のノードを抱えており、それごと横へ動かすのは整列ではないからである。
 - どの枠も、その外側にあるもの(別の枠でも素のノードでも)から最低 `groupGap`
   (40 = 2マス)離れた位置に収まる。
 - 動かす単位はノードではなく**ブロック**である。ワイヤでつながっているもの、

@@ -183,11 +183,52 @@ async function joiningAGroupIsStillADiff() {
     'and the box has bounds the layout fitted (' + (box && box.w) + 'x' + (box && box.h) + ')');
 }
 
+// A rename is a width change, and `x` is a centre: the node used to slide out
+// of its column, leaving the caption above it stranded and pushing the left
+// edge (and any box around it) towards negative x.
+async function renamingKeepsTheColumn() {
+  console.log('\nRenaming a node keeps its left edge, and its caption with it');
+  const f = flow();
+  f.nodes.unshift({ id: 'cap', type: 'comment', z: 't1', name: 'What this does',
+    x: 130, y: 60, wires: [] });
+  const mock = buildEditorMock({
+    tabs: TABS, nodes: f.nodes, junctions: f.junctions, groups: f.groups, activeId: 't1',
+  });
+  const LLMPlugin = loadPluginSandbox(mock.RED);
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    'Name it properly.\n' + fence({
+      nodes: { inject_tick: { type: 'inject', name: 'a considerably longer trigger name' } },
+    }),
+    { mode: 'agent', allowedWorkspaceIds: ['t1'] }
+  );
+
+  const byId = {};
+  mock.snapshot('t1').forEach((n) => { byId[n.id] = n; });
+  const Layout = require('../src/core/canvas_layout.js');
+  const leftOf = (n) => n.x - Layout.estimateNodeWidth(n, {}) / 2;
+
+  // The fixture's inject sits at x=100 and is 100 wide, so its column is 50.
+  const column = 100 - Layout.estimateNodeWidth({ type: 'inject', name: 'tick' }, {}) / 2;
+
+  ok(res && res.ok, 'the edit applied');
+  ok(leftOf(byId.inj) === column,
+    'the renamed node kept its left edge (' + leftOf(byId.inj) + ', was ' + column + ')');
+  ok(leftOf(byId.cap) === leftOf(byId.inj),
+    'the caption still shares that edge (' + leftOf(byId.cap) + ')');
+  ok(leftOf(byId.fn) >= leftOf(byId.inj) + Layout.estimateNodeWidth(byId.inj, {}),
+    'and the node after it moved over rather than being overlapped (' +
+      leftOf(byId.fn) + ')');
+  ok(byId.grp.x === column - 25,
+    'the box around it sits one padding left of that column, not off the canvas (' +
+      byId.grp.x + ')');
+}
+
 (async () => {
   await propertyEditTouchesNothingElse();
   await addingANodeImportsOnlyThatNode();
   await deletingANodeRemovesOnlyThatNode();
   await rewiringOnlyMovesLinks();
   await joiningAGroupIsStillADiff();
+  await renamingKeepsTheColumn();
   summary();
 })();

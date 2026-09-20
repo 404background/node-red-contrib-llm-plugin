@@ -449,4 +449,100 @@ describe('Group boxes clear each other by groupGap', function() {
     });
 });
 
+// `x` is a CENTRE, so a rename moves both edges — and this engine aligns LEFT
+// edges. A renamed node slid out of its column, took the caption above it with
+// it, and a long enough name pushed the left edge off the canvas (left = -75
+// was reachable with a group's box following it out there).
+describe('A width change keeps the left edge', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    it('a node that grew keeps its left edge, not its centre', function() {
+        const n = { id: 'n1', type: 'inject', name: 'tick', x: 110, y: 100 };
+        const before = { n1: Layout.estimateNodeWidth(n, OPTS) };
+        const left = n.x - before.n1 / 2;
+        n.name = 'a considerably longer name';
+        Layout.keepLeftEdges([n], before, OPTS);
+        const now = Layout.estimateNodeWidth(n, OPTS);
+        assert(n.x - now / 2 === left, 'left edge ' + (n.x - now / 2) + ', was ' + left);
+    });
+
+    it('and says which nodes it moved, so their chain can be re-spaced', function() {
+        const a = { id: 'a', type: 'inject', name: 'tick', x: 110, y: 100 };
+        const b = { id: 'b', type: 'debug', name: 'out', x: 310, y: 100 };
+        const widths = {
+            a: Layout.estimateNodeWidth(a, OPTS),
+            b: Layout.estimateNodeWidth(b, OPTS),
+        };
+        a.name = 'a considerably longer name';
+        const moved = Layout.keepLeftEdges([a, b], widths, OPTS);
+        assert(moved.length === 1 && moved[0] === 'a', 'reported ' + JSON.stringify(moved));
+    });
+
+    it('a node whose width did not change is not moved at all', function() {
+        const n = { id: 'n1', type: 'inject', name: 'tick', x: 110, y: 100 };
+        const widths = { n1: Layout.estimateNodeWidth(n, OPTS) };
+        Layout.keepLeftEdges([n], widths, OPTS);
+        assert(n.x === 110, 'x is ' + n.x);
+    });
+
+    it('a caption takes its target\'s left edge, not the offset it had', function() {
+        const target = { id: 't', type: 'inject', name: 'tick', x: 110, y: 100 };
+        const caption = { id: 'c', type: 'comment', name: 'What this does', x: 130, y: 60 };
+        const anchors = Layout.captureCommentAnchors([caption, target], OPTS);
+        assert(anchors.c && anchors.c.targetId === 't', 'the caption is anchored to the node');
+        target.name = 'a considerably longer name';
+        Layout.applyCommentAnchors([caption, target], anchors, OPTS);
+        const tLeft = target.x - Layout.estimateNodeWidth(target, OPTS) / 2;
+        const cLeft = caption.x - Layout.estimateNodeWidth(caption, OPTS) / 2;
+        assert(cLeft === tLeft, 'caption left ' + cLeft + ' vs node left ' + tLeft);
+        assert(caption.y === 60, 'and it kept its row (' + caption.y + ')');
+    });
+});
+
+// Sequences stack in a column, so their boxes line up as one.
+describe('Group boxes share a left edge', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    function twoSequencesAndATail() {
+        return [
+            { id: 'a1', type: 'inject', z: 'z', name: 'a', x: 110, y: 160, g: 'gA', wires: [['a2']] },
+            { id: 'a2', type: 'debug', z: 'z', name: 'da', x: 310, y: 160, g: 'gA', wires: [[]] },
+            { id: 'gA', type: 'group', z: 'z', name: 'SeqA', nodes: ['a1', 'a2'],
+              x: 35, y: 130, w: 340, h: 80 },
+            { id: 'b1', type: 'inject', z: 'z', name: 'b', x: 310, y: 300, g: 'gB', wires: [['b2']] },
+            { id: 'b2', type: 'debug', z: 'z', name: 'db', x: 510, y: 300, g: 'gB', wires: [[]] },
+            { id: 'gB', type: 'group', z: 'z', name: 'SeqB', nodes: ['b1', 'b2'],
+              x: 235, y: 270, w: 340, h: 80 },
+            // A box around the TAIL of a chain: its block starts at c1, which
+            // is outside the box.
+            { id: 'c1', type: 'inject', z: 'z', name: 'c', x: 110, y: 460, wires: [['c2']] },
+            { id: 'c2', type: 'debug', z: 'z', name: 'dc', x: 400, y: 460, g: 'gC', wires: [[]] },
+            { id: 'gC', type: 'group', z: 'z', name: 'Tail', nodes: ['c2'],
+              x: 325, y: 430, w: 150, h: 80 },
+        ];
+    }
+    const byId = (flow, id) => flow.find((n) => n.id === id);
+
+    it('a sequence sitting further right is pulled into line', function() {
+        const flow = twoSequencesAndATail();
+        Layout.separateGroups(flow, OPTS);
+        assert(byId(flow, 'gB').x === byId(flow, 'gA').x,
+            'SeqB at ' + byId(flow, 'gB').x + ', SeqA at ' + byId(flow, 'gA').x);
+    });
+
+    it('with its members, which keep their spacing', function() {
+        const flow = twoSequencesAndATail();
+        Layout.separateGroups(flow, OPTS);
+        assert(byId(flow, 'b1').x === 110, 'b1 at ' + byId(flow, 'b1').x);
+        assert(byId(flow, 'b2').x - byId(flow, 'b1').x === 200, 'the gap between them is unchanged');
+    });
+
+    it('a box around the tail of a chain is left where it is', function() {
+        const flow = twoSequencesAndATail();
+        Layout.separateGroups(flow, OPTS);
+        assert(byId(flow, 'gC').x === 325, 'Tail at ' + byId(flow, 'gC').x);
+        assert(byId(flow, 'c1').x === 110, 'and the node feeding it did not move');
+    });
+});
+
 summary();

@@ -701,13 +701,32 @@
             isCanvasNode: isLayoutNode,
             getNodeWidth: liveNodeWidth
         };
+        // A rename changes the node's width and `x` is its CENTRE, so the
+        // left edge — the thing this layout aligns — would move. Corrected
+        // before the placement passes, which reason in left edges.
+        let widthsBefore = {};
+        (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) {
+            if (n && n.id && isLayoutNode(n)) widthsBefore[n.id] = layout.getNodeWidth(n, layoutOpts);
+        });
+        let widened = layout.keepLeftEdges(rebuilt, widthsBefore, layoutOpts);
+        // The incremental pass pins existing nodes to these, so the
+        // correction has to reach them or it is restored away again.
+        rebuilt.forEach(function(n) {
+            if (n && n.id && basePositions[n.id] && typeof n.x === 'number') {
+                basePositions[n.id].x = n.x;
+            }
+        });
+
         if (Object.keys(baseIds).length === 0) {
             // Fresh flow: honour maxColumns so long chains fold neatly.
             layout.reflowCanvasNodes(rebuilt, layoutOpts);
         } else {
             // Incremental edit: disable column folding so the existing
             // flow shape is preserved and new nodes just extend right.
-            let incrementalOpts = Object.assign({}, layoutOpts, { maxColumns: Infinity });
+            let incrementalOpts = Object.assign({}, layoutOpts, {
+                maxColumns: Infinity,
+                reflowIds: widened
+            });
             layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
         }
 
@@ -752,7 +771,10 @@
             let id = lookup.resolve(a, { exactOnly: true }) || lookup.resolve(a);
             if (!id) return;
             let n = lookup.byId[id];
-            if (n && isLayoutNode(n)) subsetIdSet[id] = true;
+            // A caption is not a step in the chain: laying one out as a node
+            // gives it a column of its own and leaves it beside what it
+            // heads. Named or not, it follows its target below.
+            if (n && isLayoutNode(n) && n.type !== 'comment') subsetIdSet[id] = true;
         });
 
         let subsetNodes = allNodes.filter(function(n) {
@@ -811,7 +833,7 @@
         });
 
         // Re-align captions to follow their (now moved) anchor target.
-        layout.applyCommentAnchors(allNodes, commentAnchors);
+        layout.applyCommentAnchors(allNodes, commentAnchors, layoutOpts);
     }
 
     // ================================================================== //
