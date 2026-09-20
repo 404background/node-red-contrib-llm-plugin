@@ -269,6 +269,27 @@ function scenarioPromptKeysAreWired() {
     'which is the same stop the button does, not a second copy of it');
 }
 
+// Restore and Apply Again are one control in two halves: rewind to the flow
+// that was there, or put the model's proposal back. In Agent mode the Import
+// button below the message is hidden, so losing Apply Again would leave a
+// rewound proposal with no way back.
+function scenarioRestoreAndReapplyArePaired() {
+  console.log('\nRestore and Apply Again are rendered together');
+  const templates = readTemplates(HTML);
+  ok(!!templates['llm-plugin-reapply-btn-template'], 'the Apply Again button has a template');
+  ok(/class="reapply-btn"/.test(templates['llm-plugin-reapply-btn-template'] || ''),
+    'carrying the class the JS reaches for');
+  ok(CSS.indexOf('.reapply-btn {') !== -1, 'and the button has a stylesheet rule');
+
+  const pair = (/function showPostImportActions\(([\s\S]*?)\n    \}/.exec(UI_CORE) || [])[1] || '';
+  ok(/createRestoreCheckpointButton\(/.test(pair) && /createReapplyButton\(/.test(pair),
+    'one function appends both, so neither can be shown without the other');
+  ok(/restore-btn, \.reapply-btn/.test(pair),
+    'and it clears both first, so a second apply does not stack a second pair');
+  ok(/queueImport\(message, content, messageMeta, 'Apply Again'\)/.test(UI_CORE),
+    'Apply Again goes through the same queue as Import (design.md §13)');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
@@ -280,6 +301,7 @@ function run() {
   scenarioNodeLeansOnThePlugin();
   scenarioNodeHelpStaysShort();
   scenarioPromptKeysAreWired();
+  scenarioRestoreAndReapplyArePaired();
   summary();
 }
 

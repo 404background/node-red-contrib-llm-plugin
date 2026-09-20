@@ -394,15 +394,32 @@
         return elapsed;
     }
 
-    // Above the message, because it rewinds to before this reply was applied.
-    function showRestoreButton(message, checkpointId) {
+    // Above the message, because both act on the edit it already made: one
+    // rewinds to the flow that was there, the other applies this reply again.
+    // Paired on purpose — switching between them is how the two versions get
+    // compared, and in Agent mode the Import button below is hidden, so this
+    // is the only way back to the proposal once it has been rewound.
+    function showPostImportActions(message, checkpointId, content, messageMeta) {
         let preChatActions = message.querySelector('.pre-chat-actions');
         if (!preChatActions) {
             preChatActions = Common.cloneTemplate('llm-plugin-pre-chat-actions-template');
             message.insertBefore(preChatActions, message.firstChild);
         }
-        preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
+        preChatActions.querySelectorAll('.restore-btn, .reapply-btn')
+            .forEach(function(b) { b.remove(); });
         preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
+        preChatActions.appendChild(createReapplyButton(message, content, messageMeta));
+    }
+
+    function createReapplyButton(message, content, messageMeta) {
+        let btn = Common.cloneTemplate('llm-plugin-reapply-btn-template');
+        btn.addEventListener('click', function() {
+            btn.disabled = true;
+            queueImport(message, content, messageMeta, 'Apply Again')
+                .catch(reportImportFailure)
+                .finally(function() { btn.disabled = false; });
+        });
+        return btn;
     }
 
     // One import turn, run as the queue's `apply`. The checkpoint is taken
@@ -420,7 +437,7 @@
                     allowedWorkspaceIds: targetFlowIds
                 }).then(function(result) {
                     if (result && result.ok && checkpointId) {
-                        showRestoreButton(message, checkpointId);
+                        showPostImportActions(message, checkpointId, content, messageMeta);
                         if (messageMeta && messageMeta.id) {
                             LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
                                 pluginEdited: true,
@@ -432,6 +449,22 @@
                     return result;
                 });
             });
+    }
+
+    // Every import goes through the queue: an undeployed edit on these flows
+    // holds this one. See design.md §13. The chat id is read HERE, not inside
+    // `apply`, because the turn may run after the user has moved to another
+    // chat.
+    function queueImport(message, content, messageMeta, label) {
+        let chatId = LLMPlugin.ChatManager.getCurrentChatId();
+        return LLMPlugin.ApplyQueue.enqueue({
+            source: 'sidebar',
+            label: label,
+            targetFlowIds: targetFlowIdsOf(messageMeta),
+            apply: function() {
+                return applyImport(message, content, messageMeta, chatId);
+            }
+        });
     }
 
     // The importer reports its own errors. The queue's own outcomes have no
@@ -462,28 +495,17 @@
 
         importBtn.addEventListener('click', function() {
             importBtn.disabled = true;
-            // Read now, not inside `apply`: the queue may run this turn after
-            // the user has moved to another chat.
-            let chatId = LLMPlugin.ChatManager.getCurrentChatId();
-
-            // Through the queue: an undeployed edit on these flows holds
-            // this one. See design.md §13.
-            LLMPlugin.ApplyQueue.enqueue({
-                source: 'sidebar',
-                label: 'Import Flow',
-                targetFlowIds: targetFlowIdsOf(messageMeta),
-                apply: function() {
-                    return applyImport(message, content, messageMeta, chatId);
-                }
-            })
-            .catch(reportImportFailure)
-            .finally(function() { importBtn.disabled = false; });
+            queueImport(message, content, messageMeta, 'Import Flow')
+                .catch(reportImportFailure)
+                .finally(function() { importBtn.disabled = false; });
         });
 
-        // A message whose import already ran keeps its Restore button.
+        // A message whose import already ran keeps both: rewind, or apply it
+        // again. Restored on reload from the stored meta, so the pair survives
+        // a chat being re-opened.
         let meta = metaOf(messageMeta);
         if (meta.pluginEdited && meta.checkpointId) {
-            showRestoreButton(message, meta.checkpointId);
+            showPostImportActions(message, meta.checkpointId, content, messageMeta);
         }
         message.appendChild(flowActions);
     }

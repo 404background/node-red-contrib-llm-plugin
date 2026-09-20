@@ -322,6 +322,21 @@
 .restore-btn:hover {
     background: #d97706;
 }
+/* Sits next to Restore: the other half of the same choice, so it reads as a
+   sibling rather than a second Import button. */
+.reapply-btn {
+    background: #1c7ed6;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-right: 5px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.reapply-btn:hover {
+    background: #1864ab;
+}
 /* Apply queue panel */
 .llm-queue-panel {
     border: 1px solid #f0c36d;

@@ -93,6 +93,12 @@
     <button class="restore-btn">Restore Checkpoint</button>
 </script>
 
+<!-- Paired with Restore: one rewinds to the flow that was there, the other
+     applies this reply again, so the two can be compared by switching. -->
+<script type="text/html" id="llm-plugin-reapply-btn-template">
+    <button class="reapply-btn" title="Apply this reply to the flow again">Apply Again</button>
+</script>
+
 <!-- Restore-point browser. Chat checkpoints are reachable from the message
      that holds their id; the Agent node's are not attached to any message,
      so this is how they are found at all. Same classes as the chat list so
