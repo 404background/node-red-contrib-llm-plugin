@@ -936,12 +936,11 @@
     // entity. A group's `w`/`h` are derived from its members.
     function comparableKeys(before, after) {
         let skip = { id: 1, type: 1, z: 1, wires: 1, x: 1, y: 1 };
-        // A group's `w`/`h` follow its members, and so does `nodes`: the
-        // authoritative half of membership is each node's `g`, which IS
-        // compared, and the list is kept in step through RED.group rather
-        // than by assigning to it. Comparing it here would report every
-        // membership change twice — once on the node, once on the group —
-        // and the second report has no safe way to be applied.
+        // A group's box and its member list follow its members, so neither is
+        // compared here: the authoritative half of membership is each node's
+        // `g`, and `applyGroupMembership` writes the list and the box the
+        // layout fitted. Comparing them would report every membership change
+        // twice — once on the node, once on the group.
         if (after && after.type === 'group') { skip.w = 1; skip.h = 1; skip.nodes = 1; }
         let keys = {};
         Object.keys(before || {}).forEach(function(k) { if (!skip[k]) keys[k] = true; });
@@ -1068,6 +1067,90 @@
         RED.group.removeFromGroup(group, liveNode, false);
         return !liveNode.g &&
                (!Array.isArray(group.nodes) || group.nodes.indexOf(liveNode) === -1);
+    }
+
+    // Both halves of group membership, reconciled against the desired state:
+    // `g` on the member, the member OBJECT in the group's `nodes`. The editor
+    // draws from both and repairs neither, and `RED.nodes.import` only links
+    // members that were in the SAME import set — so a new node joining a box
+    // that already existed, or a new box drawn around nodes already on the
+    // canvas, is written here.
+    //
+    // Not `RED.group.addToGroup`: it recomputes the box from `n.w` / `n.h`,
+    // which a node that has not been drawn yet does not have, and the layout
+    // has already fitted these boxes.
+    function applyGroupMembership(desiredCanvas, liveLookup) {
+        function liveOf(id) {
+            if (!id || typeof id !== 'string') return null;
+            let fromApply = liveLookup ? liveLookup(id) : null;
+            if (fromApply) return fromApply;
+            return RED.nodes.node(id) ||
+                (typeof RED.nodes.junction === 'function' ? RED.nodes.junction(id) : null) ||
+                (typeof RED.nodes.group === 'function' ? RED.nodes.group(id) : null);
+        }
+        function memberId(m) {
+            return (typeof m === 'string') ? m : (m && m.id) || null;
+        }
+        function detach(live) {
+            if (!live || !live.g) return;
+            let old = RED.nodes.group(live.g);
+            if (old) RED.group.removeFromGroup(old, live, false);
+            // The box is already gone; `g` is all that is left to clear.
+            if (live.g) { try { delete live.g; } catch (e) { live.g = undefined; } }
+            live.dirty = true;
+        }
+
+        // Members first: one that left its box, and one whose box was
+        // deleted — `removeGroup` does not clear `g` for us.
+        (desiredCanvas || []).forEach(function(want) {
+            if (!want || want.type === 'group') return;
+            let live = liveOf(want.id);
+            if (!live || !live.g || live.g === want.g) return;
+            detach(live);
+        });
+
+        (desiredCanvas || []).forEach(function(want) {
+            if (!want || want.type !== 'group') return;
+            let group = RED.nodes.group(want.id);
+            if (!group) return;
+
+            let wanted = (Array.isArray(want.nodes) ? want.nodes : [])
+                .filter(function(id) { return typeof id === 'string'; });
+            let keep = {};
+            wanted.forEach(function(id) { keep[id] = true; });
+
+            (Array.isArray(group.nodes) ? group.nodes.slice() : []).forEach(function(m) {
+                let id = memberId(m);
+                if (id && keep[id]) return;
+                let live = liveOf(id);
+                if (live) detach(live);
+            });
+
+            let members = [];
+            wanted.forEach(function(id) {
+                let live = liveOf(id);
+                if (!live || live === group) return;
+                live.g = group.id;
+                live.dirty = true;
+                members.push(live);
+            });
+            // Assigned, not spliced: this IS the membership, and an entry the
+            // editor left behind as an id rather than an object is the shape
+            // that draws an empty box.
+            group.nodes = members;
+
+            // The box with it. Node-RED recomputes a group's bounds only when
+            // a user drags a member, so the box the layout fitted is the box
+            // the user sees — and it is not compared as a property for that
+            // reason (see comparableKeys).
+            ['x', 'y', 'w', 'h'].forEach(function(k) {
+                if (typeof want[k] === 'number') group[k] = want[k];
+            });
+            group.dirty = true;
+            if (RED.group && typeof RED.group.markDirty === 'function') {
+                try { RED.group.markDirty(group); } catch (e) { /* ignore */ }
+            }
+        });
     }
 
     function applyMove(liveNode, after) {
@@ -1239,25 +1322,26 @@
         });
 
         // --- Refuse what the diff cannot express ----------------------- //
-        // The schema has no notion of groups, so falling back costs nothing
-        // and keeps group bookkeeping in RED.group's own API.
+        // Groups it CAN express: the box is an entity like any other, and
+        // `applyGroupMembership` writes both halves of membership after the
+        // import. What it cannot survive is a workspace where the group API
+        // is a silent no-op, because half-written membership is the failure
+        // the editor never repairs. See docs/{en,jp}/design.md §12.
         let bail = null;
         updates.forEach(function(u) {
             let before = beforeById[u.id], after = afterById[u.id];
             if (before.type !== after.type) bail = bail || 'a node changed type';
-            if (liveKind[u.id] === 'group') bail = bail || 'a group changed';
-            if (u.keys.indexOf('g') !== -1) bail = bail || 'group membership changed';
         });
-        removed.forEach(function(id) {
-            if (liveKind[id] === 'group') bail = bail || 'a group was removed';
-            else if (beforeById[id] && beforeById[id].g && !canMaintainGroups()) {
-                bail = bail || 'a grouped node was removed and the group API is unavailable';
-            }
-        });
-        added.forEach(function(n) {
-            if (n.type === 'group') bail = bail || 'a group was added';
-            else if (n.g) bail = bail || 'a node was added into a group';
-        });
+        // Any box on either side means the membership pass runs: a group's
+        // box and member list are not compared as properties (see
+        // comparableKeys), so "nothing changed" is not something the diff can
+        // read off them. The pass writes the desired state as it is, which
+        // for an untouched group is what it already had.
+        let groupWork = split.canvas.some(function(n) { return n && n.type === 'group'; }) ||
+            Object.keys(liveKind).some(function(id) { return liveKind[id] === 'group'; });
+        if (groupWork && !canMaintainGroups()) {
+            bail = bail || 'the group API is unavailable';
+        }
         if (bail) return { ok: false, fallback: true, error: bail };
 
         let touched = removed.length + added.length + updates.length +
@@ -1285,7 +1369,13 @@
             });
 
             updates.forEach(function(u) {
-                applyPropertyUpdate(liveById[u.id], afterById[u.id], u.keys);
+                // `g` is membership, written in both halves below; a live
+                // group's `nodes` holds node OBJECTS, not the ids an export
+                // has, so neither is a property to assign here.
+                let keys = u.keys.filter(function(k) {
+                    return k !== 'g' && !(liveKind[u.id] === 'group' && k === 'nodes');
+                });
+                if (keys.length > 0) applyPropertyUpdate(liveById[u.id], afterById[u.id], keys);
             });
             moves.forEach(function(id) { applyMove(liveById[id], afterById[id]); });
 
@@ -1297,6 +1387,10 @@
                 // Bypass RED.history - rewind via the plugin's checkpoints.
                 RED.nodes.import(importSet, { generateIds: false, reimport: true, addFlow: false });
             }
+
+            // After the import: a member added by this edit has to exist
+            // before it can be put in a box.
+            if (groupWork) applyGroupMembership(split.canvas, function(id) { return liveById[id]; });
 
             rewires.forEach(function(id) {
                 let live = liveById[id] || liveEntity(id);

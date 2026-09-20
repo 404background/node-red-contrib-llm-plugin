@@ -311,11 +311,9 @@ Two ordering details follow from this:
 ### Where it declines
 The diff hands back `fallback: true` and the caller runs `replaceWorkspaceFlow`
 instead when it meets something it cannot express safely:
-- a group changed, was added, or was removed
-- a node's group membership (`g`) changed
-- a grouped node was removed **and the group API is unavailable** (see below)
 - an existing id changed `type`
 - a live entity that does not round-trip through an export
+- there is a group on either side **and the group API is unavailable** (see below)
 
 **`g` has to survive the merge for any of this to mean anything.** It is not in
 `MERGE_SKIP_KEYS`, and must not be: nothing else restores it, so skipping it made
@@ -344,8 +342,29 @@ have to be kept in step, in two different places:
 That is why the group's `nodes` is excluded from the property comparison alongside
 `w`/`h`. All three are derived from the members; the authoritative half of
 membership is each node's `g`, which **is** compared. Comparing the list as well
-would report every membership change twice, and the second report has no safe way to
-be applied.
+would report every membership change twice.
+
+**Applying the other half: `applyGroupMembership`.** The schema asks the model for
+boxes now (§15), so an edit that changes membership is the common case rather than
+the rare one — declining it meant the destructive rebuild ran on most replies, with
+the deploy churn and the log line that go with it. The diff writes membership itself
+instead, after the import, because a member added by this edit has to exist before it
+can be put in a box:
+
+- **Members leaving first.** A node that left its box, or whose box this edit
+  deleted, is detached through `RED.group.removeFromGroup`. `RED.nodes.removeGroup`
+  does not clear its members' `g`, and `g` is the half the editor draws from.
+- **Then the list is assigned**, not spliced: the desired members, resolved to their
+  live objects. An entry the editor left behind as an id rather than an object is
+  exactly the shape that draws an empty box.
+- **And the box with it.** Node-RED recomputes a group's bounds only when a user
+  drags a member, so the box the layout fitted is the box the user sees. This is also
+  why the pass does not call `RED.group.addToGroup`: that one recomputes the box from
+  `n.w` / `n.h`, which a node that has not been drawn yet does not have.
+- **It runs whenever there is a box on either side.** The box and the member list are
+  derived, so they are not compared, which means "nothing changed" is not something
+  the diff can read off them. The pass is idempotent — for an untouched group it
+  writes back what it already had.
 
 `removeFromGroup` is a silent no-op on a locked workspace, and a silent no-op is the
 worst outcome available here — the node would go while the group went on naming it.
@@ -353,11 +372,9 @@ So the diff checks for a usable group API first and declines if it has none. The
 destructive rebuild does not need the API (it re-imports the group wholesale) and
 reaches the same consistent end state, just by the broader route.
 
-Groups own their members as live **objects** and `g` is only half of that
-relationship, so that bookkeeping belongs to `RED.group`'s own API. None of it is
-reachable from the Vibe Schema (which has no notion of groups), so the fallback
-costs nothing in practice — and correctness never depends on the diff covering
-every case.
+Correctness still never depends on the diff covering every case: the rebuild
+reaches the same end state by the broader route, and every group case can fall back
+to it.
 
 ### Rollback
 A throw part-way through a diff leaves a half-applied workspace, which a plain

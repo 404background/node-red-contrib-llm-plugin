@@ -150,10 +150,44 @@ async function rewiringOnlyMovesLinks() {
   extrasSurvived(captured, 'rewire');
 }
 
+// Groups used to be the one thing the diff refused outright, so every edit
+// that put a node in a box rebuilt the whole tab — and the schema now asks the
+// model for boxes, which made that the common case rather than the rare one.
+// The diff expresses them now; the fallback's fingerprint is that it removes
+// the group, so that is what this asserts it does not do.
+async function joiningAGroupIsStillADiff() {
+  console.log('\nA node joining an existing group does not rebuild the tab');
+  const { res, byId, captured, importedIds } = await apply(
+    'Tag it.\n' + fence({
+      nodes: { change_tag: { type: 'change', name: 'tag' } },
+      connections: [{ from: 'debug_out', to: 'change_tag' }],
+      groups: { group_box: { name: 'Box', nodes: ['change_tag'] } },
+    })
+  );
+
+  const added = importedIds.filter((id) => !['inj', 'fn', 'dbg', 'jn', 'grp'].includes(id));
+  ok(res && res.ok, 'the edit applied');
+  ok(added.length === 1, 'one node was imported (' + (importedIds.join(',') || 'nothing') + ')');
+  ok(captured.removed.length === 0,
+    'nothing was removed to make room for it (' + (captured.removed.join(',') || 'none') + ')');
+  extrasSurvived(captured, 'group join');
+
+  const box = byId.grp;
+  ok(!!box && (box.nodes || []).indexOf(added[0]) !== -1,
+    'the box lists its new member (' + ((box && box.nodes) || []).join(',') + ')');
+  ok(!!box && (box.nodes || []).indexOf('inj') !== -1,
+    'and still lists the member it had');
+  ok(byId[added[0]] && byId[added[0]].g === 'grp',
+    'the member points back at the box, which is the half the editor draws from');
+  ok(!!box && box.w > 0 && box.h > 0,
+    'and the box has bounds the layout fitted (' + (box && box.w) + 'x' + (box && box.h) + ')');
+}
+
 (async () => {
   await propertyEditTouchesNothingElse();
   await addingANodeImportsOnlyThatNode();
   await deletingANodeRemovesOnlyThatNode();
   await rewiringOnlyMovesLinks();
+  await joiningAGroupIsStillADiff();
   summary();
 })();

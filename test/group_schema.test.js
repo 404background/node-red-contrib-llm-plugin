@@ -255,13 +255,15 @@ async function scenarioCaptionedBoxesStayApart() {
 
 async function scenarioBoxGrowsWithoutCrowdingTheNext() {
   console.log('\nA node added to a group later pushes the next sequence down, whole');
-  const live = [
+  const liveNodes = [
     { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 110, y: 160, g: 'gA', wires: [['a2']] },
     { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 310, y: 160, g: 'gA', wires: [] },
-    { id: 'gA', type: 'group', z: 'tab1', name: 'SeqA', nodes: ['a1', 'a2'],
-      x: 35, y: 130, w: 340, h: 80 },
     { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 110, y: 280, g: 'gB', wires: [['b2']] },
     { id: 'b2', type: 'debug', z: 'tab1', name: 'db', x: 310, y: 280, g: 'gB', wires: [] },
+  ];
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'SeqA', nodes: ['a1', 'a2'],
+      x: 35, y: 130, w: 340, h: 80 },
     { id: 'gB', type: 'group', z: 'tab1', name: 'SeqB', nodes: ['b1', 'b2'],
       x: 35, y: 250, w: 340, h: 80 },
   ];
@@ -271,7 +273,9 @@ async function scenarioBoxGrowsWithoutCrowdingTheNext() {
     groups: { group_seqa: { name: 'SeqA', nodes: ['function_fa'] } },
   });
 
-  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: clone(live), activeId: 'tab1' });
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
   const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
     mode: 'agent', allowedWorkspaceIds: ['tab1'],
   });
