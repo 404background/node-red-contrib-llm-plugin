@@ -30,6 +30,8 @@ npm install @background404/node-red-contrib-llm-plugin
 
 Restart Node-RED after install.
 
+Requires Node-RED 4.0 or later on Node.js 22 or later.
+
 ## Quick Start
 
 1. Open the LLM Plugin sidebar.

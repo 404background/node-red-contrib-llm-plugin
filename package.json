@@ -37,12 +37,12 @@
   "author": "background404",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
-    "fs-extra": "^11.3.4",
-    "marked": "^17.0.1",
-    "openai": "^6.2.0"
+    "fs-extra": "^11.4.0",
+    "marked": "^18.0.13",
+    "openai": "^7.20.0"
   },
   "repository": {
     "type": "git",
