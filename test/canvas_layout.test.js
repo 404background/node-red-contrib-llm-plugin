@@ -371,4 +371,82 @@ describe('An untouched flow stays rigid during an incremental edit', function() 
     ok((o2.y - o1.y) === gapBefore, 'its internal vertical gap is preserved (not sheared)');
 });
 
+// A box is drawn outside its members, so spacing the members is not spacing
+// the boxes: `componentGap` (80) minus two paddings (25 each) left 30px
+// between two grouped sequences, and a caption that joined a group ate the
+// rest. `separateGroups` is the engine's guarantee that a box clears what is
+// outside it; the end-to-end shape an LLM proposes is group_schema's.
+describe('Group boxes clear each other by groupGap', function() {
+    const PAD = 25;
+
+    // Two stacked sequences, each boxed, with only `tight` px between boxes.
+    function stacked(tight) {
+        const topBottom = 160 + NODE_HEIGHT / 2 + PAD;    // SeqA's box bottom
+        const bTop = topBottom + tight;
+        const bY = bTop + PAD + NODE_HEIGHT / 2;
+        return [
+            { id: 'a1', type: 'inject', z: 'z', name: 'a', x: 110, y: 160, g: 'gA', wires: [['a2']] },
+            { id: 'a2', type: 'debug',  z: 'z', name: 'da', x: 310, y: 160, g: 'gA', wires: [[]] },
+            { id: 'gA', type: 'group',  z: 'z', name: 'SeqA', nodes: ['a1', 'a2'],
+              x: 35, y: 160 - NODE_HEIGHT / 2 - PAD, w: 340, h: NODE_HEIGHT + PAD * 2 },
+            { id: 'b1', type: 'inject', z: 'z', name: 'b', x: 110, y: bY, g: 'gB', wires: [['b2']] },
+            { id: 'b2', type: 'debug',  z: 'z', name: 'db', x: 310, y: bY, g: 'gB', wires: [[]] },
+            { id: 'gB', type: 'group',  z: 'z', name: 'SeqB', nodes: ['b1', 'b2'],
+              x: 35, y: bTop, w: 340, h: NODE_HEIGHT + PAD * 2 }
+        ];
+    }
+    const box = (flow, id) => flow.find((n) => n.id === id);
+    const gapBetween = (flow) => box(flow, 'gB').y - (box(flow, 'gA').y + box(flow, 'gA').h);
+
+    const GAP = Layout.LAYOUT_DEFAULTS.groupGap;
+
+    it('two grid squares is the default (' + GAP + 'px)', function() {
+        assert(GAP === 40, 'groupGap is ' + GAP);
+    });
+
+    it('boxes that would overlap are pushed apart', function() {
+        const flow = stacked(-10);
+        Layout.separateGroups(flow, { isCanvasNode: (n) => !!n && n.type !== 'tab' });
+        assert(gapBetween(flow) === GAP, 'gap is ' + gapBetween(flow));
+    });
+
+    it('the pushed sequence moves as a whole, box included', function() {
+        const flow = stacked(-10);
+        const before = { b1: box(flow, 'b1').y, b2: box(flow, 'b2').y, gB: box(flow, 'gB').y };
+        Layout.separateGroups(flow, { isCanvasNode: (n) => !!n && n.type !== 'tab' });
+        const dy = box(flow, 'b1').y - before.b1;
+        assert(dy > 0, 'it moved down');
+        assert(box(flow, 'b2').y - before.b2 === dy, 'its second node moved by the same dy');
+        assert(box(flow, 'gB').y - before.gB === dy, 'its box moved by the same dy');
+    });
+
+    it('a sequence that already clears the box above is left where it is', function() {
+        const flow = stacked(GAP + 60);
+        const before = box(flow, 'b1').y;
+        Layout.separateGroups(flow, { isCanvasNode: (n) => !!n && n.type !== 'tab' });
+        assert(box(flow, 'b1').y === before, 'moved to ' + box(flow, 'b1').y);
+    });
+
+    it('running it again does not drift the canvas down', function() {
+        const flow = stacked(-10);
+        const opts = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+        Layout.separateGroups(flow, opts);
+        const settled = box(flow, 'b1').y;
+        Layout.separateGroups(flow, opts);
+        Layout.separateGroups(flow, opts);
+        assert(box(flow, 'b1').y === settled, 'settled at ' + settled + ', then ' + box(flow, 'b1').y);
+    });
+
+    it('a caption outside the group travels with the sequence it heads', function() {
+        const flow = stacked(-10);
+        flow.push({ id: 'c1', type: 'comment', z: 'z', name: 'What B does',
+            x: 110, y: box(flow, 'b1').y - 40 });
+        const before = box(flow, 'c1').y;
+        Layout.separateGroups(flow, { isCanvasNode: (n) => !!n && n.type !== 'tab' });
+        const dy = box(flow, 'b1').y - (before + 40);
+        assert(box(flow, 'c1').y - before === dy, 'caption dy ' + (box(flow, 'c1').y - before) +
+            ' vs node dy ' + dy);
+    });
+});
+
 summary();

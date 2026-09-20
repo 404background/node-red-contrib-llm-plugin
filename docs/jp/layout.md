@@ -87,6 +87,7 @@ const positions = Layout.layoutNodes(
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` があればそれ、なければ `estimateNodeWidth`。 |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | 縦積みのためのコンポーネントごとの Y オフセット。`spacingY` と `gap` はエッジ間。行ピッチは `nodeHeight + spacingY`、コンポーネントステップは `nodeHeight + gap`。`nodeHeight` のデフォルトは `LAYOUT_DEFAULTS.nodeHeight`。 |
 | `fitGroups(nodes, options?)` | メンバーを収めきれなくなったグループの枠を合わせ直す。[グループの枠](#グループの枠)を参照。 |
+| `separateGroups(nodes, options?)` | すべてのグループの枠が外側のものから `groupGap` 以上離れるまでブロックを押し下げる。`fitGroups` のあとに走る。 |
 | `LAYOUT_DEFAULTS` | デフォルト定数。 |
 
 ## デフォルト
@@ -102,7 +103,8 @@ LAYOUT_DEFAULTS = {
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
     maxColumns:      5,
-    groupPadding:   25     // the editor's own clearance between a group's box and its members
+    groupPadding:   25,    // the editor's own clearance between a group's box and its members
+    groupGap:       40     // clearance between a group's box and whatever is outside it
 };
 ```
 
@@ -188,8 +190,25 @@ w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
 - すでに全メンバーを**収めている**枠は、必要より大きくてもそのままにする。ユーザーが
   広げた結果であり、縮め直すのはその操作を取り消すことになる。
 - グループはノードとしてはレイアウトしない(`isLayoutNode` が除外する)ので、何かを
-  押しのけることはない。2つのコンポーネントを囲む2つの枠がぶつかることもない。
-  `componentGap`(80)がパディング2つ分(25 + 25)より広いからである。
+  押しのけることはない。裏を返すと、枠同士を離しておくものも何もない。ノードの
+  レイアウトが空けるのは**メンバー**の間隔であり、`componentGap`(80)からパディング
+  2つ分を引くと枠と枠の間は 30px しか残らない。さらにグループに入ったコメントが枠を
+  40px 上へ伸ばすので、枠は 10px 重なっていた。`separateGroups` は `fitGroups` の
+  あとに走り、枠が外側のものと離れていることを保証する。
+
+### `separateGroups` — 枠同士を離す
+
+- どの枠も、その外側にあるもの(別の枠でも素のノードでも)から最低 `groupGap`
+  (40 = 2マス)離れた位置に収まる。
+- 動かす単位はノードではなく**ブロック**である。ワイヤでつながっているもの、
+  グループ所属の両側どちらかでつながっているもの、メンバーの見出しコメントである
+  もの、これらをひとまとまりとして動かす。したがって一連のシーケンスは丸ごと
+  平行移動し、途中でちぎれることはない。コンポーネント間の押し下げと同じ規則である。
+- ブロックは上から順に決着させ、**下方向にしか**押さない。したがってこのパスは
+  冪等である。すでに離れているキャンバスは何も動かさずに終わり、もう一度走らせても
+  ずり下がらない。
+- 水平方向に重なっているブロック同士しか比較しない。横に並んだ2つのシーケンスが
+  互いを押し下げることはない。
 
 ## コメント配置
 

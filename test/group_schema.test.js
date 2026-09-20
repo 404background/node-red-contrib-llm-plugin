@@ -209,6 +209,86 @@ async function scenarioTwoSequencesTwoBoxes() {
     'and holds them inside its box');
 }
 
+// The clearance itself is canvas_layout's (`separateGroups`); what this pair
+// asserts is that the shape an LLM actually proposes comes out of the
+// importer with it — the node layout spaces MEMBERS, and a caption that
+// joined a group used to grow its box 10px into the box above.
+const GROUP_GAP = 40;
+
+function boxGaps(groups) {
+  const sorted = groups.slice().sort((a, b) => a.y - b.y);
+  const gaps = [];
+  for (let i = 1; i < sorted.length; i++) {
+    gaps.push(sorted[i].y - (sorted[i - 1].y + sorted[i - 1].h));
+  }
+  return gaps;
+}
+
+async function scenarioCaptionedBoxesStayApart() {
+  console.log('\nThree captioned sequences: every box keeps two grid squares from the next');
+  const nodes = {}, connections = [], groups = {};
+  ['a', 'b', 'c'].forEach((l) => {
+    nodes['inject_' + l] = { type: 'inject', name: l };
+    nodes['debug_d' + l] = { type: 'debug', name: 'd' + l };
+    nodes['comment_head_' + l] = {
+      type: 'comment', name: 'Sequence ' + l.toUpperCase(), above: 'inject_' + l,
+    };
+    connections.push({ from: 'inject_' + l, to: 'debug_d' + l });
+    groups['group_' + l] = {
+      name: 'Seq' + l.toUpperCase(),
+      nodes: ['inject_' + l, 'debug_d' + l, 'comment_head_' + l],
+    };
+  });
+
+  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: [], activeId: 'tab1' });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({ nodes, connections, groups }), {
+    mode: 'agent', allowedWorkspaceIds: ['tab1'],
+  });
+  const boxes = groupsIn(snapshot('tab1'));
+  const gaps = boxGaps(boxes);
+
+  ok(res && res.ok, 'the import applied');
+  ok(boxes.length === 3, 'three boxes (' + boxes.length + ')');
+  ok(gaps.every((g) => g >= GROUP_GAP),
+    'each box clears the one above it by at least two grid squares (' + gaps.join(', ') + ')');
+}
+
+async function scenarioBoxGrowsWithoutCrowdingTheNext() {
+  console.log('\nA node added to a group later pushes the next sequence down, whole');
+  const live = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 110, y: 160, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 310, y: 160, g: 'gA', wires: [] },
+    { id: 'gA', type: 'group', z: 'tab1', name: 'SeqA', nodes: ['a1', 'a2'],
+      x: 35, y: 130, w: 340, h: 80 },
+    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 110, y: 280, g: 'gB', wires: [['b2']] },
+    { id: 'b2', type: 'debug', z: 'tab1', name: 'db', x: 310, y: 280, g: 'gB', wires: [] },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'SeqB', nodes: ['b1', 'b2'],
+      x: 35, y: 250, w: 340, h: 80 },
+  ];
+  const msg = fence({
+    nodes: { function_fa: { type: 'function', name: 'fa', props: { func: 'return msg;' } } },
+    connections: [{ from: 'inject_a', to: 'function_fa' }],
+    groups: { group_seqa: { name: 'SeqA', nodes: ['function_fa'] } },
+  });
+
+  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: clone(live), activeId: 'tab1' });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
+    mode: 'agent', allowedWorkspaceIds: ['tab1'],
+  });
+  const flow = snapshot('tab1');
+  const boxes = groupsIn(flow);
+  const seqA = boxes.find((g) => g.name === 'SeqA');
+  const gaps = boxGaps(boxes);
+  const b1 = nodeById(flow, 'b1'), b2 = nodeById(flow, 'b2');
+
+  ok(res && res.ok, 'the import applied');
+  ok(seqA && seqA.h > 80, 'the box it joined grew (' + (seqA && seqA.h) + ')');
+  ok(gaps.every((g) => g >= GROUP_GAP),
+    'and the sequence below still clears it (' + gaps.join(', ') + ')');
+  ok(b1.y > 280 && (b2.y - b1.y) === 0,
+    'which moved down as a whole, not reflowed (b1 ' + b1.y + ', b2 ' + b2.y + ')');
+}
+
 async function scenarioCaptionJoinsTheBoxItHeads() {
   console.log('\nA new comment heading a member is drawn inside the box');
   const msg = fence({
@@ -280,6 +360,8 @@ async function run() {
   await scenarioMembershipIsAdditive();
   await scenarioDeletingTheBoxKeepsTheNodes();
   await scenarioTwoSequencesTwoBoxes();
+  await scenarioCaptionedBoxesStayApart();
+  await scenarioBoxGrowsWithoutCrowdingTheNext();
   await scenarioCaptionJoinsTheBoxItHeads();
   scenarioContextRoundTrip();
   summary();

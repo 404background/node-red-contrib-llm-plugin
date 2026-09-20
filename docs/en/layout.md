@@ -87,6 +87,7 @@ const positions = Layout.layoutNodes(
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
 | `fitGroups(nodes, options?)` | Refit every group box that no longer contains its members. See [Group boxes](#group-boxes). |
+| `separateGroups(nodes, options?)` | Push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
@@ -102,7 +103,8 @@ LAYOUT_DEFAULTS = {
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
     maxColumns:      5,
-    groupPadding:   25     // the editor's own clearance between a group's box and its members
+    groupPadding:   25,    // the editor's own clearance between a group's box and its members
+    groupGap:       40     // clearance between a group's box and whatever is outside it
 };
 ```
 
@@ -206,8 +208,25 @@ behind. `fitGroups` runs after the layout passes and settles it:
   larger than it needs to be: the user resized it, and shrinking it back would
   undo that.
 - Groups are not laid out as nodes (`isLayoutNode` excludes them), so they never
-  displace anything. Two boxes around two components cannot collide either:
-  `componentGap` (80) is wider than two paddings (25 + 25).
+  displace anything — which also means nothing keeps two boxes apart. The node
+  layout spaces MEMBERS: `componentGap` (80) minus two paddings leaves 30px
+  between two boxed sequences, and a caption that joined a group grows its box
+  40px further up, so the boxes overlapped by 10px. `separateGroups` runs after
+  `fitGroups` and is the guarantee that a box clears what is outside it.
+
+### `separateGroups` — keeping boxes apart
+
+- Every box ends up at least `groupGap` (40, two grid squares) from anything
+  outside it, whether that is another box or a plain node.
+- What moves is a **block**, not a node: everything tied together by wires, by
+  either half of group membership, or by being the caption of a member. A
+  sequence is therefore translated whole and never sheared — the same rule the
+  cross-component push follows.
+- Blocks are settled top-down and only ever pushed **down**, so the pass is
+  idempotent: a canvas that already clears settles with nothing moved, and
+  running it again does not drift.
+- Only blocks that overlap horizontally are compared. Two sequences side by side
+  do not push each other down.
 
 ## Comment placement
 

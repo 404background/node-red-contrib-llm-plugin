@@ -722,6 +722,11 @@
         // group's box only when the user drags something into or inside it.
         layout.fitGroups(rebuilt, layoutOpts);
 
+        // Boxes fitted, so now they can be kept apart: the node layout spaced
+        // the members, which is not the same as spacing what is drawn around
+        // them.
+        layout.separateGroups(rebuilt, layoutOpts);
+
         // Metadata sweep #2: the layout passes have consumed what they needed,
         // so drop the remainder. After this point no node carries a `_` key.
         rebuilt.forEach(function(n) {

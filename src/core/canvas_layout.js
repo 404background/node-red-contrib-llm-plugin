@@ -26,7 +26,8 @@
         gridSize:      20,
         maxColumns:     5,
         topMargin:     20,    // min clearance between canvas top (y=0) and the topmost node edge
-        groupPadding:  25     // the editor's own clearance between a group's box and its members
+        groupPadding:  25,    // the editor's own clearance between a group's box and its members
+        groupGap:      40     // 2 grid squares between a group's box and whatever is outside it
     };
 
     // Default predicate when caller doesn't supply `options.isCanvasNode`.
@@ -1242,6 +1243,114 @@
         return nodes;
     }
 
+    // A box is drawn `groupPadding` outside its members, so the clearance the
+    // node layout left between two sequences is that clearance MINUS both
+    // paddings — and a caption that joined a group grows its box further into
+    // it. Stacked sequences that read as separate therefore come out with
+    // boxes that touch, or overlap outright.
+    //
+    // This pass is the guard: whatever moved the members, no box ends up
+    // closer than `groupGap` to anything outside it. Blocks move whole —
+    // members, boxes, captions and everything wired to them — so separating
+    // two sequences cannot shear either one. See docs/{en,jp}/layout.md.
+    function separateGroups(nodes, options) {
+        let opts = options || {};
+        let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+
+        let all = (nodes || []).filter(function(n) {
+            return n && n.id && typeof n.x === 'number' && typeof n.y === 'number';
+        });
+        let groups = all.filter(function(n) { return n.type === 'group'; });
+        if (groups.length === 0) return nodes;
+
+        let byId = {};
+        all.forEach(function(n) { byId[n.id] = n; });
+
+        // --- Blocks: what has to move together ---
+        let parent = {};
+        function find(id) {
+            while (parent[id] !== undefined && parent[id] !== id) id = parent[id];
+            return id;
+        }
+        function union(a, b) {
+            if (parent[a] === undefined) parent[a] = a;
+            if (parent[b] === undefined) parent[b] = b;
+            let ra = find(a), rb = find(b);
+            if (ra !== rb) parent[ra] = rb;
+        }
+        all.forEach(function(n) { parent[n.id] = n.id; });
+        all.forEach(function(n) {
+            if (Array.isArray(n.wires)) {
+                n.wires.forEach(function(port) {
+                    if (!Array.isArray(port)) return;
+                    port.forEach(function(toId) { if (byId[toId]) union(n.id, toId); });
+                });
+            }
+            // Both halves of group membership, so a member listed on only one
+            // side still travels with its box.
+            if (n.g && byId[n.g]) union(n.id, n.g);
+            if (n.type === 'group' && Array.isArray(n.nodes)) {
+                n.nodes.forEach(function(id) { if (byId[id]) union(n.id, id); });
+            }
+        });
+        // A caption is tied to the node it heads, which is the only thing
+        // saying where it belongs when it is not a group member.
+        let anchors = captureCommentAnchors(all, opts);
+        Object.keys(anchors).forEach(function(id) {
+            if (byId[id] && byId[anchors[id].targetId]) union(id, anchors[id].targetId);
+        });
+
+        let blocks = {};
+        all.forEach(function(n) {
+            let root = find(n.id);
+            let b = blocks[root] || (blocks[root] = {
+                nodes: [], hasGroup: false,
+                top: Infinity, bottom: -Infinity, left: Infinity, right: -Infinity
+            });
+            b.nodes.push(n);
+            let top, bottom, left, right;
+            if (n.type === 'group') {
+                b.hasGroup = true;
+                top = n.y; bottom = n.y + (n.h || 0);
+                left = n.x; right = n.x + (n.w || 0);
+            } else {
+                let w = getNodeWidth(n, opts);
+                top = n.y - nodeHeight / 2; bottom = n.y + nodeHeight / 2;
+                left = n.x - w / 2; right = n.x + w / 2;
+            }
+            if (top < b.top) b.top = top;
+            if (bottom > b.bottom) b.bottom = bottom;
+            if (left < b.left) b.left = left;
+            if (right > b.right) b.right = right;
+        });
+
+        // --- Push down whatever a box does not clear ---
+        // Top-down: each block is separated from the ones already placed
+        // above it, so one pass settles the stack.
+        let ordered = Object.keys(blocks).map(function(k) { return blocks[k]; })
+            .sort(function(a, b) { return (a.top - b.top) || (a.left - b.left); });
+
+        for (let j = 1; j < ordered.length; j++) {
+            let cur = ordered[j];
+            let delta = 0;
+            for (let i = 0; i < j; i++) {
+                let above = ordered[i];
+                // Only a box needs this clearance; two plain flows are the
+                // node layout's business, and it already spaced them.
+                if (!above.hasGroup && !cur.hasGroup) continue;
+                if (above.right <= cur.left || cur.right <= above.left) continue;
+                let needed = (above.bottom + gap) - (cur.top + delta);
+                if (needed > 0) delta += needed;
+            }
+            if (delta <= 0) continue;
+            cur.nodes.forEach(function(n) { n.y = n.y + delta; });
+            cur.top += delta;
+            cur.bottom += delta;
+        }
+        return nodes;
+    }
+
     return {
         LAYOUT_DEFAULTS:              LAYOUT_DEFAULTS,
         estimateNodeWidth:            estimateNodeWidth,
@@ -1253,6 +1362,7 @@
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,
         applyCommentAnchors:          applyCommentAnchors,
-        fitGroups:                    fitGroups
+        fitGroups:                    fitGroups,
+        separateGroups:               separateGroups
     };
 });
