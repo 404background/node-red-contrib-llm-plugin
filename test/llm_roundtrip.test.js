@@ -5,7 +5,7 @@
 //
 //     npm run test:llm
 //
-// Settings come from `llm-test-config.json` in the repo root (git-ignored;
+// Settings come from `llm-test-config.json` next to this file (git-ignored;
 // copy `llm-test-config.example.json` to create it). Environment variables
 // LLM_TEST_URL / LLM_TEST_MODEL override individual fields.
 //
@@ -50,7 +50,7 @@ const DEFAULTS = {
 };
 
 function loadConfig() {
-    const file = path.join(ROOT, 'llm-test-config.json');
+    const file = path.join(__dirname, 'llm-test-config.json');
     let fromFile = {};
     if (fs.existsSync(file)) {
         try {

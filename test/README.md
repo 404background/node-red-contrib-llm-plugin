@@ -20,8 +20,11 @@ separate — it talks to an actual model, so it cannot be deterministic.
 ## Offline suites
 
 Each suite states the guarantee it protects in its own header comment, and that
-comment — not the assertion names — is the place to look first. The order below
-is the order `npm test` runs them in.
+comment — not the assertion names — is the place to look first. `npm test` is
+`test/run_all.js`: it finds every `*.test.js` in this folder and runs each in
+its own process, in name order, so a new suite runs the moment it is written.
+Every suite is run even after one fails, and the tally at the end names the
+ones that did.
 
 | Suite | Guards |
 |-------|--------|
@@ -65,11 +68,11 @@ Model output is not deterministic, so its assertions are structural rather than
 exact: a schema must be extractable, and the flow it yields must be one
 `RED.nodes.import` would accept.
 
-Endpoint and model come from `llm-test-config.json` in the repo root. That file
-is git-ignored, so copy the template to create it:
+Endpoint and model come from `llm-test-config.json`, next to the suites it
+configures. That file is git-ignored, so copy the template to create it:
 
 ```bash
-cp llm-test-config.example.json llm-test-config.json
+cp test/llm-test-config.example.json test/llm-test-config.json
 ```
 
 | Field | Meaning |
@@ -93,8 +96,8 @@ the model was not installed, or the endpoint failed to serve the request.
 
 1. Open with a header comment naming the guarantee and why it exists — the
    history that made it necessary is the useful part.
-2. Add the file to the `test` script in `package.json`. There is no runner that
-   discovers suites, so one that is not listed never runs.
+2. Name it `<what it guards>.test.js` and leave it in `test/`. The runner
+   discovers it; nothing has to be listed in `package.json`.
 3. One behaviour, one suite. Where two suites drive the same path — the apply
    is the obvious one — each asserts its own layer and says in its header what
    it deliberately leaves to the other: `incremental_apply` owns the work the
@@ -102,9 +105,11 @@ the model was not installed, or the endpoint failed to serve the request.
    `junction_preserve` owns junctions and groups. Asserting a behaviour twice
    means two suites to update for one change, and neither one tells you which
    is authoritative.
-4. `.gitignore` tracks `test/*.test.js`, `helpers.js` and this README and ignores
-   anything else dropped into `test/`, so scratch files and temp storage stay
-   untracked. Tests are not published to npm (`files` in `package.json`).
+4. `.gitignore` tracks `test/*.test.js`, `run_all.js`, `helpers.js`,
+   `llm-test-config.example.json` and this README, and ignores anything else
+   dropped into `test/`, so scratch files, temp storage and the local
+   `llm-test-config.json` stay untracked. Tests are not published to npm
+   (`files` in `package.json`).
 
 ---
 
@@ -128,7 +133,10 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 ## オフラインのスイート
 
 各スイートは「何を守るためのテストか」を冒頭のコメントに書いてある。アサーション
-の名前ではなく、まずそこを読むこと。並び順は `npm test` が実行する順。
+の名前ではなく、まずそこを読むこと。`npm test` の実体は `test/run_all.js` で、
+このフォルダの `*.test.js` をすべて見つけ、名前順に 1 つずつ別プロセスで実行する。
+スイートを書けばその時点で実行対象になる。途中で失敗しても最後まで走らせ、
+末尾の集計で落ちたスイート名を挙げる。
 
 | スイート | 守っているもの |
 |------|------|
@@ -172,11 +180,11 @@ Vibe Schema 抽出、インポート可能なフローへの変換 — をその
 すなわち「スキーマが抽出できること」と「そこから得られるフローが
 `RED.nodes.import` の受け付ける形であること」。
 
-接続先とモデルはリポジトリ直下の `llm-test-config.json` から読む。このファイルは
-git 管理外なので、テンプレートをコピーして作る。
+接続先とモデルは、スイートと同じ `test/` に置く `llm-test-config.json` から読む。
+このファイルは git 管理外なので、テンプレートをコピーして作る。
 
 ```bash
-cp llm-test-config.example.json llm-test-config.json
+cp test/llm-test-config.example.json test/llm-test-config.json
 ```
 
 | フィールド | 意味 |
@@ -201,15 +209,16 @@ LLM_TEST_MODEL=llama3.2 npm run test:llm
 
 1. 冒頭のコメントに「何を守るテストか」と「なぜ必要になったか」を書く。必要に
    なった経緯こそが後から効いてくる。
-2. `package.json` の `test` スクリプトにファイルを追加する。スイートを自動で
-   探す仕組みはないので、書かなければ動かない。
+2. ファイル名は `<何を守るか>.test.js` とし、`test/` に置く。ランナーが自動で
+   見つけるので、`package.json` に書き足す必要はない。
 3. 一つの振る舞いは一つのスイートで検証する。同じ経路を通るスイートが複数ある
    場合(適用まわりが典型)、それぞれ自分の層だけを検証し、何を他に任せたかを
    冒頭コメントに書く。`incremental_apply` はエディタが行う作業、`deploy_churn`
    はランタイムがノードを再起動するかどうか、`junction_preserve` は junction と
    group を担当する。二重に検証すると、一つの変更で二つのスイートを直すことに
    なり、どちらが正なのかも分からなくなる。
-4. `.gitignore` は `test/*.test.js`・`helpers.js`・この README だけを追跡し、
-   `test/` に置かれたそれ以外は無視する。一時ファイルやテスト用ストレージが
-   紛れ込まないようにするためである。テストは npm には公開されない
-   (`package.json` の `files`)。
+4. `.gitignore` は `test/*.test.js`・`run_all.js`・`helpers.js`・
+   `llm-test-config.example.json`・この README だけを追跡し、`test/` に置かれた
+   それ以外は無視する。一時ファイルやテスト用ストレージ、手元の
+   `llm-test-config.json` が紛れ込まないようにするためである。テストは npm には
+   公開されない(`package.json` の `files`)。
