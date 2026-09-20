@@ -396,8 +396,15 @@ Main sidebar entry. `createLLMPluginUI()` builds the DOM from the
 `llm-plugin-sidebar-template` / `llm-plugin-settings-template` HTML
 templates in `llm_plugin.html`; `initializeClientApp()` wires events:
 
-- Generate / Stop toggle (single click handler + `classList`,
-  Ctrl+Enter double-trigger guard).
+- Generate / Stop toggle (single click handler + `classList`, guarded
+  against a second trigger while a request is in flight).
+- **Prompt keys**: **Enter** sends, **Shift+Enter** is a newline, **Esc**
+  stops a running request (from anywhere in the sidebar, except while the
+  settings dialog has it). The send is skipped while `e.isComposing` (or
+  `keyCode === 229`) — for an IME the Enter that closes a conversion is the
+  same keydown, so without that guard every confirmed Japanese phrase would
+  send the message it was confirming. Esc and the Stop button run the same
+  `stopGeneration()`.
 - `AbortController` for fetch cancellation.
 - **Mode UX**: `change` toast on dropdown switch; dropdown disabled
   during in-flight requests; per-message mode badge in the elapsed

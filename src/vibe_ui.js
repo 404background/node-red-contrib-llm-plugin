@@ -268,22 +268,46 @@
         initFlowSelector();
 
         // --- Generate / Stop toggle (single handler) ---
+        function isGenerating() {
+            return generateBtn.classList.contains('stop-btn');
+        }
+        function stopGeneration() {
+            if (!isGenerating() || !currentAbortController) return false;
+            currentAbortController.abort();
+            let loadingMsg = chatArea.querySelector('.loading-message');
+            if (loadingMsg) loadingMsg.remove();
+            resetGenerateBtn();
+            currentAbortController = null;
+            return true;
+        }
+
         generateBtn.addEventListener('click', function() {
-            if (generateBtn.classList.contains('stop-btn')) {
-                if (currentAbortController) {
-                    currentAbortController.abort();
-                    let loadingMsg = chatArea.querySelector('.loading-message');
-                    if (loadingMsg) loadingMsg.remove();
-                    resetGenerateBtn();
-                    currentAbortController = null;
-                }
-            } else {
-                handleGenerate();
-            }
+            if (isGenerating()) stopGeneration();
+            else handleGenerate();
         });
 
         promptInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) handleGenerate();
+            if (e.key === 'Escape') {
+                if (stopGeneration()) e.preventDefault();
+                return;
+            }
+            if (e.key !== 'Enter') return;
+            // Shift+Enter is the newline. An Enter that is still closing an
+            // IME conversion is that conversion, not a send — without this
+            // guard every Japanese phrase sends the message it was confirming.
+            if (e.shiftKey || e.isComposing || e.keyCode === 229) return;
+            e.preventDefault();
+            handleGenerate();
+        });
+
+        // Esc stops a running request from anywhere in the sidebar, not only
+        // the prompt box. While the settings dialog is open, Esc is that
+        // dialog's — it closes it and nothing else.
+        let sidebarRoot = generateBtn.closest('.llm-plugin-container') || document;
+        sidebarRoot.addEventListener('keydown', function(e) {
+            if (e.key !== 'Escape' || e.target === promptInput) return;
+            if (settingsOverlay && settingsOverlay.classList.contains('visible')) return;
+            if (stopGeneration()) e.preventDefault();
         });
 
         // --- Shell-style history: Up/Down through this chat's user

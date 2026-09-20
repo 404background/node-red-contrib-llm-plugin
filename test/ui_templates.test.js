@@ -244,6 +244,31 @@ function scenarioNodeHelpStaysShort() {
     'and points at the full documentation on GitHub');
 }
 
+// Enter sends. That makes the IME guard load-bearing for anyone typing
+// Japanese, Chinese or Korean: the Enter that closes a conversion is the same
+// keydown, so without `isComposing` every confirmed phrase sends the message
+// mid-sentence. It is one condition, it looks redundant, and it is exactly
+// the kind of thing a refactor drops — hence a test.
+function scenarioPromptKeysAreWired() {
+  console.log('\nEnter sends, Shift+Enter is a newline, Esc stops');
+  const handler = (/promptInput\.addEventListener\('keydown',([\s\S]*?)\n        \}\);/
+    .exec(VIBE_UI) || [])[1] || '';
+
+  ok(handler.length > 0, 'the prompt box has a keydown handler');
+  ok(/e\.key[^\n]*'Enter'/.test(handler) && /handleGenerate\(\)/.test(handler),
+    'Enter is what sends');
+  ok(/e\.shiftKey/.test(handler), 'Shift+Enter is let through as a newline');
+  ok(/e\.isComposing/.test(handler) && /keyCode === 229/.test(handler),
+    'an Enter closing an IME conversion is not a send');
+  ok(/e\.preventDefault\(\)/.test(handler),
+    'and the send does not also type a newline into the box');
+  ok(/e\.key === 'Escape'/.test(handler) && /stopGeneration\(\)/.test(handler),
+    'Esc stops a running request');
+  ok(/function stopGeneration\(\)/.test(VIBE_UI) &&
+     VIBE_UI.split('stopGeneration()').length - 1 >= 3,
+    'which is the same stop the button does, not a second copy of it');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
@@ -254,6 +279,7 @@ function run() {
   scenarioDocsLinkIsWired();
   scenarioNodeLeansOnThePlugin();
   scenarioNodeHelpStaysShort();
+  scenarioPromptKeysAreWired();
   summary();
 }
 
