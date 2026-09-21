@@ -744,6 +744,109 @@ describe('Group boxes share a left edge', function() {
     });
 });
 
+// Two boxes wired to each other are ONE block, so the block pass cannot
+// separate them — and a user looking at two borders crossing does not care
+// why. Boxes are stacked as boxes, each moving with what it holds.
+describe('Boxes never overlap, whatever ties them together', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    it('a box interlocked with another is still pushed clear', function() {
+        // `a` is in Both, wired to `da` in A: one block, two boxes, rows
+        // that cross.
+        const flow = [
+            { id: 'a', type: 'inject', z: 'z', name: 'a', x: 250, y: 215, g: 'both', wires: [['da']] },
+            { id: 'b', type: 'inject', z: 'z', name: 'b', x: 250, y: 365, g: 'both', wires: [[]] },
+            { id: 'both', type: 'group', z: 'z', name: 'Both', nodes: ['a', 'b'],
+              x: 175, y: 175, w: 150, h: 230 },
+            { id: 'da', type: 'debug', z: 'z', name: 'da', x: 450, y: 215, g: 'gA', wires: [[]] },
+            { id: 'gA', type: 'group', z: 'z', name: 'A', nodes: ['da'],
+              x: 375, y: 175, w: 160, h: 80 },
+        ];
+        Layout.separateGroups(flow, OPTS);
+        const boxes = flow.filter((n) => n.type === 'group');
+        const [top, bottom] = boxes.sort((x, y) => x.y - y.y);
+        const overlap = top.x < bottom.x + bottom.w && bottom.x < top.x + top.w &&
+            top.y < bottom.y + bottom.h && bottom.y < top.y + top.h;
+        assert(!overlap, 'boxes still cross: ' +
+            boxes.map((g) => g.name + ' ' + g.y + '..' + (g.y + g.h)).join(' / '));
+    });
+
+    it('and takes its members with it', function() {
+        const flow = [
+            { id: 'a', type: 'inject', z: 'z', name: 'a', x: 250, y: 215, g: 'both', wires: [['da']] },
+            { id: 'b', type: 'inject', z: 'z', name: 'b', x: 250, y: 365, g: 'both', wires: [[]] },
+            { id: 'both', type: 'group', z: 'z', name: 'Both', nodes: ['a', 'b'],
+              x: 175, y: 175, w: 150, h: 230 },
+            { id: 'da', type: 'debug', z: 'z', name: 'da', x: 450, y: 215, g: 'gA', wires: [[]] },
+            { id: 'gA', type: 'group', z: 'z', name: 'A', nodes: ['da'],
+              x: 375, y: 175, w: 160, h: 80 },
+        ];
+        const gapBefore = flow[1].y - flow[0].y;
+        Layout.separateGroups(flow, OPTS);
+        const box = flow.find((n) => n.id === 'both');
+        const a = flow.find((n) => n.id === 'a'), b = flow.find((n) => n.id === 'b');
+        assert(b.y - a.y === gapBefore, 'its members were sheared (' + (b.y - a.y) + ')');
+        assert(box.y <= a.y - 15 && box.y + box.h >= b.y + 15, 'the box no longer holds them');
+    });
+});
+
+// A caption is a row tall and so is the node it heads, so an offset of less
+// than a row IS an overlap — whatever the caption's history, that is not a
+// placement to preserve.
+describe('A caption never lands on the node it heads', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    it('an offset smaller than a row is clamped to one row', function() {
+        const target = { id: 't', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300 };
+        const caption = { id: 'c', type: 'comment', z: 'z', name: 'Heading', x: 250, y: 294 };
+        Layout.applyCommentAnchors([caption, target],
+            { c: { targetId: 't', dx: 0, dy: -6 } }, OPTS);
+        assert(target.y - caption.y >= 40, 'caption at ' + caption.y + ', node at ' + target.y);
+    });
+
+    it('a deliberate offset further up is left as it is', function() {
+        const target = { id: 't', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300 };
+        const caption = { id: 'c', type: 'comment', z: 'z', name: 'Heading', x: 250, y: 180 };
+        Layout.applyCommentAnchors([caption, target],
+            { c: { targetId: 't', dx: 0, dy: -120 } }, OPTS);
+        assert(caption.y === 180, 'moved to ' + caption.y);
+    });
+});
+
+// An annotation belongs to nobody, so the layout leaves it alone — right up
+// until a pass lays a sequence over the top of it.
+describe('An annotation buried by the layout is moved clear', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    it('a note under a node is moved off it', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300, wires: [[]] },
+            { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 250, y: 305 },
+        ];
+        Layout.nudgeFreeCaptions(flow, {}, OPTS);
+        assert(Math.abs(flow[1].y - flow[0].y) >= 30,
+            'note at ' + flow[1].y + ', node at ' + flow[0].y);
+    });
+
+    it('a note that is in nobody\'s way stays where it is', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300, wires: [[]] },
+            { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 900, y: 700 },
+        ];
+        Layout.nudgeFreeCaptions(flow, {}, OPTS);
+        assert(flow[1].y === 700 && flow[1].x === 900, 'moved to ' + flow[1].x + ',' + flow[1].y);
+    });
+
+    it('a caption with an anchor is left to the anchor', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300, wires: [[]] },
+            { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 250, y: 305 },
+        ];
+        Layout.nudgeFreeCaptions(flow, { c1: { targetId: 'n1', dx: 0, dy: -40 } }, OPTS);
+        assert(flow[1].y === 305, 'moved to ' + flow[1].y);
+    });
+});
+
 // `ensureTopMargin` guards the top; boxes made the left edge the same problem,
 // since a box is drawn one padding further out than the members it holds.
 describe('Nothing is left hanging off the canvas', function() {

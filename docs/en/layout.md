@@ -91,6 +91,7 @@ another.
 | 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Boxes whose members moved in (2) or (3) are **refitted** (`refitIds`) rather than left at the size they had. |
 | 5 | `separateGroups` | (4). Aligns each boxed sequence by its members' left edge and then pushes blocks apart vertically — both read box bounds, which only exist once the boxes are fitted. Alignment runs before the vertical pass and the block bounds are recomputed in between, so the spacing is measured on the aligned positions. |
 | 6 | `ensureCanvasMargins` | (5). One uniform shift on each axis, so it cannot disturb any spacing the passes above established. |
+| 7 | `applyCommentAnchors` + `nudgeFreeCaptions` | (6). The last word on captions, once every node has its final position: one that would sit on the node it heads is clamped to a full row above it, and an annotation belonging to nobody that a sequence landed on is moved clear. |
 
 A box left at its old size is the case this order exists to avoid: step 5 would
 line up a stale rectangle instead of the sequence inside it.
@@ -109,6 +110,7 @@ line up a stale rectangle instead of the sequence inside it.
 | `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
 | `ensureCanvasMargins(nodes, options?)` | Slide everything by one shared delta per axis when the topmost or leftmost edge — a box included — is nearer the canvas edge than `topMargin` / `leftMargin`. |
+| `nudgeFreeCaptions(nodes, anchors, options?)` | Move an unanchored comment that something else is sitting on, a row at a time, until it is readable again. |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
@@ -294,6 +296,12 @@ behind. `fitGroups` runs after the layout passes and settles it:
   side of the screen".
 - Every box ends up at least `groupGap` (40, two grid squares) from anything
   outside it, whether that is another box or a plain node.
+- **Boxes are separated as boxes, not as blocks.** Two that are interlocked —
+  a member of one wired to a member of the other — are a single block, and a
+  block cannot be pushed apart from itself, so the block pass alone left the
+  two borders crossing. `stackBoxes` runs after it and moves each box with
+  everything it holds, which is what makes "boxes never overlap" a guarantee
+  rather than a usual outcome.
 - What moves is a **block**, not a node: everything tied together by wires, by
   either half of group membership, or by being the caption of a member. A
   sequence is therefore translated whole and never sheared — the same rule the

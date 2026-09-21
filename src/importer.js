@@ -562,6 +562,15 @@
         // its members, so this is the pass that sees it — on both edges, so
         // the gap above the flow is the gap beside it.
         layout.ensureCanvasMargins(rebuilt, layoutOpts);
+
+        // And after everything has settled: an annotation that belongs to
+        // nobody is still something the user has to be able to read. If a
+        // sequence ended up on top of one, it is the annotation that moves.
+        // The anchors are re-read here because the passes above are what
+        // decided where every caption sits.
+        let finalAnchors = layout.captureCommentAnchors(rebuilt, layoutOpts);
+        layout.applyCommentAnchors(rebuilt, finalAnchors, layoutOpts);
+        layout.nudgeFreeCaptions(rebuilt, finalAnchors, layoutOpts);
         return rebuilt;
     }
 
@@ -996,8 +1005,12 @@
             moved.push(n.id);
         });
 
-        // Re-align captions to follow their (now moved) anchor target.
-        layout.applyCommentAnchors(allNodes, commentAnchors, layoutOpts);
+        // Re-align captions to follow their (now moved) anchor target, and put
+        // them back on the standard slot while we are at it: a reposition is a
+        // request to tidy up, so a caption carrying half a row of drift should
+        // not come out of it still carrying that drift.
+        layout.applyCommentAnchors(allNodes, commentAnchors,
+            Object.assign({}, layoutOpts, { snapCaptions: true }));
         return moved;
     }
 

@@ -556,8 +556,16 @@
     // comment stays at its last position rather than vanishing).
     function applyCommentAnchors(canvasNodes, anchors, opts) {
         if (!anchors) return;
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let stackStep  = (gridSize > 0) ? Math.ceil(nodeHeight / gridSize) * gridSize : nodeHeight;
+
         let byId = {};
         (canvasNodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+
+        // Captions on the same node are a STACK, and two that would land on
+        // the same row are two captions the user can only read one of.
+        let onTarget = {};
         (canvasNodes || []).forEach(function(c) {
             if (!c || c.type !== 'comment') return;
             let info = anchors[c.id];
@@ -565,8 +573,93 @@
             let target = byId[info.targetId];
             if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') return;
             c.x = (target.x - getNodeWidth(target, opts) / 2) + getNodeWidth(c, opts) / 2;
-            c.y = target.y + info.dy;
+            // Less than a row above the node is ON the node: both are a row
+            // tall. An offset like that is not a placement the user chose, it
+            // is one a layout pass left behind.
+            let dy = (info.dy > -stackStep) ? -stackStep : info.dy;
+            c.y = target.y + dy;
+            (onTarget[info.targetId] = onTarget[info.targetId] || []).push(c);
         });
+
+        // `snapCaptions`: put every caption on the standard slot rather than
+        // the offset it happened to have. A reposition is a request to tidy
+        // up, and an offset of half a row — which is what a caption dragged
+        // by hand leaves behind — reads as a caption sitting ON its node once
+        // everything else is back on the grid.
+        let snap = !!(opts && opts.snapCaptions);
+        Object.keys(onTarget).forEach(function(targetId) {
+            let stack = onTarget[targetId];
+            if (stack.length < 2 && !snap) return;
+            stack.sort(function(a, b) { return a.y - b.y; });
+            let crowded = snap || stack.some(function(c, i) {
+                return i > 0 && (c.y - stack[i - 1].y) < stackStep - 0.01;
+            });
+            if (!crowded) return;
+            // Re-space them upward from the node, keeping the order they were
+            // already in: the one nearest the node stays nearest.
+            let target = byId[targetId];
+            stack.forEach(function(c, i) {
+                c.y = target.y - stackStep * (stack.length - i);
+            });
+        });
+    }
+
+    // A standalone annotation is left where the user put it — right up until
+    // a reposition lays a sequence over the top of it. It has no place in the
+    // layout, so it is the thing that moves: up by a row at a time until it
+    // is clear, or down if up would take it off the canvas. Captions with an
+    // anchor are not touched; those belong to a node and were just placed.
+    function nudgeFreeCaptions(canvasNodes, anchors, options) {
+        let opts = options || {};
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let topMargin  = pickOption(opts, 'topMargin',  LAYOUT_DEFAULTS.topMargin);
+        let stackStep  = (gridSize > 0) ? Math.ceil(nodeHeight / gridSize) * gridSize : nodeHeight;
+
+        let all = (canvasNodes || []).filter(function(n) {
+            return n && typeof n.x === 'number' && typeof n.y === 'number';
+        });
+        let free = all.filter(function(n) {
+            return n.type === 'comment' && !(anchors && anchors[n.id]);
+        });
+        if (free.length === 0) return canvasNodes;
+        // Everything already placed counts, captions included: two notes on
+        // the same spot are as unreadable as a note under a node.
+        let taken = all.filter(function(n) {
+            return n.type !== 'group' && free.indexOf(n) === -1;
+        });
+        if (taken.length === 0) return canvasNodes;
+
+        function hits(c) {
+            let e = memberEdges(c, opts, nodeHeight);
+            if (!e) return false;
+            return taken.some(function(n) {
+                if (n === c) return false;
+                let o = memberEdges(n, opts, nodeHeight);
+                return o && e.minX < o.maxX && o.minX < e.maxX &&
+                            e.minY < o.maxY && o.minY < e.maxY;
+            });
+        }
+
+        // Top-down, so each one settles against the ones already settled.
+        free.sort(function(a, b) { return (a.y - b.y) || (a.x - b.x); });
+        free.forEach(function(c) {
+            taken.push(c);
+            if (!hits(c)) return;
+            let startY = c.y;
+            for (let i = 1; i <= 40; i++) {
+                c.y = startY - stackStep * i;
+                if (c.y - nodeHeight / 2 < topMargin) break;
+                if (!hits(c)) return;
+            }
+            c.y = startY;
+            for (let i = 1; i <= 40; i++) {
+                c.y = startY + stackStep * i;
+                if (!hits(c)) return;
+            }
+            c.y = startY;
+        });
+        return canvasNodes;
     }
 
     // A node's `x` is its CENTRE, so a rename moves BOTH its edges: the node
@@ -1568,7 +1661,37 @@
         alignBoxesLeft(blocks, groups, byId, anchors, opts);
         blocks.forEach(function(b) { measureBlock(b, opts, nodeHeight); });
         pushBlocksApart(blocks, gap);
+        // Boxes last, and box by box: two that are interlocked — a member of
+        // one wired to a member of the other — are a single block, so the
+        // pass above cannot separate them and the user is left looking at two
+        // borders crossing. A box moves with everything it holds.
+        stackBoxes(groups, byId, anchors, gap);
         return nodes;
+    }
+
+    // Every box clears every other box it shares a column with, by `gap`.
+    // Top-down and downward-only, like the block pass, so a canvas that
+    // already clears settles with nothing moved.
+    function stackBoxes(groups, byId, anchors, gap) {
+        let top = groups.filter(function(g) {
+            // A nested box travels inside its parent; separating it from the
+            // parent is not something a caller can have asked for.
+            return !g.g && (g.w > 0) && (g.h > 0);
+        }).sort(function(a, b) { return (a.y - b.y) || (a.x - b.x); });
+
+        let placed = [];
+        top.forEach(function(g) {
+            let need = 0;
+            placed.forEach(function(p) {
+                if (p.x + p.w <= g.x || g.x + g.w <= p.x) return;   // no shared column
+                let required = p.y + p.h + gap;
+                if (g.y + need < required) need = required - g.y;
+            });
+            if (need > 0) {
+                boxContents(g, byId, anchors).forEach(function(n) { n.y = n.y + need; });
+            }
+            placed.push(g);
+        });
     }
 
     // The final guard, on both edges at once and counting BOXES as well as
@@ -1620,6 +1743,7 @@
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,
         applyCommentAnchors:          applyCommentAnchors,
+        nudgeFreeCaptions:            nudgeFreeCaptions,
         fitGroups:                    fitGroups,
         separateGroups:               separateGroups,
         keepLeftEdges:                keepLeftEdges,
