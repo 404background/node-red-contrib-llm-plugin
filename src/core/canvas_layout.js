@@ -1457,6 +1457,17 @@
             });
             if (isFinite(left)) movable.push({ group: g, contents: contents, left: left });
         });
+        // Alignment is for sequences STACKED one above another. Two boxes
+        // whose rows overlap are side by side, or interlocked because a node
+        // in one is wired to a node in the other; pulling those into the same
+        // column drops one sequence on top of the other.
+        movable = movable.filter(function(m) {
+            return !movable.some(function(other) {
+                if (other === m) return false;
+                let a = m.group, b = other.group;
+                return a.y < b.y + (b.h || 0) && b.y < a.y + (a.h || 0);
+            });
+        });
         if (movable.length < 2) return;
 
         // The leftmost column wins, but never further left than the canvas

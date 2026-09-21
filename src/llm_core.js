@@ -503,6 +503,13 @@ function createLLMCore(RED) {
         if (flowContext) {
             const ctx = buildFlowContextDescription(flowContext, activeWorkspaceId);
             system += '\n' + ctx.header + '\n' + ctx.body + '\n';
+        } else if (asking) {
+            // The Ask prompt opens with "the flow below": with nothing
+            // selected there is no flow below, and a model told to read one
+            // will invent it. Say what actually happened instead.
+            system += '\nNO FLOW WAS SENT — the flow selector is empty, so there is ' +
+                'nothing below to read. Say that, and that selecting a flow in the ' +
+                'sidebar is what lets you answer. Do not guess at a flow you cannot see.\n';
         }
 
         return [

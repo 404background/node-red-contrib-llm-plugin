@@ -376,6 +376,79 @@
     //  Rebuild Workspace Flow                                             //
     // ================================================================== //
 
+    // "Put this node in that group" moves membership, not the node. If it is
+    // wired into the sequence there, the placement pass has already put it
+    // beside its neighbours; if it is wired to nothing in the box, nothing
+    // moves it at all, and the box has to stretch across the canvas to hold
+    // it — over whatever sits in between. Such a node is appended below the
+    // members that were already there. Only for a box that EXISTED: one drawn
+    // around scattered nodes is a request to wrap them where they are.
+    // Returns the ids it moved.
+    function placeUnwiredNewMembers(rebuilt, beforeFlow, layoutOpts) {
+        let layout = LLMPlugin.CanvasLayout;
+        let spacingY = LAYOUT.spacingY;
+        let before = {};
+        (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) {
+            if (n && n.id) before[n.id] = n;
+        });
+        let byId = {};
+        (rebuilt || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+
+        function wiredTo(node, others) {
+            let ids = {};
+            others.forEach(function(o) { ids[o.id] = true; });
+            let out = (node.wires || []).some(function(port) {
+                return (port || []).some(function(id) { return ids[id]; });
+            });
+            if (out) return true;
+            return others.some(function(o) {
+                return (o.wires || []).some(function(port) {
+                    return (port || []).indexOf(node.id) !== -1;
+                });
+            });
+        }
+
+        let movedIds = [];
+        (rebuilt || []).forEach(function(g) {
+            if (!g || g.type !== 'group') return;
+            let was = before[g.id];
+            if (!was || !(was.w > 0) || !(was.h > 0)) return;    // a new box wraps what it was given
+
+            let members = (Array.isArray(g.nodes) ? g.nodes : [])
+                .map(function(id) { return byId[id]; })
+                .filter(function(m) {
+                    return m && m.type !== 'group' && typeof m.x === 'number' && typeof m.y === 'number';
+                });
+            let settled = members.filter(function(m) {
+                return before[m.id] && before[m.id].g === g.id;
+            });
+            let joined = members.filter(function(m) {
+                // A caption is placed by the comment pass, above what it
+                // heads; it has no wires, so it would look unattached here
+                // and be dropped at the bottom of the box.
+                if (m.type === 'comment') return false;
+                return settled.indexOf(m) === -1 && !wiredTo(m, settled);
+            });
+            if (settled.length === 0 || joined.length === 0) return;
+
+            let left = Infinity, bottom = -Infinity;
+            settled.forEach(function(m) {
+                let w = layout.getNodeWidth(m, layoutOpts);
+                if (m.x - w / 2 < left) left = m.x - w / 2;
+                if (m.y > bottom) bottom = m.y;
+            });
+            if (!isFinite(left) || !isFinite(bottom)) return;
+
+            joined.sort(function(a, b) { return (a.y - b.y) || (a.x - b.x); });
+            joined.forEach(function(m, i) {
+                m.x = left + layout.getNodeWidth(m, layoutOpts) / 2;
+                m.y = bottom + (layout.LAYOUT_DEFAULTS.nodeHeight + spacingY) * (i + 1);
+                movedIds.push(m.id);
+            });
+        });
+        return movedIds;
+    }
+
     // The layout phase, run inside-out: correct the coordinates coming in,
     // place the members, rearrange a named subset, fit each box around what
     // it now holds, then arrange the boxes and the canvas edge. Each step
@@ -455,6 +528,12 @@
         if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
             moved = repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts) || [];
         }
+
+        // A node put into a box it is nowhere near, and wired to nothing in
+        // it: membership alone leaves the box stretched across the canvas to
+        // reach it, overlapping whatever is between them. It joins the end of
+        // that box's sequence instead.
+        moved = moved.concat(placeUnwiredNewMembers(rebuilt, beforeFlow, layoutOpts));
 
         // Whoever moved the members owns the boxes: the editor recomputes a
         // group's box only when the user drags something into or inside it.
@@ -752,6 +831,19 @@
                     g.nodes = members;
                 });
             }
+
+            // A node belongs to exactly one box, so a member this schema
+            // moved has to leave the list of the box it came from. Without
+            // this, both lists name it: the old box stays stretched across
+            // the canvas to reach a node it no longer holds, and which half
+            // of the membership wins comes down to the order the groups are
+            // written in.
+            groups.forEach(function(g) {
+                g.nodes = (Array.isArray(g.nodes) ? g.nodes : []).filter(function(id) {
+                    let member = byId[id];
+                    return !member || member.g === undefined || member.g === g.id;
+                });
+            });
 
             // A `g` naming a group that is no longer here is what a deleted
             // group leaves behind, and the editor draws from it.

@@ -221,6 +221,7 @@ function askIsToldToExplainNotBuild() {
     const flow = ${JSON.stringify(flow)};
     console.log(JSON.stringify({
       ask:   core.buildMessages('what does this do?', flow, 't', {}, { mode: 'ask' })[0].content,
+      askWithNoFlow: core.buildMessages('what does this do?', null, null, {}, { mode: 'ask' })[0].content,
       agent: core.buildMessages('add a debug node', flow, 't', {}, { mode: 'agent' })[0].content,
       byDefault: core.buildMessages('add a debug node', flow, 't', {})[0].content
     }));
@@ -237,6 +238,9 @@ function askIsToldToExplainNotBuild() {
     'node names come back in backticks, which is what the sidebar turns into links');
   ok(/Agent/.test(out.ask), 'and where to go if the user wants the change made');
   ok(out.ask.includes('tick'), 'but it still gets the flow — that is what it explains');
+
+  ok(/NO FLOW WAS SENT/.test(out.askWithNoFlow),
+    'and with nothing selected it is told so, rather than left promising a flow that is not there');
 
   ok(/SEQUENCES AND GROUPS/.test(out.agent) && /Vibe Schema/.test(out.agent),
     'Agent still gets the schema-building instructions');

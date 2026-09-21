@@ -336,6 +336,16 @@ instead. Carrying `g` blindly is safe because it is a `META_KEY` in the converte
 the schema can neither read nor write it, so the existing value is the only value
 there can be.
 
+A node belongs to exactly ONE box, so a member the schema moves has to leave the
+list of the box it came from. While both lists named it, the old box stayed
+stretched across the canvas to reach a node it no longer held, and which half of
+the membership won came down to the order the groups happened to be written in.
+And "put this node in that box" moves membership, not the node: one wired into
+the sequence there is placed beside its neighbours by the ordinary pass, but one
+wired to nothing in the box is appended below the members that were already
+there — otherwise the box has to stretch across the canvas to reach it, over
+whatever sits in between.
+
 The other half of that relationship is the group's own `nodes` list, and Node-RED
 does not maintain it for us — `RED.nodes.remove` has no group bookkeeping at all
 (the editor's delete action calls `RED.group.removeFromGroup` first). Both halves

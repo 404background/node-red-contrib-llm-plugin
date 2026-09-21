@@ -373,6 +373,46 @@ async function scenarioRepositionTakesTheCaptionAlong() {
       [box.x, box.y, box.w, box.h].join(',') + ')');
 }
 
+// "Put this node in that box" is a membership move, and membership is
+// two-sided: the box it left has to stop listing it. While both lists named
+// it, the old box stayed stretched across the canvas to reach a node it no
+// longer held — and which half of the membership won came down to the order
+// the groups happened to be written in.
+async function scenarioAMemberMovedLeavesTheBoxItCameFrom() {
+  console.log('\nA member moved to another box leaves the one it came from');
+  const liveNodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 450, y: 215, g: 'gA', wires: [] },
+    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 250, y: 365, g: 'gB', wires: [] },
+  ];
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 360, h: 80 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 175, y: 325, w: 260, h: 80 },
+  ];
+
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ groups: { group_b: { name: 'B', nodes: ['debug_da'] } } }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  const boxA = flow.find((n) => n.id === 'gA'), boxB = flow.find((n) => n.id === 'gB');
+  const moved = flow.find((n) => n.id === 'a2');
+
+  ok(res && res.ok, 'the import applied');
+  ok(moved.g === 'gB', 'the node says which box it is in now (' + moved.g + ')');
+  ok((boxB.nodes || []).indexOf('a2') !== -1, 'the new box lists it');
+  ok((boxA.nodes || []).indexOf('a2') === -1,
+    'and the old one does not (' + (boxA.nodes || []).join(',') + ')');
+  // Membership with no position leaves the box reaching across the canvas.
+  ok(moved.y > 215 && boxB.y <= moved.y - 15 && boxB.y + boxB.h >= moved.y + 15,
+    'it was placed inside the box it joined (node ' + moved.y + ', box ' +
+      boxB.y + '..' + (boxB.y + boxB.h) + ')');
+  ok(boxA.y + boxA.h < boxB.y, 'so the two boxes no longer overlap');
+}
+
 async function scenarioCaptionJoinsTheBoxItHeads() {
   console.log('\nA new comment heading a member is drawn inside the box');
   const msg = fence({
@@ -448,6 +488,7 @@ async function run() {
   await scenarioBoxGrowsWithoutCrowdingTheNext();
   await scenarioRepositioningABoxMovesItsMembers();
   await scenarioRepositionTakesTheCaptionAlong();
+  await scenarioAMemberMovedLeavesTheBoxItCameFrom();
   await scenarioCaptionJoinsTheBoxItHeads();
   scenarioContextRoundTrip();
   summary();

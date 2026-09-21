@@ -710,6 +710,25 @@ describe('Group boxes share a left edge', function() {
         assert(byId(flow, 'b1').x === 110, 'its members came along (b1 at ' + byId(flow, 'b1').x + ')');
     });
 
+    // Alignment is for sequences stacked one above another. Boxes whose rows
+    // overlap are side by side — or interlocked, because a node in one is
+    // wired to a node in the other — and pulling those into one column drops
+    // one sequence on top of the other.
+    it('boxes whose rows overlap are left in their own columns', function() {
+        const flow = [
+            { id: 'a1', type: 'inject', z: 'z', name: 'a', x: 250, y: 215, g: 'gA', wires: [[]] },
+            { id: 'gA', type: 'group', z: 'z', name: 'A', nodes: ['a1'],
+              x: 175, y: 175, w: 260, h: 80 },
+            { id: 'b1', type: 'inject', z: 'z', name: 'b', x: 950, y: 215, g: 'gB', wires: [[]] },
+            { id: 'gB', type: 'group', z: 'z', name: 'B', nodes: ['b1'],
+              x: 875, y: 175, w: 260, h: 80 },
+        ];
+        Layout.separateGroups(flow, OPTS);
+        const a = flow.find((n) => n.id === 'gA'), b = flow.find((n) => n.id === 'gB');
+        assert(b.x === 875, 'the box beside it moved to ' + b.x);
+        assert(a.y === b.y, 'and neither was stacked below the other (' + a.y + ' / ' + b.y + ')');
+    });
+
     // The column is set by the leftmost box, so a box already hanging off the
     // canvas would otherwise drag every other sequence out there with it.
     it('alignment never pulls the canvas off its left edge', function() {

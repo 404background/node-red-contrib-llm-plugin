@@ -285,6 +285,9 @@ behind. `fitGroups` runs after the layout passes and settles it:
   sits to its left in the same block: a box drawn around the middle of a chain
   has the nodes feeding it over there, and dragging those sideways is not an
   alignment. Boxes never block each other.
+- Only sequences that are STACKED are aligned. Two boxes whose rows overlap
+  are side by side, or interlocked because a node in one is wired to a node in
+  the other; pulling those into one column drops one sequence onto the other.
 - The column is the leftmost sequence, **never further left than `startX`**.
   One that has drifted towards the edge would otherwise drag every other
   sequence out with it, and "aligned" would come to mean "flush against the
