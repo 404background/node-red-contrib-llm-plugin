@@ -202,8 +202,42 @@ function systemPromptShips() {
   const prompt = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'prompt_system.txt'), 'utf8');
   ok(prompt.length > 500, 'prompt_system.txt is present and not truncated');
   ok(/Vibe Schema/.test(prompt), 'and still describes the Vibe Schema');
+  const ask = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'prompt_ask.txt'), 'utf8');
+  ok(ask.length > 200, 'prompt_ask.txt ships too — neither has a fallback');
   ok(typeof require('../src/llm_core.js') === 'function',
-    'llm_core loads, which is what proves the prompt is readable');
+    'llm_core loads, which is what proves both prompts are readable');
+}
+
+// Ask and Agent are different jobs. Ask reads the flow and explains it, and is
+// told not to propose one: a schema it emitted could not be applied from that
+// mode anyway, so the two used to differ only in what the sidebar did with the
+// reply — which left Ask answering "add a debug node" with a flow to import.
+function askIsToldToExplainNotBuild() {
+  console.log('\nAsk mode asks a different question');
+  const dir = tmpUserDir('llmp-mode-');
+  const flow = [{ id: 'n1', type: 'inject', z: 't', name: 'tick', x: 1, y: 1, wires: [[]] }];
+
+  const out = JSON.parse(session(dir, {}, `
+    const flow = ${JSON.stringify(flow)};
+    console.log(JSON.stringify({
+      ask:   core.buildMessages('what does this do?', flow, 't', {}, { mode: 'ask' })[0].content,
+      agent: core.buildMessages('add a debug node', flow, 't', {}, { mode: 'agent' })[0].content,
+      byDefault: core.buildMessages('add a debug node', flow, 't', {})[0].content
+    }));
+  `));
+
+  // The Ask prompt names the schema once, to say not to send one, so the
+  // check is for the RULES that tell a model how to build it.
+  ok(!/SEQUENCES AND GROUPS/.test(out.ask) && !/LAYOUT FIX/.test(out.ask),
+    'Ask is not given the schema-building instructions');
+  ok(/EXPLAIN, DO NOT BUILD/.test(out.ask), 'it is told to explain rather than build');
+  ok(/Agent/.test(out.ask), 'and where to go if the user wants the change made');
+  ok(out.ask.includes('tick'), 'but it still gets the flow — that is what it explains');
+
+  ok(/SEQUENCES AND GROUPS/.test(out.agent) && /Vibe Schema/.test(out.agent),
+    'Agent still gets the schema-building instructions');
+  ok(out.agent === out.byDefault,
+    'and so does a caller that names no mode, which is every existing one');
 }
 
 credentialKeyIsPluginOwned();
@@ -212,4 +246,5 @@ settingsWritesAreAwaited();
 onlyTheStorageItUses();
 apiKeysDoNotEscape();
 systemPromptShips();
+askIsToldToExplainNotBuild();
 summary();

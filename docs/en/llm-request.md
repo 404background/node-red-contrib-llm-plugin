@@ -9,7 +9,7 @@ and URLs are inherited from the **LLM Plugin sidebar** (Settings).
 
 | Field | Notes |
 |-------|-------|
-| Mode | **Ask** — reply on `msg.payload`. **Agent** — same, then applies the changes live in the open editor. |
+| Mode | **Ask** — reply on `msg.payload`. With flows selected it is given them and asked to EXPLAIN them, not to propose one; with none selected it is a plain chat turn. **Agent** — builds a flow and applies it live in the open editor. |
 | Provider | Ollama / OpenAI / Custom. Keys & URLs come from the sidebar. |
 | Model | Free text (e.g. `llama3.1`, `gpt-4o-mini`); **required**. `msg.model` overrides per message. |
 | Flows | Multi-select (none / one / many). Sent to the LLM as context in **both** modes; the list refreshes when the `llm-request` node is opened. |

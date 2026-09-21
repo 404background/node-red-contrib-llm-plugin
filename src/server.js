@@ -289,11 +289,13 @@ function createLLMPluginServer(RED) {
     //  HTTP admin endpoints                                               //
     // ------------------------------------------------------------------ //
 
-    // Single generation endpoint for BOTH sidebar modes: Ask and Agent send
-    // the identical request; what differs is purely client-side (Agent
-    // auto-clicks the Import button on the reply).
+    // One generation endpoint for both sidebar modes, but not one prompt:
+    // `mode: 'ask'` reads the flow and explains it, anything else builds one.
+    // The mode has to be decided HERE because it chooses the instructions the
+    // model is given; what stays client-side is only what happens to a reply
+    // once it arrives.
     RED.httpAdmin.post('/llm-plugin/generate', guard(PERM_WRITE), async function(req, res) {
-        const { model, prompt, currentFlow, activeWorkspaceId } = req.body;
+        const { model, prompt, currentFlow, activeWorkspaceId, mode } = req.body;
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
@@ -322,7 +324,8 @@ function createLLMPluginServer(RED) {
         }
         const provider = settings.provider || 'ollama';
 
-        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId, settings);
+        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId, settings,
+            { mode: (mode === 'ask') ? 'ask' : 'agent' });
         const genStart = Date.now();
 
         try {

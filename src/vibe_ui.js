@@ -760,7 +760,11 @@
                     model: model,
                     prompt: prompt,
                     currentFlow: currentFlow,
-                    activeWorkspaceId: getActiveWorkspaceId()
+                    activeWorkspaceId: getActiveWorkspaceId(),
+                    // Ask and Agent are different questions, not the same one
+                    // handled differently afterwards: the server picks the
+                    // instructions from this.
+                    mode: mode
                 }),
                 signal: currentAbortController.signal
             })

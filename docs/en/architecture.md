@@ -47,7 +47,8 @@ docs/                   All developer docs (this folder) — en/ + jp/
 src/
   client.js             Script loader (browser entry) + settings dialog controller
   common.js             Shared helpers (escapeHtml, notify, el, randomId, …)
-  prompt_system.txt     System prompt template (server-side)
+  prompt_system.txt     System prompt for Agent: the Vibe Schema rules
+  prompt_ask.txt        System prompt for Ask: read the flow, explain it
   core/
     canvas_layout.js    Layout engine (UMD)
     flow_converter_core.js  Vibe Schema converter (UMD)
@@ -89,7 +90,7 @@ everything above. All modules use the IIFE pattern and communicate via
 
 | Method | Path | Permission | Purpose |
 |--------|------|------------|---------|
-| POST | `/llm-plugin/generate` | write | Send prompt + flow context to LLM (both Ask and Agent; Agent's auto-import is client-side) |
+| POST | `/llm-plugin/generate` | write | Send prompt + flow context to the LLM. `mode: "ask"` asks for an explanation of the flow, anything else asks for a schema — the mode picks the system prompt, so it is decided here, not in the browser |
 | GET | `/llm-plugin/settings` | read | Read settings (API key masked) |
 | POST | `/llm-plugin/settings` | write | Write settings (whitelisted fields) |
 | GET | `/llm-plugin/chat-histories` | read | List persisted chats |
@@ -450,7 +451,7 @@ sidebar — there is only one settings + credentials store.
 |---------|---------------|
 | Storage resolution | `chatsDir` / `checkpointsDir` / `persistenceEnabled` (`<userDir>/llm-plugin`, else memory only), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-GCM), legacy-key migration, `maskApiKey`, `redactSecrets` |
-| Prompt construction | `buildMessages` (loads `prompt_system.txt`, `FlowConverterCore.toIntermediate`), `buildChatMessages` (plain Ask-mode chat) |
+| Prompt construction | `buildMessages(prompt, flowContext, activeWorkspaceId, settings, options?)` — `options.mode === 'ask'` uses `prompt_ask.txt` (explain the flow, propose nothing), anything else `prompt_system.txt` (the Vibe Schema rules); the flow context is built the same way for both. `buildChatMessages` is the `llm-request` node's plain chat, with no flow context at all |
 | LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI) |
 
 ### `server.js`
@@ -617,7 +618,7 @@ shared `helpers.js` sandbox, and how to configure the live round-trip
   where the rest of the plugin's state already is — the non-secret settings
   and the credential secret both go through `RED.settings`, i.e.
   `<userDir>/.config.runtime.json`.
-- **`prompt_system.txt`** is read from the plugin install dir at module
+- **`prompt_system.txt` and `prompt_ask.txt`** are read from the plugin install dir at module
   load. There is no embedded fallback: the file ships in the package and
   sits beside the module that reads it, so a failure is a packaging bug,
   and a stand-in prompt would keep generating flows while silently

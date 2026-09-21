@@ -45,7 +45,8 @@ docs/                   全開発者ドキュメント(このフォルダ) — e
 src/
   client.js             スクリプトローダー(ブラウザのエントリ) + 設定ダイアログのコントローラ
   common.js             共有ヘルパー(escapeHtml, notify, el, randomId, …)
-  prompt_system.txt     システムプロンプトのテンプレート(サーバ側)
+  prompt_system.txt     Agent 用システムプロンプト: Vibe Schema の規約
+  prompt_ask.txt        Ask 用システムプロンプト: フローを読んで説明する
   core/
     canvas_layout.js    レイアウトエンジン(UMD)
     flow_converter_core.js  Vibe Schema 変換器(UMD)
@@ -86,7 +87,7 @@ common → canvas_layout → flow_converter_core → llm_json_parser
 
 | Method | Path | 権限 | 用途 |
 |--------|------|------|---------|
-| POST | `/llm-plugin/generate` | write | プロンプト + フローコンテキストを LLM へ送信(Ask/Agent 両方。Agent の自動 import はクライアント側) |
+| POST | `/llm-plugin/generate` | write | プロンプト + フローコンテキストを LLM へ送信。`mode: "ask"` はフローの説明を求め、それ以外はスキーマを求める。モードがシステムプロンプトを選ぶので、判断はブラウザではなくここで行う |
 | GET | `/llm-plugin/settings` | read | 設定の読み取り(API キーはマスク) |
 | POST | `/llm-plugin/settings` | write | 設定の書き込み(ホワイトリスト項目のみ) |
 | GET | `/llm-plugin/chat-histories` | read | 永続化されたチャットの一覧 |

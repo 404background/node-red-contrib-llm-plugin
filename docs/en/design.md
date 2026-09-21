@@ -88,13 +88,23 @@ The Agent node (`node/llm-request`) also publishes the response to the editor vi
 
 | | Ask | Agent |
 |--|-----|-------|
-| Apply trigger | User presses Import | Automatic once the response arrives |
-| Use case | Want to review before applying | Iteration / automation |
-| In common | Apply logic, checkpoints, merge rules are all identical | same |
+| The question | "What does this flow do?" | "Change this flow" |
+| System prompt | `prompt_ask.txt` — read the flow, explain it, do NOT propose one | `prompt_system.txt` — the Vibe Schema rules |
+| The reply | Prose, with node aliases in backticks so they link | A schema, applied to the canvas |
+| In common | The flow context, the engine, the provider — and, when a reply does carry a schema, every rule for applying it | same |
 
-- **The mode is only a difference of "when to apply".** Branching the apply body
-  would be a source of bugs that break one side only, so `importFlowFromMessage`
-  barely looks at mode (it only passes `mode==='agent'` to the parser's merge behavior).
+- **The two are different questions, not one question handled differently
+  afterwards.** They used to send the identical request and differ only in what
+  the sidebar did with the reply, which left Ask answering "add a debug node"
+  with a flow the user then had to import by hand — the mode said "read only"
+  and the model proposed anyway. Ask now gets its own instructions: it is given
+  the flow (it cannot explain what it cannot see) and told that a schema is
+  useless here, because nothing in that mode can apply one.
+- **The apply side still does not branch on mode.** Splitting the apply body is
+  how you get bugs that break one side only, so `importFlowFromMessage` barely
+  looks at it (only `mode==='agent'` reaches the parser, for partial-schema
+  merging). What the mode decides is which prompt goes out, and the server
+  decides that — it is the half that chooses what the model is told.
 
 ---
 

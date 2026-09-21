@@ -13,6 +13,11 @@ const FlowConverterCore = require('./core/flow_converter_core');
 // stand-in would keep generating flows while silently dropping the rules the
 // importer depends on. Failing to load is the honest answer.
 const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_system.txt'), 'utf8');
+// Ask is a different job, not a milder version of the same one: it reads the
+// flow and explains it, and is told NOT to propose one. Two prompts rather
+// than one with a flag, because the schema rules are most of the other file
+// and none of them apply here.
+const ASK_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_ask.txt'), 'utf8');
 
 // Per-process singleton: two instances would cache credentials separately (a
 // key saved in the sidebar would never reach the node) and could encrypt with
@@ -482,14 +487,18 @@ function createLLMCore(RED) {
     // Build the system prompt. It asks for Vibe Schema rather than Node-RED
     // JSON (docs/{en,jp}/vibe-schema.md). `settings` is optional — pass an
     // already-resolved object to avoid a second settings read per generation.
-    function buildMessages(userPrompt, flowContext, activeWorkspaceId, settings) {
+    // `options.mode`: 'ask' reads the flow and explains it; anything else
+    // builds one. The flow context is the same either way — you cannot answer
+    // "what does this do" without it — but the instructions are not.
+    function buildMessages(userPrompt, flowContext, activeWorkspaceId, settings, options) {
         const userSystemPrompt = getUserSystemPrompt(settings);
+        const asking = !!(options && options.mode === 'ask');
 
         let system = '';
         if (userSystemPrompt) {
             system += userSystemPrompt + '\n\n';
         }
-        system += SYSTEM_PROMPT_TEMPLATE;
+        system += asking ? ASK_PROMPT_TEMPLATE : SYSTEM_PROMPT_TEMPLATE;
 
         if (flowContext) {
             const ctx = buildFlowContextDescription(flowContext, activeWorkspaceId);

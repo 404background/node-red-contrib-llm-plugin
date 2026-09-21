@@ -40,7 +40,7 @@ Requires Node-RED 4.0 or later on Node.js 22 or later.
 - OpenAI: set API key
 - Custom (OpenAI-compatible): set Base URL (e.g. `http://localhost:8080/v1`) and, if required, an API key. Use for llama.cpp, LM Studio, vLLM, LocalAI, or any other server speaking the OpenAI chat-completions API.
 3. Pick which flow tabs to include via the **flow selector** (defaults to *Current Open Flow*; check additional tabs in the dropdown to send them too).
-4. Select **Agent** mode for auto-apply, or **Ask** mode for manual import.
+4. Pick the mode: **Ask** reads the selected flows and explains them (it never proposes a flow), **Agent** changes them and applies the result.
 5. Enter model and prompt.
 6. Click **Send** to generate and/or apply the flow.
 
@@ -61,6 +61,7 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 
 ## Features
 
+- **Two modes, two questions**: **Ask** is read-only — it is given your flow and asked to explain it, so "what does this do?" gets an answer rather than a flow to import. **Agent** is the one that builds, and applies what it builds.
 - **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.
 - **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state. It sits above the prompt it undoes, and **Apply Again** sits on the reply's schema block, so you can switch between the flow you had and the one the model proposed. The **Restore Points** dialog lists them all, including the ones an `llm-request` node took, which have no chat message to hang a button off.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
@@ -109,7 +110,7 @@ Japanese (`docs/jp/`) version of every page.
 Two more, kept next to what they describe:
 
 - Tests: [`test/README.md`](test/README.md) — the suites, what each one guards, and how to run the live round-trip against a real LLM endpoint.
-- Prompt template: [`src/prompt_system.txt`](src/prompt_system.txt) — the system prompt the LLM receives.
+- Prompt templates: [`src/prompt_system.txt`](src/prompt_system.txt) (Agent — the Vibe Schema rules) and [`src/prompt_ask.txt`](src/prompt_ask.txt) (Ask — read the flow and explain it).
 
 > **AI agents / contributors:** read [`docs/`](docs/README.md) before editing —
 > start with *Design notes* (why the flow, rules and priorities are what they

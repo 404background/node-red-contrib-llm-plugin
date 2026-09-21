@@ -143,8 +143,11 @@ module.exports = function(RED) {
 
                 // Agent always builds flows, with or without context;
                 // Ask without selected flows is plain chat.
+                // Same split as the sidebar: with a flow in hand, Ask explains
+                // it and Agent rewrites it. Without one there is nothing to
+                // explain, so Ask is a plain chat turn.
                 const messages = (context || mode === 'agent')
-                    ? core.buildMessages(prompt, context, targetFlows[0] || null, settings)
+                    ? core.buildMessages(prompt, context, targetFlows[0] || null, settings, { mode: mode })
                     : core.buildChatMessages(prompt, settings);
                 const response = await core.generateWithProvider(provider, settings, model, messages, genOptions);
                 stopStatusTicker();
