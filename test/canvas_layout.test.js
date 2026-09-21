@@ -541,6 +541,59 @@ describe('A box whose members were rearranged is refitted first', function() {
     });
 });
 
+// A caption is found by what it touches, and the tolerance is tight so a
+// standalone annotation is left where the user put it. That tightness orphaned
+// captions inside a box the moment one drifted out of the column: the box says
+// the two belong together, and the box is the stronger statement.
+describe('A caption in a box belongs to the box', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    function caption(extra) {
+        return Object.assign({ id: 'c1', type: 'comment', z: 'z', name: 'What this does',
+            x: 260, y: 160 }, extra || {});
+    }
+    function node(extra) {
+        return Object.assign({ id: 'n1', type: 'inject', z: 'z', name: 'tick',
+            x: 150, y: 200, wires: [[]] }, extra || {});
+    }
+
+    it('is anchored to the member below it even when the column drifted', function() {
+        const flow = [caption({ g: 'grp' }), node({ g: 'grp' })];
+        const anchors = Layout.captureCommentAnchors(flow, OPTS);
+        assert(anchors.c1 && anchors.c1.targetId === 'n1',
+            'anchored to ' + JSON.stringify(anchors.c1 || null));
+    });
+
+    it('and takes that member\'s column when the anchors are applied', function() {
+        const flow = [caption({ g: 'grp' }), node({ g: 'grp' })];
+        const anchors = Layout.captureCommentAnchors(flow, OPTS);
+        flow[1].x = 600;                       // the node moves
+        Layout.applyCommentAnchors(flow, anchors, OPTS);
+        const left = (n) => n.x - Layout.estimateNodeWidth(n, OPTS) / 2;
+        assert(left(flow[0]) === left(flow[1]),
+            'caption left ' + left(flow[0]) + ' vs node left ' + left(flow[1]));
+    });
+
+    it('a caption in no box keeps the tight rule, so annotations stay put', function() {
+        const flow = [caption(), node()];      // same geometry, no group
+        const anchors = Layout.captureCommentAnchors(flow, OPTS);
+        assert(!anchors.c1, 'anchored anyway: ' + JSON.stringify(anchors.c1 || null));
+    });
+
+    it('the box is fitted around the caption too', function() {
+        const flow = [
+            caption({ g: 'grp' }), node({ g: 'grp' }),
+            { id: 'grp', type: 'group', z: 'z', name: 'Pair', nodes: ['c1', 'n1'] },
+        ];
+        Layout.fitGroups(flow, OPTS);
+        const box = flow[2];
+        assert(box.y <= 160 - NODE_HEIGHT / 2 - 25 + 0.01,
+            'box top ' + box.y + ' does not clear the caption');
+        assert(box.y + box.h >= 200 + NODE_HEIGHT / 2 + 25 - 0.01,
+            'box bottom ' + (box.y + box.h) + ' does not clear the node');
+    });
+});
+
 // Sequences stack in a column, so their boxes line up as one.
 describe('Group boxes share a left edge', function() {
     const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };

@@ -331,6 +331,48 @@ async function scenarioRepositioningABoxMovesItsMembers() {
     'still holding every member (' + [box.x, box.w].join(',') + ')');
 }
 
+// The caption complaint end to end: it sat above its node, a reposition moved
+// the node, and the caption stayed behind — orphaned because its column had
+// drifted further than the anchor tolerance allowed. Membership is what says
+// they belong together.
+async function scenarioRepositionTakesTheCaptionAlong() {
+  console.log('\nA caption in the box follows the node it heads through a reposition');
+  const liveNodes = [
+    // The caption is a member, but its left edge is nowhere near its node's.
+    { id: 'c1', type: 'comment', z: 'tab1', name: 'What this does',
+      x: 260, y: 160, g: 'grp', wires: [] },
+    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 150, y: 200, g: 'grp', wires: [['n2']] },
+    { id: 'n2', type: 'debug', z: 'tab1', name: 'out', x: 600, y: 320, g: 'grp', wires: [] },
+  ];
+  const liveGroups = [{
+    id: 'grp', type: 'group', z: 'tab1', name: 'Pair', nodes: ['c1', 'n1', 'n2'],
+    x: 75, y: 120, w: 640, h: 240,
+  }];
+
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ reposition: ['group_pair'] }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  const at = (id) => flow.find((n) => n.id === id);
+  // Widths from the engine's own estimator, so this measures the same edges
+  // the layout was reasoning about.
+  const Layout = require('../src/core/canvas_layout.js');
+  const leftOf = (n) => n.x - Layout.estimateNodeWidth(n, {}) / 2;
+
+  ok(res && res.ok, 'the import applied');
+  ok(at('c1').y < at('n1').y, 'the caption is still above its node');
+  ok(Math.abs(leftOf(at('c1')) - leftOf(at('n1'))) < 1,
+    'and back in its column (' + leftOf(at('c1')) + ' vs ' + leftOf(at('n1')) + ')');
+  const box = groupsIn(flow)[0];
+  ok(box.y <= at('c1').y - 15 - 25 + 0.01 && box.x <= leftOf(at('c1')),
+    'and the box was fitted around it, not just around the nodes (' +
+      [box.x, box.y, box.w, box.h].join(',') + ')');
+}
+
 async function scenarioCaptionJoinsTheBoxItHeads() {
   console.log('\nA new comment heading a member is drawn inside the box');
   const msg = fence({
@@ -405,6 +447,7 @@ async function run() {
   await scenarioCaptionedBoxesStayApart();
   await scenarioBoxGrowsWithoutCrowdingTheNext();
   await scenarioRepositioningABoxMovesItsMembers();
+  await scenarioRepositionTakesTheCaptionAlong();
   await scenarioCaptionJoinsTheBoxItHeads();
   scenarioContextRoundTrip();
   summary();

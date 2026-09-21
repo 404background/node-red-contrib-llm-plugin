@@ -454,12 +454,23 @@
             let bestDy = Infinity;
             // LEFT EDGES again: a wide caption over a narrow node has a
             // centre well outside that node's box.
-            let fromLeft = (from.x || 0) - getNodeWidth(from, opts) / 2;
+            let fromWidth = getNodeWidth(from, opts);
+            let fromLeft = (from.x || 0) - fromWidth / 2;
             for (let i = 0; i < positioned.length; i++) {
                 let n = positioned[i];
                 if (visited[n.id]) continue;
-                let nLeft = (n.x || 0) - getNodeWidth(n, opts) / 2;
-                if (Math.abs(nLeft - fromLeft) > xMargin) continue;
+                let width = getNodeWidth(n, opts);
+                let nLeft = (n.x || 0) - width / 2;
+                // Sharing a BOX is the stronger statement: the schema put the
+                // caption in the group that holds the node, and the editor
+                // draws the box around both. A caption nudged out of the
+                // column — by a drag, or by an older layout — would otherwise
+                // be orphaned and left behind the moment its node moved.
+                let sameBox = !!from.g && from.g === n.g;
+                let near = sameBox
+                    ? (nLeft < fromLeft + fromWidth && fromLeft < nLeft + width)
+                    : Math.abs(nLeft - fromLeft) <= xMargin;
+                if (!near) continue;
                 let dy = n.y - from.y;
                 if (dy <= 0 || dy > touchingTol) continue;
                 if (dy < bestDy) { bestDy = dy; best = n; }

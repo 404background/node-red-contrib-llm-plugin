@@ -303,6 +303,16 @@ behind. `fitGroups` runs after the layout passes and settles it:
 
 ## Comment placement
 
+A caption is found by what it TOUCHES, and the tolerance is deliberately
+tight: a standalone annotation gets no anchor and is left where the user put
+it. **Sharing a box overrides that.** When a caption and the node below it are
+members of the same group, any horizontal overlap is enough — the schema put
+them in one box and the editor draws one border round them, which is a stronger
+statement about belonging together than a column they may have drifted out of.
+Without it a caption was orphaned the moment its node moved, and a reposition
+left it behind. The box itself counts its caption members like any other
+member, so `fitGroups` fits around them too.
+
 Each comment is placed directly above its target canvas node:
 
 - **Vertically**: touching the target's top edge with **zero grid gap**
