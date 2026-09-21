@@ -20,9 +20,6 @@
     "version": ">=4.0.0",
     "plugins": {
       "llm_plugin": "llm_plugin.js"
-    },
-    "nodes": {
-      "llm-request": "node/llm-request/llm-request.js"
     }
   },
   "keywords": [
