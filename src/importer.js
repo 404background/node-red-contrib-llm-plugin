@@ -746,6 +746,11 @@
         // them.
         layout.separateGroups(rebuilt, layoutOpts);
 
+        // Last: whatever the passes above decided, nothing sits off the left
+        // edge of the canvas. A box hangs one padding further left than its
+        // members, so this is the pass that sees it.
+        layout.ensureLeftMargin(rebuilt, layoutOpts);
+
         // Metadata sweep #2: the layout passes have consumed what they needed,
         // so drop the remainder. After this point no node carries a `_` key.
         rebuilt.forEach(function(n) {

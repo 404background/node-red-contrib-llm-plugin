@@ -543,6 +543,74 @@ describe('Group boxes share a left edge', function() {
         assert(byId(flow, 'gC').x === 325, 'Tail at ' + byId(flow, 'gC').x);
         assert(byId(flow, 'c1').x === 110, 'and the node feeding it did not move');
     });
+
+    // Two sequences wired to each other are ONE block, which is why boxes are
+    // aligned per box: aligning blocks left this pair stepped, and a
+    // reposition produces it constantly.
+    it('boxes wired to each other still line up', function() {
+        const flow = [
+            { id: 'a1', type: 'inject', z: 'z', name: 'a', x: 110, y: 160, g: 'gA', wires: [['a2']] },
+            { id: 'a2', type: 'debug', z: 'z', name: 'da', x: 310, y: 160, g: 'gA', wires: [['b1']] },
+            { id: 'gA', type: 'group', z: 'z', name: 'SeqA', nodes: ['a1', 'a2'],
+              x: 35, y: 130, w: 340, h: 80 },
+            { id: 'b1', type: 'function', z: 'z', name: 'b', x: 360, y: 300, g: 'gB', wires: [['b2']] },
+            { id: 'b2', type: 'debug', z: 'z', name: 'db', x: 560, y: 300, g: 'gB', wires: [[]] },
+            { id: 'gB', type: 'group', z: 'z', name: 'SeqB', nodes: ['b1', 'b2'],
+              x: 285, y: 270, w: 340, h: 80 },
+        ];
+        Layout.separateGroups(flow, OPTS);
+        assert(byId(flow, 'gB').x === byId(flow, 'gA').x,
+            'SeqB at ' + byId(flow, 'gB').x + ', SeqA at ' + byId(flow, 'gA').x);
+        assert(byId(flow, 'b1').x === 110, 'its members came along (b1 at ' + byId(flow, 'b1').x + ')');
+    });
+
+    // The column is set by the leftmost box, so a box already hanging off the
+    // canvas would otherwise drag every other sequence out there with it.
+    it('alignment never pulls the canvas off its left edge', function() {
+        const flow = twoSequencesAndATail();
+        const gA = byId(flow, 'gA');
+        const shift = -100;
+        [gA, byId(flow, 'a1'), byId(flow, 'a2')].forEach((n) => { n.x += shift; });
+        Layout.separateGroups(flow, OPTS);
+        const margin = Layout.LAYOUT_DEFAULTS.leftMargin;
+        assert(byId(flow, 'gA').x >= margin && byId(flow, 'gB').x >= margin,
+            'boxes at ' + byId(flow, 'gA').x + ' / ' + byId(flow, 'gB').x);
+        assert(byId(flow, 'gA').x === byId(flow, 'gB').x, 'and still aligned with each other');
+    });
+});
+
+// `ensureTopMargin` guards the top; boxes made the left edge the same problem,
+// since a box is drawn one padding further out than the members it holds.
+describe('Nothing is left hanging off the canvas', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+
+    it('a flow off the left edge slides back, geometry intact', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'a', x: -40, y: 100, wires: [['n2']] },
+            { id: 'n2', type: 'debug', z: 'z', name: 'b', x: 160, y: 100, wires: [[]] },
+        ];
+        Layout.ensureLeftMargin(flow, OPTS);
+        const left = flow[0].x - Layout.estimateNodeWidth(flow[0], OPTS) / 2;
+        assert(left === Layout.LAYOUT_DEFAULTS.leftMargin, 'leftmost edge at ' + left);
+        assert(flow[1].x - flow[0].x === 200, 'the gap between them is unchanged');
+    });
+
+    it('a box counts as the leftmost thing, not its members', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'a', x: 110, y: 100, g: 'g1', wires: [[]] },
+            { id: 'g1', type: 'group', z: 'z', name: 'Box', nodes: ['n1'],
+              x: -25, y: 70, w: 150, h: 80 },
+        ];
+        Layout.ensureLeftMargin(flow, OPTS);
+        assert(flow[1].x === Layout.LAYOUT_DEFAULTS.leftMargin, 'box at ' + flow[1].x);
+        assert(flow[0].x === 155, 'and its member moved with it (' + flow[0].x + ')');
+    });
+
+    it('a canvas that already clears the edge is not moved', function() {
+        const flow = [{ id: 'n1', type: 'inject', z: 'z', name: 'a', x: 110, y: 100, wires: [[]] }];
+        Layout.ensureLeftMargin(flow, OPTS);
+        assert(flow[0].x === 110, 'x is ' + flow[0].x);
+    });
 });
 
 summary();

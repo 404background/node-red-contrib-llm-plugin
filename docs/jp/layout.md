@@ -89,6 +89,7 @@ const positions = Layout.layoutNodes(
 | `fitGroups(nodes, options?)` | メンバーを収めきれなくなったグループの枠を合わせ直す。[グループの枠](#グループの枠)を参照。 |
 | `separateGroups(nodes, options?)` | グループの枠の左端を揃え、外側のものから `groupGap` 以上離れるまでブロックを押し下げる。`fitGroups` のあとに走る。 |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | 幅が変わったノードの中心を計算し直し、**左端**を元の位置に保つ。動かした ID を返す。 |
+| `ensureLeftMargin(nodes, options?)` | いちばん左の端(枠を含む)が `x = 0` から `leftMargin` より近いとき、全体を同じ量だけ右へずらす。 |
 | `LAYOUT_DEFAULTS` | デフォルト定数。 |
 
 ## デフォルト
@@ -104,6 +105,8 @@ LAYOUT_DEFAULTS = {
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
     maxColumns:      5,
+    topMargin:      20,    // キャンバス上端(y=0)と最上端の実体との最小の間隔
+    leftMargin:     20,    // 左端(x=0)側も同じ。グループの枠も対象
     groupPadding:   25,    // the editor's own clearance between a group's box and its members
     groupGap:       40     // clearance between a group's box and whatever is outside it
 };
@@ -139,6 +142,13 @@ LAYOUT_DEFAULTS = {
 相対的な位置関係は保たれ、フロー全体が下へスライドするだけである。位置を固定したまま1つの
 コンポーネントだけを組み直す処理はこの防止をスキップする。呼び出し元が最後にキャンバス全体を
 まとめて見るためである。
+
+### `ensureLeftMargin` — 左端からはみ出させない
+
+上端に対する `ensureTopMargin` の左端版で、ノードだけでなく**グループの枠も**対象に
+する。枠はメンバーより `groupPadding` だけ外側に描かれるので、キャンバスの左端から
+始まるフローは枠がはみ出す。全体を同じ量だけ右へずらすので、相対的な位置関係は
+変わらない。
 
 ## 幅が変わっても左端は動かさない
 
@@ -216,9 +226,15 @@ w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
 
 ### `separateGroups` — 枠を揃え、離す
 
-- 縦に並んだシーケンスは1つの列として読まれるので、枠の**左端を揃える**。揃えるのは
-  「枠がそのブロックの左端そのもの」である場合だけである。チェーンの途中を囲んだ枠は
-  左側に上流のノードを抱えており、それごと横へ動かすのは整列ではないからである。
+- 縦に並んだシーケンスは1つの列として読まれるので、枠の**左端を揃える**。整列はブロック
+  単位ではなく**枠単位**で行う。互いにワイヤでつながった2つのシーケンスは1つのブロックに
+  なるが、再配置(`reposition`)が生むのはまさにその「段違い」だからである。
+- 枠は中身ごと動く。メンバー、そのまたメンバー、そしてメンバーを見出すキャプションを
+  連れていく。ただし、同じブロックの中で**どの枠にも属さないもの**が枠より左にある場合は
+  動かさない。チェーンの途中を囲んだ枠は左側に上流のノードを抱えており、それごと横へ
+  動かすのは整列ではないからである。枠同士が互いを妨げることはない。
+- 揃える先はいちばん左の枠だが、**`leftMargin` で下限を切る**。すでにキャンバスの外へ
+  はみ出している枠があると、そこへ他のシーケンスまで引きずり出されてしまうからである。
 - どの枠も、その外側にあるもの(別の枠でも素のノードでも)から最低 `groupGap`
   (40 = 2マス)離れた位置に収まる。
 - 動かす単位はノードではなく**ブロック**である。ワイヤでつながっているもの、

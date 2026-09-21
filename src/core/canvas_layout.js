@@ -26,6 +26,7 @@
         gridSize:      20,
         maxColumns:     5,
         topMargin:     20,    // min clearance between canvas top (y=0) and the topmost node edge
+        leftMargin:    20,    // the same on the left edge (x=0)
         groupPadding:  25,    // the editor's own clearance between a group's box and its members
         groupGap:      40     // 2 grid squares between a group's box and whatever is outside it
     };
@@ -1290,6 +1291,7 @@
     function separateGroups(nodes, options) {
         let opts = options || {};
         let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
+        let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
         let all = (nodes || []).filter(function(n) {
@@ -1369,23 +1371,95 @@
         // --- Line the boxes up ---
         // Stacked sequences read as a column, so their boxes share a left
         // edge rather than stepping in and out by whatever their first node
-        // happens to be. Only a box that IS its block's left edge is aligned:
-        // one drawn around the middle of a chain has the upstream nodes to
-        // its left, and dragging those sideways would not be an alignment.
-        let alignable = ordered.filter(function(b) {
-            return b.hasGroup && isFinite(b.boxLeft) && Math.abs(b.boxLeft - b.left) < 0.5;
-        });
-        if (alignable.length > 1) {
-            let target = alignable.reduce(function(min, b) {
-                return Math.min(min, b.boxLeft);
-            }, Infinity);
-            alignable.forEach(function(b) {
-                let dx = target - b.boxLeft;
-                if (!dx) return;
-                b.nodes.forEach(function(n) { n.x = n.x + dx; });
-                b.left += dx; b.right += dx; b.boxLeft += dx;
+        // happens to be. A box moves with everything it contains, PER BOX —
+        // aligning whole blocks would leave two boxes wired to each other
+        // stepped, which is the case a reposition produces most often.
+        //
+        // A box is not aligned when something outside every box sits to its
+        // left in the same block: a box drawn around the middle of a chain
+        // has the nodes feeding it over there, and dragging those sideways is
+        // not an alignment. Boxes themselves never block each other.
+        (function alignBoxes() {
+            let blockOf = {};
+            ordered.forEach(function(b, i) {
+                b.nodes.forEach(function(n) { blockOf[n.id] = i; });
             });
-        }
+            let looseLeft = {};       // block -> leftmost thing in no box at all
+            all.forEach(function(n) {
+                if (n.type === 'group' || n.g) return;
+                let bi = blockOf[n.id];
+                if (bi === undefined) return;
+                let left = n.x - getNodeWidth(n, opts) / 2;
+                if (looseLeft[bi] === undefined || left < looseLeft[bi]) looseLeft[bi] = left;
+            });
+
+            // Everything a box takes with it: its members, their members in
+            // turn, and the captions that head them.
+            let captionOf = {};
+            Object.keys(anchors).forEach(function(id) {
+                let t = anchors[id].targetId;
+                if (byId[id]) (captionOf[t] = captionOf[t] || []).push(byId[id]);
+            });
+            function unitOf(group) {
+                let seen = {};
+                let unit = [];
+                (function walk(g) {
+                    if (!g || seen[g.id]) return;
+                    seen[g.id] = true;
+                    unit.push(g);
+                    (Array.isArray(g.nodes) ? g.nodes : []).forEach(function(id) {
+                        let m = byId[id];
+                        if (!m || seen[m.id]) return;
+                        if (m.type === 'group') { walk(m); return; }
+                        seen[m.id] = true;
+                        unit.push(m);
+                        (captionOf[m.id] || []).forEach(function(c) {
+                            if (seen[c.id]) return;
+                            seen[c.id] = true;
+                            unit.push(c);
+                        });
+                    });
+                })(group);
+                return unit;
+            }
+
+            let movable = groups.filter(function(g) {
+                if (g.g) return false;                       // a nested box follows its parent
+                let bi = blockOf[g.id];
+                if (bi === undefined) return false;
+                let loose = looseLeft[bi];
+                return loose === undefined || g.x <= loose + 0.5;
+            });
+            if (movable.length < 2) return;
+
+            // Never towards the edge of the canvas: the leftmost box sets the
+            // column, but a box already hanging off it would otherwise drag
+            // every other sequence out there with it.
+            let target = movable.reduce(function(min, g) { return Math.min(min, g.x); }, Infinity);
+            if (target < leftMargin) target = leftMargin;
+            movable.forEach(function(g) {
+                let dx = target - g.x;
+                if (!dx) return;
+                unitOf(g).forEach(function(n) { n.x = n.x + dx; });
+            });
+
+            // The blocks' own bounds moved with them.
+            ordered.forEach(function(b) {
+                b.left = Infinity; b.right = -Infinity; b.boxLeft = Infinity;
+                b.nodes.forEach(function(n) {
+                    let left, right;
+                    if (n.type === 'group') {
+                        left = n.x; right = n.x + (n.w || 0);
+                        if (left < b.boxLeft) b.boxLeft = left;
+                    } else {
+                        let w = getNodeWidth(n, opts);
+                        left = n.x - w / 2; right = n.x + w / 2;
+                    }
+                    if (left < b.left) b.left = left;
+                    if (right > b.right) b.right = right;
+                });
+            });
+        })();
 
         for (let j = 1; j < ordered.length; j++) {
             let cur = ordered[j];
@@ -1407,6 +1481,29 @@
         return nodes;
     }
 
+    // The left-edge twin of `ensureTopMargin`, and it covers BOXES as well as
+    // nodes: a group's box is drawn `groupPadding` outside its members, so a
+    // flow that starts at the canvas edge has a box hanging off it. Everything
+    // slides right by one shared delta, so relative geometry is untouched.
+    function ensureLeftMargin(nodes, options) {
+        let opts = options || {};
+        let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
+
+        let positioned = (nodes || []).filter(function(n) {
+            return n && typeof n.x === 'number';
+        });
+        let minLeft = Infinity;
+        positioned.forEach(function(n) {
+            let left = (n.type === 'group') ? n.x : n.x - getNodeWidth(n, opts) / 2;
+            if (left < minLeft) minLeft = left;
+        });
+        if (!isFinite(minLeft) || minLeft >= leftMargin) return nodes;
+
+        let dx = leftMargin - minLeft;
+        positioned.forEach(function(n) { n.x = n.x + dx; });
+        return nodes;
+    }
+
     return {
         LAYOUT_DEFAULTS:              LAYOUT_DEFAULTS,
         estimateNodeWidth:            estimateNodeWidth,
@@ -1420,6 +1517,7 @@
         applyCommentAnchors:          applyCommentAnchors,
         fitGroups:                    fitGroups,
         separateGroups:               separateGroups,
-        keepLeftEdges:                keepLeftEdges
+        keepLeftEdges:                keepLeftEdges,
+        ensureLeftMargin:             ensureLeftMargin
     };
 });

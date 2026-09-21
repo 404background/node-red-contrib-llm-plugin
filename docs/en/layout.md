@@ -89,6 +89,7 @@ const positions = Layout.layoutNodes(
 | `fitGroups(nodes, options?)` | Refit every group box that no longer contains its members. See [Group boxes](#group-boxes). |
 | `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
+| `ensureLeftMargin(nodes, options?)` | Slide everything right by one shared delta when the leftmost edge — a box included — is closer to `x = 0` than `leftMargin`. |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
@@ -104,6 +105,8 @@ LAYOUT_DEFAULTS = {
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
     maxColumns:      5,
+    topMargin:      20,    // min clearance between the canvas top (y=0) and the topmost edge
+    leftMargin:     20,    // the same on the left edge (x=0), boxes included
     groupPadding:   25,    // the editor's own clearance between a group's box and its members
     groupGap:       40     // clearance between a group's box and whatever is outside it
 };
@@ -125,6 +128,13 @@ multiples by construction) and computes each centre as
 `leftEdge + width(node) / 2`, so siblings in a column visibly share
 the same left edge regardless of label width. The same logic gives a
 uniform `rowPitch = nodeHeight + spacingY` for vertical spacing.
+
+### `ensureLeftMargin` — nothing hangs off the edge
+
+The left-edge twin of `ensureTopMargin`, and it covers **boxes** as well as
+nodes: a box is drawn `groupPadding` outside its members, so a flow starting at
+the canvas edge has a box hanging off it. Everything slides right by one shared
+delta, so relative geometry is untouched.
 
 ## Width changes keep the left edge
 
@@ -237,10 +247,16 @@ behind. `fitGroups` runs after the layout passes and settles it:
 
 ### `separateGroups` — lining the boxes up, and keeping them apart
 
-- Stacked sequences read as a column, so their boxes **share a left edge**. Only
-  a box that is its own block's left edge is aligned: one drawn around the
-  middle of a chain has the upstream nodes to its left, and dragging those
-  sideways would not be an alignment.
+- Stacked sequences read as a column, so their boxes **share a left edge**.
+  Alignment is per BOX, not per block: two sequences wired to each other are one
+  block, and a `reposition` leaves exactly that pair stepped in and out.
+- A box moves with everything it holds — members, their members, and the
+  captions heading them. It is **not** moved when something in no box at all
+  sits to its left in the same block: a box drawn around the middle of a chain
+  has the nodes feeding it over there, and dragging those sideways is not an
+  alignment. Boxes never block each other.
+- The column is the leftmost box, **clamped to `leftMargin`**. A box already
+  hanging off the canvas would otherwise drag every other sequence out with it.
 - Every box ends up at least `groupGap` (40, two grid squares) from anything
   outside it, whether that is another box or a plain node.
 - What moves is a **block**, not a node: everything tied together by wires, by
