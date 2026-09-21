@@ -322,8 +322,14 @@
 .restore-btn:hover {
     background: #d97706;
 }
-/* Sits next to Restore: the other half of the same choice, so it reads as a
-   sibling rather than a second Import button. */
+/* Rides on the schema block's own header, so the control that applies a
+   proposal sits with the proposal. Floated: the summary keeps its disclosure
+   triangle and its label on the left. */
+.json-collapsible > summary .reapply-btn {
+    float: right;
+    margin: -2px 0 0 8px;
+    padding: 2px 8px;
+}
 .reapply-btn {
     background: #1c7ed6;
     color: white;

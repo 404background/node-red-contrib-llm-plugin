@@ -62,7 +62,7 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 ## Features
 
 - **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.
-- **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state — with **Apply Again** beside it to put the reply back, so you can switch between the flow you had and the one the model proposed. The **Restore Points** dialog lists them all, including the ones an `llm-request` node took, which have no chat message to hang a button off.
+- **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state. It sits above the prompt it undoes, and **Apply Again** sits on the reply's schema block, so you can switch between the flow you had and the one the model proposed. The **Restore Points** dialog lists them all, including the ones an `llm-request` node took, which have no chat message to hang a button off.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
 - **Forgiving import**: the flow in a reply is found whether it is fenced or not and whatever prose surrounds it.
 - **Edits are merges**: what the reply lists is added or updated, what it maps to `null` is deleted, and the rest of your flow is left alone — so a partial answer never rewrites the whole tab.

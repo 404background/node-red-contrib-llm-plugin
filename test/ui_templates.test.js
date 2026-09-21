@@ -282,12 +282,34 @@ function scenarioRestoreAndReapplyArePaired() {
   ok(CSS.indexOf('.reapply-btn {') !== -1, 'and the button has a stylesheet rule');
 
   const pair = (/function showPostImportActions\(([\s\S]*?)\n    \}/.exec(UI_CORE) || [])[1] || '';
-  ok(/createRestoreCheckpointButton\(/.test(pair) && /createReapplyButton\(/.test(pair),
-    'one function appends both, so neither can be shown without the other');
-  ok(/restore-btn, \.reapply-btn/.test(pair),
-    'and it clears both first, so a second apply does not stack a second pair');
+  ok(/placeRestoreAboveThePrompt\(/.test(pair) && /placeReapplyOnTheSchema\(/.test(pair),
+    'one function places both, so neither can be shown without the other');
   ok(/queueImport\(message, content, messageMeta, 'Apply Again'\)/.test(UI_CORE),
     'Apply Again goes through the same queue as Import (design.md §13)');
+
+  // Restore rewinds everything the prompt led to, so it belongs above the
+  // prompt — which means it is inserted among the message's NEIGHBOURS, not
+  // inside it, and only once the message is in the chat.
+  const restorePlacer = (/function placeRestoreAboveThePrompt\(([\s\S]*?)\n    \}/
+    .exec(UI_CORE) || [])[1] || '';
+  ok(/promptAbove\(message\)/.test(restorePlacer), 'it looks up the prompt above the reply');
+  ok(/parent\.insertBefore\(bar, anchor\)/.test(restorePlacer), 'and inserts the bar before it');
+  ok(/data-restore-for="/.test(restorePlacer) && /\.remove\(\)/.test(restorePlacer),
+    'the bar this reply left last time is removed first, so applies do not stack');
+  ok(/chatArea\.appendChild\(message\);[\s\S]{0,400}appendFlowActions\(/.test(UI_CORE),
+    'and the actions run after the message joins the chat, or it has no neighbours');
+
+  // Apply Again rides on the schema block, so the control sits with what it
+  // applies. Inside a <summary> a plain click is the disclosure toggle.
+  const reapplyPlacer = (/function placeReapplyOnTheSchema\(([\s\S]*?)\n    \}/
+    .exec(UI_CORE) || [])[1] || '';
+  ok(/json-collapsible\[data-vibe-schema\] > summary/.test(reapplyPlacer),
+    'it hangs off the Vibe Schema block header');
+  ok(/dataset\.vibeSchema = 'true'/.test(UI_CORE), 'which the fold marks as it builds the block');
+  ok(/e\.stopPropagation\(\)/.test(UI_CORE) && /e\.preventDefault\(\)/.test(UI_CORE),
+    'and the click does not toggle the block open');
+  ok(CSS.indexOf('.json-collapsible > summary .reapply-btn') !== -1,
+    'the button has a rule for sitting in that header');
 }
 
 function run() {

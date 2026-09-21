@@ -363,6 +363,9 @@
         summary.textContent = summaryText;
         let details = document.createElement('details');
         details.className = 'json-collapsible';
+        // The Apply Again button hangs off THIS block, so the control that
+        // applies the proposal sits with the proposal itself.
+        if (parsed && Converter.isVibeSchema(parsed)) details.dataset.vibeSchema = 'true';
         pre.parentNode.insertBefore(details, pre);
         details.appendChild(summary);
         details.appendChild(pre);
@@ -394,26 +397,69 @@
         return elapsed;
     }
 
-    // Above the message, because both act on the edit it already made: one
-    // rewinds to the flow that was there, the other applies this reply again.
-    // Paired on purpose — switching between them is how the two versions get
-    // compared, and in Agent mode the Import button below is hidden, so this
-    // is the only way back to the proposal once it has been rewound.
+    // The two halves of the same choice, each placed where it acts: Restore
+    // goes above the PROMPT, so everything below it is what gets rewound, and
+    // Apply Again rides on the schema block, so the control that applies a
+    // proposal sits with the proposal. In Agent mode the Import button below
+    // the message is hidden, which makes Apply Again the only way back to a
+    // proposal once it has been rewound.
     function showPostImportActions(message, checkpointId, content, messageMeta) {
-        let preChatActions = message.querySelector('.pre-chat-actions');
-        if (!preChatActions) {
-            preChatActions = Common.cloneTemplate('llm-plugin-pre-chat-actions-template');
-            message.insertBefore(preChatActions, message.firstChild);
+        placeRestoreAboveThePrompt(message, checkpointId, messageMeta);
+        placeReapplyOnTheSchema(message, content, messageMeta);
+    }
+
+    // The prompt this reply answered — the first user message above it. Two
+    // replies in a row (a retry) have no prompt between them, so the walk
+    // stops at the previous reply rather than claiming an older prompt.
+    function promptAbove(message) {
+        let prev = message.previousElementSibling;
+        while (prev && prev.classList) {
+            if (prev.classList.contains('user-message')) return prev;
+            if (prev.classList.contains('assistant-message')) return null;
+            prev = prev.previousElementSibling;
         }
-        preChatActions.querySelectorAll('.restore-btn, .reapply-btn')
-            .forEach(function(b) { b.remove(); });
-        preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
-        preChatActions.appendChild(createReapplyButton(message, content, messageMeta));
+        return null;
+    }
+
+    function placeRestoreAboveThePrompt(message, checkpointId, messageMeta) {
+        let messageId = (messageMeta && messageMeta.id) || '';
+        let anchor = promptAbove(message) || message;
+        let parent = anchor.parentNode;
+        if (!parent) return;
+
+        // One bar per reply, wherever it was last put.
+        let selector = messageId
+            ? '.pre-chat-actions[data-restore-for="' + messageId + '"]'
+            : null;
+        if (selector && parent.querySelectorAll) {
+            parent.querySelectorAll(selector).forEach(function(b) { b.remove(); });
+        }
+        message.querySelectorAll('.pre-chat-actions').forEach(function(b) { b.remove(); });
+
+        let bar = Common.cloneTemplate('llm-plugin-pre-chat-actions-template');
+        if (messageId) bar.dataset.restoreFor = messageId;
+        bar.appendChild(createRestoreCheckpointButton(checkpointId));
+        parent.insertBefore(bar, anchor);
+    }
+
+    function placeReapplyOnTheSchema(message, content, messageMeta) {
+        message.querySelectorAll('.reapply-btn').forEach(function(b) { b.remove(); });
+        let summary = message.querySelector('.json-collapsible[data-vibe-schema] > summary');
+        // No schema block to hang it on (a reply carrying only directives, or
+        // one whose JSON could not be read): the actions row below keeps it
+        // reachable.
+        let host = summary || message.querySelector('.flow-actions:not(.pre-chat-actions)');
+        if (!host) return;
+        host.appendChild(createReapplyButton(message, content, messageMeta));
     }
 
     function createReapplyButton(message, content, messageMeta) {
         let btn = Common.cloneTemplate('llm-plugin-reapply-btn-template');
-        btn.addEventListener('click', function() {
+        btn.addEventListener('click', function(e) {
+            // Inside a <summary>, a click is the disclosure toggle unless it
+            // is stopped here.
+            e.preventDefault();
+            e.stopPropagation();
             btn.disabled = true;
             queueImport(message, content, messageMeta, 'Apply Again')
                 .catch(reportImportFailure)
@@ -539,7 +585,13 @@
 
             let badge = buildElapsedBadge(metaOf(messageMeta));
             if (badge) message.appendChild(badge);
+        }
 
+        chatArea.appendChild(message);
+
+        // After the message is in the chat, not before: the Restore bar goes
+        // above the PROMPT, which means reaching the message's neighbours.
+        if (!isUser) {
             try {
                 appendFlowActions(message, content, messageMeta);
             } catch (e) {
@@ -548,8 +600,6 @@
                 if (window.console) console.error('[LLM Plugin] flow actions not rendered:', e);
             }
         }
-
-        chatArea.appendChild(message);
         UI.refreshRetryButton();
         chatArea.scrollTop = chatArea.scrollHeight;
         return message;
