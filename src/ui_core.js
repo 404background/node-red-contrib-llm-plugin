@@ -646,41 +646,48 @@
         else last.appendChild(messageActions);
     };
 
+    // The prompt a reply answered: the user message before it, not merely the
+    // newest one — a retry of an earlier turn must re-ask ITS question.
+    function promptForReply(messageMeta) {
+        let chat = LLMPlugin.ChatManager.getChatHistory()[LLMPlugin.ChatManager.getCurrentChatId()];
+        let msgs = (chat && Array.isArray(chat.messages)) ? chat.messages : [];
+        let from = msgs.length - 1;
+        if (messageMeta && messageMeta.id) {
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i] && msgs[i].id === messageMeta.id) { from = i - 1; break; }
+            }
+        }
+        for (let i = from; i >= 0; i--) {
+            if (msgs[i] && msgs[i].isUser) return msgs[i].content;
+        }
+        return null;
+    }
+
+    // Retry is two ordinary things in order: rewind to the checkpoint this
+    // reply was applied over, then send its prompt again down the SAME path
+    // the Send button uses. Nothing about the turn that follows is special —
+    // it applies, checkpoints and grows its own Restore / Apply Again exactly
+    // as a typed prompt would.
     UI.retryLastUserMessage = function(messageMeta) {
         try {
-            let chatId = LLMPlugin.ChatManager.getCurrentChatId();
-            let history = LLMPlugin.ChatManager.getChatHistory();
-            let chat = history[chatId];
-            if (!chat || !chat.messages) return;
-            let userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
-            if (userMessages.length === 0) return;
-            let lastUserMsg = userMessages[userMessages.length - 1];
-            let promptInput = document.getElementById('llm-plugin-prompt');
-            let generateBtn = document.getElementById('llm-plugin-generate');
-            if (!promptInput || !generateBtn) return;
+            let send = LLMPlugin.sendPrompt;
+            let prompt = promptForReply(messageMeta);
+            if (typeof send !== 'function' || !prompt) return;
 
-            // Restore the checkpoint attached to the retried assistant
-            // message so the next request sees the pre-edit flow. Without
-            // this the LLM would resend against the already-edited state.
             let checkpointId = metaOf(messageMeta).checkpointId;
+            if (!checkpointId) { send(prompt); return; }
 
-            function doSend() {
-                promptInput.value = lastUserMsg.content;
-                generateBtn.click();
-            }
-
-            if (checkpointId) {
-                LLMPlugin.Importer.restoreCheckpoint(checkpointId)
-                    .then(doSend)
-                    .catch(function(err) {
-                        console.warn('[LLM Plugin] Retry restore failed; sending with current flow:', err);
-                        doSend();
-                    });
-            } else {
-                doSend();
-            }
+            LLMPlugin.Importer.restoreCheckpoint(checkpointId)
+                .catch(function(err) {
+                    // The rewind is the best-effort half: better to ask again
+                    // against the edited flow than not to ask at all.
+                    if (window.console) {
+                        console.warn('[LLM Plugin] retry: restore failed, asking against the current flow:', err);
+                    }
+                })
+                .then(function() { send(prompt); });
         } catch (e) {
-            console.error('Error retrying message:', e);
+            if (window.console) console.error('[LLM Plugin] retry failed:', e);
         }
     };
 

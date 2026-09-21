@@ -337,8 +337,6 @@
     padding: 2px 8px;
 }
 .reapply-btn {
-    /* Restore's colour: the two are one choice, taken in either direction. */
-    background: #f59f00;
     color: white;
     border: none;
     padding: 5px 10px;
@@ -347,8 +345,18 @@
     cursor: pointer;
     font-size: 12px;
 }
+/* One choice taken in either direction, so one colour — declared together so
+   it cannot drift. It has to be said here because `.flow-actions button`
+   above already colours the Restore bar, and that rule never reaches Apply
+   Again, which sits in a <summary>. The Restore Points dialog keeps the plain
+   `.restore-btn` colour: different surface, different question. */
+.pre-chat-actions .restore-btn,
+.reapply-btn {
+    background: #28a745;
+}
+.pre-chat-actions .restore-btn:hover,
 .reapply-btn:hover {
-    background: #d97706;
+    background: #218838;
 }
 /* Apply queue panel */
 .llm-queue-panel {

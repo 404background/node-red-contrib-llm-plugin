@@ -286,6 +286,10 @@
             else handleGenerate();
         });
 
+        // The Send path itself. The retry button drives this rather than
+        // clicking the button, so there is one way a prompt is sent.
+        LLMPlugin.sendPrompt = function(prompt) { handleGenerate(prompt); };
+
         promptInput.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 if (stopGeneration()) e.preventDefault();
@@ -690,12 +694,17 @@
         }
 
         // --- Core generation flow ---
-        function handleGenerate() {
-            // Block Ctrl+Enter while a request is in flight (Send is Stop).
-            if (generateBtn.classList.contains('stop-btn')) return;
+        // `promptOverride` is how anything else sends: the retry button hands
+        // back the prompt it wants re-asked, and everything after it — the
+        // apply, the checkpoint, the buttons on the reply — happens exactly
+        // as it does for a prompt typed here.
+        function handleGenerate(promptOverride) {
+            // A request is already in flight (Send is Stop).
+            if (isGenerating()) return;
 
             let model  = modelInput.value.trim();
-            let prompt = promptInput.value.trim();
+            let prompt = (typeof promptOverride === 'string' ? promptOverride
+                                                            : promptInput.value).trim();
             
             // Save model to localStorage
             try {

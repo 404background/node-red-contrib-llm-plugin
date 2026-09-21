@@ -311,11 +311,14 @@ function scenarioRestoreAndReapplyArePaired() {
   ok(CSS.indexOf('.json-collapsible > summary .reapply-btn') !== -1,
     'the button has a rule for sitting in that header');
 
-  // Two buttons, one choice: they read as a pair only while they look alike.
-  const bg = (cls) => (new RegExp('^\\' + cls + ' \\{[^}]*background: (#[0-9a-fA-F]{3,8})', 'm')
-    .exec(CSS) || [])[1];
-  ok(!!bg('.restore-btn') && bg('.reapply-btn') === bg('.restore-btn'),
-    'Apply Again wears Restore\'s colour (' + bg('.reapply-btn') + ' vs ' + bg('.restore-btn') + ')');
+  // Two buttons, one choice: they read as a pair only while they look alike,
+  // and `.flow-actions button` colours the Restore bar without ever reaching
+  // Apply Again in its <summary>. So the pair's colour is declared once, for
+  // both selectors at once — a value each could drift from is the bug.
+  ok(/\.pre-chat-actions \.restore-btn,\s*\n\.reapply-btn \{[^}]*background:/.test(CSS),
+    'Restore and Apply Again take their colour from one rule');
+  ok(/\.pre-chat-actions \.restore-btn:hover,\s*\n\.reapply-btn:hover \{/.test(CSS),
+    'and their hover state from one too');
   ok(CSS.indexOf('.pre-chat-actions {') !== -1 &&
      /\.pre-chat-actions \{[^}]*text-align: right/.test(CSS),
     'and the Restore bar sits on the prompt\'s side of the chat');
@@ -325,6 +328,29 @@ function scenarioRestoreAndReapplyArePaired() {
     'a bubble holding a JSON block is marked as such');
   ok(/\.message-content\.has-json-block \{[^}]*width: 100%/.test(CSS),
     'and takes the width it will need open, so the folded header is as wide');
+}
+
+// Retry is two ordinary things in order — rewind, then ask again — and the
+// asking has to be the SAME path a typed prompt takes, or everything that
+// follows a reply (the apply, its checkpoint, its Restore / Apply Again) has
+// to be reimplemented for it. It used to poke the textarea and click Send.
+function scenarioRetryReusesTheSendPath() {
+  console.log('\nRetry rewinds, then sends the prompt the ordinary way');
+  ok(/LLMPlugin\.sendPrompt = function/.test(VIBE_UI),
+    'vibe_ui publishes the Send path it uses itself');
+  ok(/function handleGenerate\(promptOverride\)/.test(VIBE_UI),
+    'which takes the prompt to send, rather than reading the box');
+
+  const retry = (/UI\.retryLastUserMessage = function\(([\s\S]*?)\n    \};/.exec(UI_CORE) || [])[1] || '';
+  ok(retry.length > 0, 'the retry handler is there');
+  ok(/restoreCheckpoint\(checkpointId\)/.test(retry) && /send\(prompt\)/.test(retry),
+    'it restores the checkpoint, then sends');
+  ok(!/generateBtn|getElementById/.test(retry),
+    'without clicking the button or reaching for the DOM');
+  ok(/promptForReply\(messageMeta\)/.test(retry),
+    'and re-asks the prompt THIS reply answered, not merely the newest one');
+  ok(/\.catch\(/.test(retry) && retry.indexOf('.then(function() { send(prompt); })') !== -1,
+    'a failed rewind still asks, against the flow as it stands');
 }
 
 function run() {
@@ -339,6 +365,7 @@ function run() {
   scenarioNodeHelpStaysShort();
   scenarioPromptKeysAreWired();
   scenarioRestoreAndReapplyArePaired();
+  scenarioRetryReusesTheSendPath();
   summary();
 }
 
