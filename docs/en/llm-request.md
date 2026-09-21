@@ -1,5 +1,12 @@
 # `llm-request` node
 
+> **Not in the release yet — planned.** The node is not debugged enough to
+> ship, so the published package does not register it and it will not appear
+> in the palette. The code is all here (`node/llm-request/`, with the editor
+> half in `src/agent_apply.js`), and everything below describes how it works
+> and is meant to work; putting the `node-red.nodes` entry back in
+> `package.json` is what turns it on.
+
 The node registered alongside the LLM Plugin sidebar (palette category
 **llm-plugin**) so a flow can call an LLM.
 Provider, model and the target flows are set on the `llm-request` node; API keys
