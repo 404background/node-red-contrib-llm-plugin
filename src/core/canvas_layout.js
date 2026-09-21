@@ -1286,32 +1286,10 @@
         return nodes;
     }
 
-    // A box is drawn `groupPadding` outside its members, so the clearance the
-    // node layout left between two sequences is that clearance MINUS both
-    // paddings — and a caption that joined a group grows its box further into
-    // it. Stacked sequences that read as separate therefore come out with
-    // boxes that touch, or overlap outright.
-    //
-    // This pass is the guard: whatever moved the members, no box ends up
-    // closer than `groupGap` to anything outside it. Blocks move whole —
-    // members, boxes, captions and everything wired to them — so separating
-    // two sequences cannot shear either one. See docs/{en,jp}/layout.md.
-    function separateGroups(nodes, options) {
-        let opts = options || {};
-        let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
-        let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
-        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
-
-        let all = (nodes || []).filter(function(n) {
-            return n && n.id && typeof n.x === 'number' && typeof n.y === 'number';
-        });
-        let groups = all.filter(function(n) { return n.type === 'group'; });
-        if (groups.length === 0) return nodes;
-
-        let byId = {};
-        all.forEach(function(n) { byId[n.id] = n; });
-
-        // --- Blocks: what has to move together ---
+    // What has to move together: nodes joined by a wire, both halves of group
+    // membership, and a caption with the node it heads. A block moves whole,
+    // so separating two sequences can never shear either one.
+    function collectBlocks(all, byId, anchors, opts, nodeHeight) {
         let parent = {};
         function find(id) {
             while (parent[id] !== undefined && parent[id] !== id) id = parent[id];
@@ -1331,149 +1309,147 @@
                     port.forEach(function(toId) { if (byId[toId]) union(n.id, toId); });
                 });
             }
-            // Both halves of group membership, so a member listed on only one
-            // side still travels with its box.
+            // Both halves, so a member listed on only one side still travels
+            // with its box.
             if (n.g && byId[n.g]) union(n.id, n.g);
             if (n.type === 'group' && Array.isArray(n.nodes)) {
                 n.nodes.forEach(function(id) { if (byId[id]) union(n.id, id); });
             }
         });
-        // A caption is tied to the node it heads, which is the only thing
-        // saying where it belongs when it is not a group member.
-        let anchors = captureCommentAnchors(all, opts);
         Object.keys(anchors).forEach(function(id) {
             if (byId[id] && byId[anchors[id].targetId]) union(id, anchors[id].targetId);
         });
 
-        let blocks = {};
+        let byRoot = {};
         all.forEach(function(n) {
             let root = find(n.id);
-            let b = blocks[root] || (blocks[root] = {
-                nodes: [], hasGroup: false, boxLeft: Infinity,
-                top: Infinity, bottom: -Infinity, left: Infinity, right: -Infinity
-            });
-            b.nodes.push(n);
-            let top, bottom, left, right;
+            (byRoot[root] = byRoot[root] || { nodes: [] }).nodes.push(n);
+        });
+        return Object.keys(byRoot)
+            .map(function(k) { return measureBlock(byRoot[k], opts, nodeHeight); })
+            .sort(function(a, b) { return (a.top - b.top) || (a.left - b.left); });
+    }
+
+    // One reading of a block's extent, used by both passes below and redone
+    // after each of them moves something.
+    function measureBlock(block, opts, nodeHeight) {
+        block.hasGroup = false;
+        block.boxLeft = Infinity;
+        block.top = Infinity; block.bottom = -Infinity;
+        block.left = Infinity; block.right = -Infinity;
+        block.nodes.forEach(function(n) {
             if (n.type === 'group') {
-                b.hasGroup = true;
-                top = n.y; bottom = n.y + (n.h || 0);
-                left = n.x; right = n.x + (n.w || 0);
-                if (left < b.boxLeft) b.boxLeft = left;
-            } else {
-                let w = getNodeWidth(n, opts);
-                top = n.y - nodeHeight / 2; bottom = n.y + nodeHeight / 2;
-                left = n.x - w / 2; right = n.x + w / 2;
+                block.hasGroup = true;
+                if (n.x < block.boxLeft) block.boxLeft = n.x;
             }
-            if (top < b.top) b.top = top;
-            if (bottom > b.bottom) b.bottom = bottom;
-            if (left < b.left) b.left = left;
-            if (right > b.right) b.right = right;
+            let e = memberEdges(n, opts, nodeHeight);
+            if (!e) return;
+            if (e.minY < block.top) block.top = e.minY;
+            if (e.maxY > block.bottom) block.bottom = e.maxY;
+            if (e.minX < block.left) block.left = e.minX;
+            if (e.maxX > block.right) block.right = e.maxX;
+        });
+        return block;
+    }
+
+    // Stacked sequences read as a column, so their boxes share a left edge
+    // rather than stepping in and out by whatever their first node happens to
+    // be. PER BOX, not per block: two sequences wired to each other are one
+    // block, and a reposition leaves exactly that pair stepped.
+    //
+    // A box is not moved when something in no box at all sits to its left in
+    // the same block — a box drawn around the middle of a chain has the nodes
+    // feeding it over there, and dragging those sideways is not an alignment.
+    // Boxes never block each other.
+    function alignBoxesLeft(blocks, groups, byId, anchors, opts, leftMargin) {
+        let blockOf = {};
+        blocks.forEach(function(b, i) { b.nodes.forEach(function(n) { blockOf[n.id] = i; }); });
+
+        let looseLeft = {};
+        Object.keys(byId).forEach(function(id) {
+            let n = byId[id];
+            if (n.type === 'group' || n.g) return;
+            let bi = blockOf[n.id];
+            if (bi === undefined) return;
+            let left = n.x - getNodeWidth(n, opts) / 2;
+            if (looseLeft[bi] === undefined || left < looseLeft[bi]) looseLeft[bi] = left;
         });
 
-        // --- Push down whatever a box does not clear ---
-        // Top-down: each block is separated from the ones already placed
-        // above it, so one pass settles the stack.
-        let ordered = Object.keys(blocks).map(function(k) { return blocks[k]; })
-            .sort(function(a, b) { return (a.top - b.top) || (a.left - b.left); });
-
-        // --- Line the boxes up ---
-        // Stacked sequences read as a column, so their boxes share a left
-        // edge rather than stepping in and out by whatever their first node
-        // happens to be. A box moves with everything it contains, PER BOX —
-        // aligning whole blocks would leave two boxes wired to each other
-        // stepped, which is the case a reposition produces most often.
-        //
-        // A box is not aligned when something outside every box sits to its
-        // left in the same block: a box drawn around the middle of a chain
-        // has the nodes feeding it over there, and dragging those sideways is
-        // not an alignment. Boxes themselves never block each other.
-        (function alignBoxes() {
-            let blockOf = {};
-            ordered.forEach(function(b, i) {
-                b.nodes.forEach(function(n) { blockOf[n.id] = i; });
+        // What lines up is the SEQUENCE, read from its members' own left
+        // edges rather than the box drawn around them: a box the user made
+        // larger than it needs to be still holds its members at their column,
+        // and aligning the border would push that column out of line.
+        let movable = [];
+        groups.forEach(function(g) {
+            if (g.g) return;                             // a nested box follows its parent
+            let bi = blockOf[g.id];
+            if (bi === undefined) return;
+            let loose = looseLeft[bi];
+            if (loose !== undefined && g.x > loose + 0.5) return;
+            let contents = boxContents(g, byId, anchors);
+            let left = Infinity;
+            contents.forEach(function(n) {
+                if (n.type === 'group') return;
+                let l = n.x - getNodeWidth(n, opts) / 2;
+                if (l < left) left = l;
             });
-            let looseLeft = {};       // block -> leftmost thing in no box at all
-            all.forEach(function(n) {
-                if (n.type === 'group' || n.g) return;
-                let bi = blockOf[n.id];
-                if (bi === undefined) return;
-                let left = n.x - getNodeWidth(n, opts) / 2;
-                if (looseLeft[bi] === undefined || left < looseLeft[bi]) looseLeft[bi] = left;
-            });
+            if (isFinite(left)) movable.push({ group: g, contents: contents, left: left });
+        });
+        if (movable.length < 2) return;
 
-            // Everything a box takes with it: its members, their members in
-            // turn, and the captions that head them.
-            let captionOf = {};
-            Object.keys(anchors).forEach(function(id) {
-                let t = anchors[id].targetId;
-                if (byId[id]) (captionOf[t] = captionOf[t] || []).push(byId[id]);
-            });
-            function unitOf(group) {
-                let seen = {};
-                let unit = [];
-                (function walk(g) {
-                    if (!g || seen[g.id]) return;
-                    seen[g.id] = true;
-                    unit.push(g);
-                    (Array.isArray(g.nodes) ? g.nodes : []).forEach(function(id) {
-                        let m = byId[id];
-                        if (!m || seen[m.id]) return;
-                        if (m.type === 'group') { walk(m); return; }
-                        seen[m.id] = true;
-                        unit.push(m);
-                        (captionOf[m.id] || []).forEach(function(c) {
-                            if (seen[c.id]) return;
-                            seen[c.id] = true;
-                            unit.push(c);
-                        });
-                    });
-                })(group);
-                return unit;
-            }
+        // Never towards the edge of the canvas: the leftmost column wins, but
+        // a sequence already hanging off it would otherwise drag every other
+        // one out there with it. The box sits one padding further out, so that
+        // is what has to clear the margin.
+        let pad = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
+        let target = movable.reduce(function(min, m) { return Math.min(min, m.left); }, Infinity);
+        if (target - pad < leftMargin) target = leftMargin + pad;
+        movable.forEach(function(m) {
+            let dx = target - m.left;
+            if (!dx) return;
+            m.contents.forEach(function(n) { n.x = n.x + dx; });
+        });
+    }
 
-            let movable = groups.filter(function(g) {
-                if (g.g) return false;                       // a nested box follows its parent
-                let bi = blockOf[g.id];
-                if (bi === undefined) return false;
-                let loose = looseLeft[bi];
-                return loose === undefined || g.x <= loose + 0.5;
-            });
-            if (movable.length < 2) return;
-
-            // Never towards the edge of the canvas: the leftmost box sets the
-            // column, but a box already hanging off it would otherwise drag
-            // every other sequence out there with it.
-            let target = movable.reduce(function(min, g) { return Math.min(min, g.x); }, Infinity);
-            if (target < leftMargin) target = leftMargin;
-            movable.forEach(function(g) {
-                let dx = target - g.x;
-                if (!dx) return;
-                unitOf(g).forEach(function(n) { n.x = n.x + dx; });
-            });
-
-            // The blocks' own bounds moved with them.
-            ordered.forEach(function(b) {
-                b.left = Infinity; b.right = -Infinity; b.boxLeft = Infinity;
-                b.nodes.forEach(function(n) {
-                    let left, right;
-                    if (n.type === 'group') {
-                        left = n.x; right = n.x + (n.w || 0);
-                        if (left < b.boxLeft) b.boxLeft = left;
-                    } else {
-                        let w = getNodeWidth(n, opts);
-                        left = n.x - w / 2; right = n.x + w / 2;
-                    }
-                    if (left < b.left) b.left = left;
-                    if (right > b.right) b.right = right;
+    // Everything a box takes with it: its members, their members in turn, and
+    // the captions heading them.
+    function boxContents(group, byId, anchors) {
+        let captionOf = {};
+        Object.keys(anchors).forEach(function(id) {
+            let target = anchors[id].targetId;
+            if (byId[id]) (captionOf[target] = captionOf[target] || []).push(byId[id]);
+        });
+        let seen = {};
+        let unit = [];
+        (function walk(g) {
+            if (!g || seen[g.id]) return;
+            seen[g.id] = true;
+            unit.push(g);
+            (Array.isArray(g.nodes) ? g.nodes : []).forEach(function(id) {
+                let m = byId[id];
+                if (!m || seen[m.id]) return;
+                if (m.type === 'group') { walk(m); return; }
+                seen[m.id] = true;
+                unit.push(m);
+                (captionOf[m.id] || []).forEach(function(c) {
+                    if (seen[c.id]) return;
+                    seen[c.id] = true;
+                    unit.push(c);
                 });
             });
-        })();
+        })(group);
+        return unit;
+    }
 
-        for (let j = 1; j < ordered.length; j++) {
-            let cur = ordered[j];
+    // Top-down, downward-only: each block is separated from the ones already
+    // placed above it, so one sweep settles the stack and a canvas that
+    // already clears does not drift.
+    function pushBlocksApart(blocks, gap) {
+        for (let j = 1; j < blocks.length; j++) {
+            let cur = blocks[j];
             let delta = 0;
             for (let i = 0; i < j; i++) {
-                let above = ordered[i];
+                let above = blocks[i];
                 // Only a box needs this clearance; two plain flows are the
                 // node layout's business, and it already spaced them.
                 if (!above.hasGroup && !cur.hasGroup) continue;
@@ -1486,6 +1462,40 @@
             cur.top += delta;
             cur.bottom += delta;
         }
+    }
+
+    // A box is drawn `groupPadding` outside its members, so the clearance the
+    // node layout left between two sequences is that clearance MINUS both
+    // paddings — and a caption that joined a group grows its box further into
+    // it. Stacked sequences that read as separate therefore come out with
+    // boxes that touch, or overlap outright.
+    //
+    // So: line the boxes up, then keep every one of them `groupGap` clear of
+    // whatever is outside it. Both work on blocks, and the bounds are re-read
+    // between the two, so the spacing is measured on the aligned positions.
+    // See docs/{en,jp}/layout.md — Order of the passes.
+    function separateGroups(nodes, options) {
+        let opts = options || {};
+        let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
+        let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+
+        let all = (nodes || []).filter(function(n) {
+            return n && n.id && typeof n.x === 'number' && typeof n.y === 'number';
+        });
+        let groups = all.filter(function(n) { return n.type === 'group'; });
+        if (groups.length === 0) return nodes;
+
+        let byId = {};
+        all.forEach(function(n) { byId[n.id] = n; });
+        // A caption is tied to the node it heads, which is the only thing
+        // saying where it belongs when it is not a group member.
+        let anchors = captureCommentAnchors(all, opts);
+
+        let blocks = collectBlocks(all, byId, anchors, opts, nodeHeight);
+        alignBoxesLeft(blocks, groups, byId, anchors, opts, leftMargin);
+        blocks.forEach(function(b) { measureBlock(b, opts, nodeHeight); });
+        pushBlocksApart(blocks, gap);
         return nodes;
     }
 
@@ -1497,12 +1507,15 @@
         let opts = options || {};
         let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
 
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+
         let positioned = (nodes || []).filter(function(n) {
             return n && typeof n.x === 'number';
         });
         let minLeft = Infinity;
         positioned.forEach(function(n) {
-            let left = (n.type === 'group') ? n.x : n.x - getNodeWidth(n, opts) / 2;
+            let e = memberEdges(n, opts, nodeHeight);
+            let left = e ? e.minX : n.x;
             if (left < minLeft) minLeft = left;
         });
         if (!isFinite(minLeft) || minLeft >= leftMargin) return nodes;

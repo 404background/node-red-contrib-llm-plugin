@@ -302,6 +302,13 @@ LLM wants to make grouping explicit; the importer flattens it. Aliases
 that don't resolve to a canvas node (config nodes, unknown aliases) are
 ignored.
 
+**A group alias means the sequence inside it.** `{"reposition":
+["group_ingest"]}` rearranges that box's members — a box has no position
+of its own, it is fitted around wherever they end up, so there is nothing
+else it could mean. Nested boxes are followed. A **comment** alias is
+ignored on purpose: a caption is not a step in the chain, and it is
+re-aligned under the node it heads once the chain has moved.
+
 ### Comment-node rule
 
 Every comment **must** name the canvas node it sits above:

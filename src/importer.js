@@ -376,6 +376,108 @@
     //  Rebuild Workspace Flow                                             //
     // ================================================================== //
 
+    // The layout phase, run inside-out: correct the coordinates coming in,
+    // place the members, rearrange a named subset, fit each box around what
+    // it now holds, then arrange the boxes and the canvas edge. Each step
+    // needs the one before it to have finished — see docs/{en,jp}/layout.md,
+    // "Order of the passes".
+    function layoutRebuiltFlow(rebuilt, ctx) {
+        let beforeFlow = ctx.beforeFlow;
+        let baseIds = ctx.baseIds;
+        let basePositions = ctx.basePositions;
+        let directives = ctx.directives || {};
+        let layout = LLMPlugin.CanvasLayout;
+        // The live `.w` is measured from the rendered SVG, so it is only
+        // valid while the label is unchanged. See docs/{en,jp}/layout.md.
+        function liveNodeWidth(n) {
+            if (!n || !n.id) return undefined;
+            try {
+                let live = RED.nodes.node(n.id);
+                if (!live || typeof live.w !== 'number' || live.w <= 0) return undefined;
+                let liveLabel = (typeof live.name === 'string' && live.name.trim()) ? live.name : (live.type || '');
+                let newLabel  = (typeof n.name    === 'string' && n.name.trim())    ? n.name    : (n.type    || '');
+                if (liveLabel !== newLabel) return undefined;
+                return live.w;
+            } catch (e) { /* ignore */ }
+            return undefined;
+        }
+        let layoutOpts = {
+            startX: LAYOUT.startX, startY: LAYOUT.startY,
+            spacingY: LAYOUT.spacingY,
+            edgeGap: LAYOUT.edgeGap,
+            componentGap: LAYOUT.componentGap,
+            bandGap: LAYOUT.componentGap,
+            maxColumns: LAYOUT.maxColumns,
+            isCanvasNode: isLayoutNode,
+            getNodeWidth: liveNodeWidth
+        };
+        // A rename changes the node's width and `x` is its CENTRE, so the
+        // left edge — the thing this layout aligns — would move. Corrected
+        // before the placement passes, which reason in left edges.
+        let widthsBefore = {};
+        (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) {
+            if (n && n.id && isLayoutNode(n)) widthsBefore[n.id] = layout.getNodeWidth(n, layoutOpts);
+        });
+        let widened = layout.keepLeftEdges(rebuilt, widthsBefore, layoutOpts);
+        // The incremental pass pins existing nodes to these, so the
+        // correction has to reach them or it is restored away again.
+        rebuilt.forEach(function(n) {
+            if (n && n.id && basePositions[n.id] && typeof n.x === 'number') {
+                basePositions[n.id].x = n.x;
+            }
+        });
+
+        if (Object.keys(baseIds).length === 0) {
+            // Fresh flow: honour maxColumns so long chains fold neatly.
+            layout.reflowCanvasNodes(rebuilt, layoutOpts);
+        } else {
+            // Incremental edit: disable column folding so the existing
+            // flow shape is preserved and new nodes just extend right.
+            let incrementalOpts = Object.assign({}, layoutOpts, {
+                maxColumns: Infinity,
+                reflowIds: widened
+            });
+            layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
+        }
+
+        // Selective reposition: relayout the named subset in place,
+        // keeping their IDs and properties. Runs AFTER the general
+        // layout pass so coordinates of unaffected nodes are stable.
+        let moved = [];
+        if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
+            moved = repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts) || [];
+        }
+
+        // Whoever moved the members owns the boxes: the editor recomputes a
+        // group's box only when the user drags something into or inside it.
+        // A box whose members this edit rearranged is refitted rather than
+        // left at the size it had — a stale box is what the alignment below
+        // would then line up, instead of the sequence inside it.
+        let byIdRebuilt = {};
+        rebuilt.forEach(function(n) { if (n && n.id) byIdRebuilt[n.id] = n; });
+        let refitIds = [];
+        moved.concat(widened).forEach(function(id) {
+            let n = byIdRebuilt[id];
+            let hops = 32;
+            while (n && n.g && hops-- > 0) {
+                if (refitIds.indexOf(n.g) === -1) refitIds.push(n.g);
+                n = byIdRebuilt[n.g];
+            }
+        });
+        layout.fitGroups(rebuilt, Object.assign({}, layoutOpts, { refitIds: refitIds }));
+
+        // Boxes fitted, so now they can be kept apart: the node layout spaced
+        // the members, which is not the same as spacing what is drawn around
+        // them.
+        layout.separateGroups(rebuilt, layoutOpts);
+
+        // Last: whatever the passes above decided, nothing sits off the left
+        // edge of the canvas. A box hangs one padding further left than its
+        // members, so this is the pass that sees it.
+        layout.ensureLeftMargin(rebuilt, layoutOpts);
+        return rebuilt;
+    }
+
     function rebuildWorkspaceFromSnapshot(beforeFlow, updateNodes, workspaceId, connectionHints, flowDirectives) {
         let base = Array.isArray(beforeFlow)
             ? JSON.parse(JSON.stringify(beforeFlow))
@@ -676,95 +778,12 @@
         pruneInvalidOutputWires(rebuilt);
         fixConfigNodeProperties(rebuilt);
 
-        let layout = LLMPlugin.CanvasLayout;
-        // The live `.w` is measured from the rendered SVG, so it is only
-        // valid while the label is unchanged. See docs/{en,jp}/layout.md.
-        function liveNodeWidth(n) {
-            if (!n || !n.id) return undefined;
-            try {
-                let live = RED.nodes.node(n.id);
-                if (!live || typeof live.w !== 'number' || live.w <= 0) return undefined;
-                let liveLabel = (typeof live.name === 'string' && live.name.trim()) ? live.name : (live.type || '');
-                let newLabel  = (typeof n.name    === 'string' && n.name.trim())    ? n.name    : (n.type    || '');
-                if (liveLabel !== newLabel) return undefined;
-                return live.w;
-            } catch (e) { /* ignore */ }
-            return undefined;
-        }
-        let layoutOpts = {
-            startX: LAYOUT.startX, startY: LAYOUT.startY,
-            spacingY: LAYOUT.spacingY,
-            edgeGap: LAYOUT.edgeGap,
-            componentGap: LAYOUT.componentGap,
-            bandGap: LAYOUT.componentGap,
-            maxColumns: LAYOUT.maxColumns,
-            isCanvasNode: isLayoutNode,
-            getNodeWidth: liveNodeWidth
-        };
-        // A rename changes the node's width and `x` is its CENTRE, so the
-        // left edge — the thing this layout aligns — would move. Corrected
-        // before the placement passes, which reason in left edges.
-        let widthsBefore = {};
-        (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) {
-            if (n && n.id && isLayoutNode(n)) widthsBefore[n.id] = layout.getNodeWidth(n, layoutOpts);
+        layoutRebuiltFlow(rebuilt, {
+            beforeFlow: beforeFlow,
+            baseIds: baseIds,
+            basePositions: basePositions,
+            directives: directives
         });
-        let widened = layout.keepLeftEdges(rebuilt, widthsBefore, layoutOpts);
-        // The incremental pass pins existing nodes to these, so the
-        // correction has to reach them or it is restored away again.
-        rebuilt.forEach(function(n) {
-            if (n && n.id && basePositions[n.id] && typeof n.x === 'number') {
-                basePositions[n.id].x = n.x;
-            }
-        });
-
-        if (Object.keys(baseIds).length === 0) {
-            // Fresh flow: honour maxColumns so long chains fold neatly.
-            layout.reflowCanvasNodes(rebuilt, layoutOpts);
-        } else {
-            // Incremental edit: disable column folding so the existing
-            // flow shape is preserved and new nodes just extend right.
-            let incrementalOpts = Object.assign({}, layoutOpts, {
-                maxColumns: Infinity,
-                reflowIds: widened
-            });
-            layout.placeAddedNodesNearNeighbors(rebuilt, baseIds, basePositions, incrementalOpts);
-        }
-
-        // Selective reposition: relayout the named subset in place,
-        // keeping their IDs and properties. Runs AFTER the general
-        // layout pass so coordinates of unaffected nodes are stable.
-        let moved = [];
-        if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
-            moved = repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts) || [];
-        }
-
-        // Whoever moved the members owns the boxes: the editor recomputes a
-        // group's box only when the user drags something into or inside it.
-        // A box whose members this edit rearranged is refitted rather than
-        // left at the size it had — a stale box is what the alignment below
-        // would then line up, instead of the sequence inside it.
-        let byIdRebuilt = {};
-        rebuilt.forEach(function(n) { if (n && n.id) byIdRebuilt[n.id] = n; });
-        let refitIds = [];
-        moved.concat(widened).forEach(function(id) {
-            let n = byIdRebuilt[id];
-            let hops = 32;
-            while (n && n.g && hops-- > 0) {
-                if (refitIds.indexOf(n.g) === -1) refitIds.push(n.g);
-                n = byIdRebuilt[n.g];
-            }
-        });
-        layout.fitGroups(rebuilt, Object.assign({}, layoutOpts, { refitIds: refitIds }));
-
-        // Boxes fitted, so now they can be kept apart: the node layout spaced
-        // the members, which is not the same as spacing what is drawn around
-        // them.
-        layout.separateGroups(rebuilt, layoutOpts);
-
-        // Last: whatever the passes above decided, nothing sits off the left
-        // edge of the canvas. A box hangs one padding further left than its
-        // members, so this is the pass that sees it.
-        layout.ensureLeftMargin(rebuilt, layoutOpts);
 
         // Metadata sweep #2: the layout passes have consumed what they needed,
         // so drop the remainder. After this point no node carries a `_` key.
@@ -787,14 +806,30 @@
         let lookup = buildFlowLookup(allNodes);
 
         let subsetIdSet = {};
+        // A caption is not a step in the chain: laying one out as a node gives
+        // it a column of its own and leaves it beside what it heads. Named or
+        // not, it follows its target below.
+        function takeNode(n) {
+            if (n && n.id && isLayoutNode(n) && n.type !== 'comment') subsetIdSet[n.id] = true;
+        }
+        // Naming a box means the sequence in it — the box itself has no
+        // position of its own, it is refitted around wherever its members end
+        // up. See docs/{en,jp}/vibe-schema.md — Layout fix.
+        function takeGroup(group, hops) {
+            (Array.isArray(group.nodes) ? group.nodes : []).forEach(function(id) {
+                let m = lookup.byId[id];
+                if (!m) return;
+                if (m.type === 'group') { if (hops > 0) takeGroup(m, hops - 1); return; }
+                takeNode(m);
+            });
+        }
         aliases.forEach(function(a) {
             let id = lookup.resolve(a, { exactOnly: true }) || lookup.resolve(a);
             if (!id) return;
             let n = lookup.byId[id];
-            // A caption is not a step in the chain: laying one out as a node
-            // gives it a column of its own and leaves it beside what it
-            // heads. Named or not, it follows its target below.
-            if (n && isLayoutNode(n) && n.type !== 'comment') subsetIdSet[id] = true;
+            if (!n) return;
+            if (n.type === 'group') takeGroup(n, 32);
+            else takeNode(n);
         });
 
         let subsetNodes = allNodes.filter(function(n) {
@@ -803,14 +838,26 @@
         if (subsetNodes.length < 1) return;
 
         // Anchor the subset to its current top-left so unrelated nodes
-        // around it don't visually shift.
-        let origMinX = Infinity, origMinY = Infinity;
-        subsetNodes.forEach(function(n) {
-            if (typeof n.x === 'number' && n.x < origMinX) origMinX = n.x;
-            if (typeof n.y === 'number' && n.y < origMinY) origMinY = n.y;
-        });
-        if (!isFinite(origMinX)) origMinX = LAYOUT.startX;
-        if (!isFinite(origMinY)) origMinY = LAYOUT.startY;
+        // around it don't visually shift. LEFT EDGES, like everything else
+        // here: pinning centres moves the column whenever the reflow puts a
+        // node of a different width first.
+        function leftEdgeOf(n) {
+            return n.x - layout.getNodeWidth(n, layoutOpts) / 2;
+        }
+        function topLeftOf(nodes) {
+            let x = Infinity, y = Infinity;
+            nodes.forEach(function(n) {
+                if (typeof n.x !== 'number' || typeof n.y !== 'number') return;
+                let left = leftEdgeOf(n);
+                if (left < x) x = left;
+                if (n.y < y) y = n.y;
+            });
+            return {
+                x: isFinite(x) ? x : LAYOUT.startX,
+                y: isFinite(y) ? y : LAYOUT.startY
+            };
+        }
+        let origin = topLeftOf(subsetNodes);
 
         // Clone with wires restricted to the subset so reflowCanvasNodes
         // only sees the internal adjacency.
@@ -833,15 +880,10 @@
         });
         layout.reflowCanvasNodes(clones, opts);
 
-        let newMinX = Infinity, newMinY = Infinity;
-        clones.forEach(function(c) {
-            if (typeof c.x === 'number' && c.x < newMinX) newMinX = c.x;
-            if (typeof c.y === 'number' && c.y < newMinY) newMinY = c.y;
-        });
-        if (!isFinite(newMinX) || !isFinite(newMinY)) return;
+        let placed = topLeftOf(clones);
 
-        let dx = origMinX - newMinX;
-        let dy = origMinY - newMinY;
+        let dx = origin.x - placed.x;
+        let dy = origin.y - placed.y;
 
         let cloneById = {};
         clones.forEach(function(c) { cloneById[c.id] = c; });

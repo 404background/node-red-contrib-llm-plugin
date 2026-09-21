@@ -89,7 +89,7 @@ another.
 | 2 | `reflowCanvasNodes` / `placeAddedNodesNearNeighbors` | (1). Places the members: columns, rows, captions, overlaps, top margin. |
 | 3 | `repositionSubsetByAliases` | (2). Rearranges one named subset in place, so it must run after the general pass or the general pass would undo it. Reports which nodes it moved. |
 | 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Boxes whose members moved in (2) or (3) are **refitted** (`refitIds`) rather than left at the size they had. |
-| 5 | `separateGroups` | (4). Aligns boxes by their left edge and then pushes blocks apart vertically — both read box bounds, which only exist once the boxes are fitted. Alignment runs before the vertical pass and the block bounds are recomputed in between, so the spacing is measured on the aligned positions. |
+| 5 | `separateGroups` | (4). Aligns each boxed sequence by its members' left edge and then pushes blocks apart vertically — both read box bounds, which only exist once the boxes are fitted. Alignment runs before the vertical pass and the block bounds are recomputed in between, so the spacing is measured on the aligned positions. |
 | 6 | `ensureLeftMargin` | (5). One uniform shift, so it cannot disturb any spacing the passes above established. |
 
 A box left at its old size is the case this order exists to avoid: step 5 would
@@ -266,9 +266,12 @@ behind. `fitGroups` runs after the layout passes and settles it:
 
 ### `separateGroups` — lining the boxes up, and keeping them apart
 
-- Stacked sequences read as a column, so their boxes **share a left edge**.
-  Alignment is per BOX, not per block: two sequences wired to each other are one
-  block, and a `reposition` leaves exactly that pair stepped in and out.
+- Stacked sequences read as a column, so they **share a left edge**. What is
+  aligned is the SEQUENCE — the members' own left edges — not the border drawn
+  around it: a box the user made larger still holds its members at their column,
+  and lining up the border would push that column out of line. Alignment is per
+  box, not per block: two sequences wired to each other are one block, and a
+  `reposition` leaves exactly that pair stepped in and out.
 - A box moves with everything it holds — members, their members, and the
   captions heading them. It is **not** moved when something in no box at all
   sits to its left in the same block: a box drawn around the middle of a chain

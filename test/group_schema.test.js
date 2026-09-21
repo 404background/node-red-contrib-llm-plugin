@@ -293,6 +293,44 @@ async function scenarioBoxGrowsWithoutCrowdingTheNext() {
     'which moved down as a whole, not reflowed (b1 ' + b1.y + ', b2 ' + b2.y + ')');
 }
 
+// A box has no position of its own — it is fitted around wherever its members
+// end up — so naming one in `reposition` can only mean the sequence inside it.
+// Silently ignoring the alias left the user's "tidy this group up" doing
+// nothing at all.
+async function scenarioRepositioningABoxMovesItsMembers() {
+  console.log('\nNaming a box in a reposition rearranges the sequence inside it');
+  const liveNodes = [
+    // Deliberately strewn about: same chain, wrong cadence.
+    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 110, y: 100, g: 'grp', wires: [['n2']] },
+    { id: 'n2', type: 'function', z: 'tab1', name: 'shape', func: 'return msg;',
+      x: 520, y: 260, g: 'grp', wires: [['n3']] },
+    { id: 'n3', type: 'debug', z: 'tab1', name: 'out', x: 900, y: 100, g: 'grp', wires: [] },
+  ];
+  const liveGroups = [{
+    id: 'grp', type: 'group', z: 'tab1', name: 'Pair', nodes: ['n1', 'n2', 'n3'],
+    x: 35, y: 60, w: 1000, h: 260,
+  }];
+
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ reposition: ['group_pair'] }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  const at = (id) => flow.find((n) => n.id === id);
+
+  ok(res && res.ok, 'the import applied');
+  ok(at('n1').y === at('n2').y && at('n2').y === at('n3').y,
+    'the chain is back on one row (' + [at('n1').y, at('n2').y, at('n3').y].join(',') + ')');
+  ok(at('n1').x < at('n2').x && at('n2').x < at('n3').x, 'in wiring order');
+  const box = groupsIn(flow)[0];
+  ok(box.w < 1000, 'and the box was refitted around them (' + box.w + ')');
+  ok(box.x <= at('n1').x - 50 && box.x + box.w >= at('n3').x,
+    'still holding every member (' + [box.x, box.w].join(',') + ')');
+}
+
 async function scenarioCaptionJoinsTheBoxItHeads() {
   console.log('\nA new comment heading a member is drawn inside the box');
   const msg = fence({
@@ -366,6 +404,7 @@ async function run() {
   await scenarioTwoSequencesTwoBoxes();
   await scenarioCaptionedBoxesStayApart();
   await scenarioBoxGrowsWithoutCrowdingTheNext();
+  await scenarioRepositioningABoxMovesItsMembers();
   await scenarioCaptionJoinsTheBoxItHeads();
   scenarioContextRoundTrip();
   summary();
