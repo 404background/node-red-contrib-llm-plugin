@@ -219,6 +219,12 @@
         if (typeof nodeHeight !== 'number') nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
         let rowPitch = nodeHeight + spacingY;
         let compStep = nodeHeight + gap;
+        // `startY` is the top EDGE of the first row, the way `startX` is the
+        // left edge of the first column — the row's centre is half a node
+        // further down. They used to mean different things, which is why a
+        // flow sat 15px nearer the top of the canvas than its left side, and
+        // the group box around it nearer still.
+        startY = startY + nodeHeight / 2;
         let info = {};
         ids.forEach(function(id) {
             let pos = positions[id] || { col: 0, row: 0 };
@@ -1361,7 +1367,7 @@
     // the same block — a box drawn around the middle of a chain has the nodes
     // feeding it over there, and dragging those sideways is not an alignment.
     // Boxes never block each other.
-    function alignBoxesLeft(blocks, groups, byId, anchors, opts, leftMargin) {
+    function alignBoxesLeft(blocks, groups, byId, anchors, opts) {
         let blockOf = {};
         blocks.forEach(function(b, i) { b.nodes.forEach(function(n) { blockOf[n.id] = i; }); });
 
@@ -1397,13 +1403,13 @@
         });
         if (movable.length < 2) return;
 
-        // Never towards the edge of the canvas: the leftmost column wins, but
-        // a sequence already hanging off it would otherwise drag every other
-        // one out there with it. The box sits one padding further out, so that
-        // is what has to clear the margin.
-        let pad = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
+        // The leftmost column wins, but never further left than the canvas
+        // origin: a sequence that has drifted towards the edge would otherwise
+        // drag every other one out there with it, and "aligned" would come to
+        // mean "flush against the side of the screen".
+        let startX = pickOption(opts, 'startX', LAYOUT_DEFAULTS.startX);
         let target = movable.reduce(function(min, m) { return Math.min(min, m.left); }, Infinity);
-        if (target - pad < leftMargin) target = leftMargin + pad;
+        if (target < startX) target = startX;
         movable.forEach(function(m) {
             let dx = target - m.left;
             if (!dx) return;
@@ -1477,7 +1483,6 @@
     function separateGroups(nodes, options) {
         let opts = options || {};
         let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
-        let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
         let all = (nodes || []).filter(function(n) {
@@ -1493,35 +1498,47 @@
         let anchors = captureCommentAnchors(all, opts);
 
         let blocks = collectBlocks(all, byId, anchors, opts, nodeHeight);
-        alignBoxesLeft(blocks, groups, byId, anchors, opts, leftMargin);
+        alignBoxesLeft(blocks, groups, byId, anchors, opts);
         blocks.forEach(function(b) { measureBlock(b, opts, nodeHeight); });
         pushBlocksApart(blocks, gap);
         return nodes;
     }
 
-    // The left-edge twin of `ensureTopMargin`, and it covers BOXES as well as
-    // nodes: a group's box is drawn `groupPadding` outside its members, so a
-    // flow that starts at the canvas edge has a box hanging off it. Everything
-    // slides right by one shared delta, so relative geometry is untouched.
-    function ensureLeftMargin(nodes, options) {
+    // The final guard, on both edges at once and counting BOXES as well as
+    // nodes. `ensureTopMargin` runs mid-pipeline and can only see the nodes,
+    // so a box — drawn `groupPadding` outside its members — ends up nearer the
+    // top than the left, or off the canvas entirely. Measuring both edges the
+    // same way is what makes the gap above a flow equal the gap beside it.
+    // Everything slides by one shared delta, so relative geometry is untouched.
+    function ensureCanvasMargins(nodes, options) {
         let opts = options || {};
         let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
-
+        let topMargin  = pickOption(opts, 'topMargin',  LAYOUT_DEFAULTS.topMargin);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
         let positioned = (nodes || []).filter(function(n) {
-            return n && typeof n.x === 'number';
+            return n && typeof n.x === 'number' && typeof n.y === 'number';
         });
-        let minLeft = Infinity;
+        let minLeft = Infinity, minTop = Infinity;
         positioned.forEach(function(n) {
             let e = memberEdges(n, opts, nodeHeight);
             let left = e ? e.minX : n.x;
+            let top  = e ? e.minY : n.y;
             if (left < minLeft) minLeft = left;
+            if (top < minTop) minTop = top;
         });
-        if (!isFinite(minLeft) || minLeft >= leftMargin) return nodes;
+        if (!isFinite(minLeft) || !isFinite(minTop)) return nodes;
 
-        let dx = leftMargin - minLeft;
-        positioned.forEach(function(n) { n.x = n.x + dx; });
+        // Both edges measured the same way, so the gap the user sees above the
+        // flow is the gap they see to the left of it. Only ever outwards: the
+        // margins are a floor, not a position.
+        let dx = (minLeft < leftMargin) ? leftMargin - minLeft : 0;
+        let dy = (minTop < topMargin) ? topMargin - minTop : 0;
+        if (!dx && !dy) return nodes;
+        positioned.forEach(function(n) {
+            n.x = n.x + dx;
+            n.y = n.y + dy;
+        });
         return nodes;
     }
 
@@ -1539,6 +1556,6 @@
         fitGroups:                    fitGroups,
         separateGroups:               separateGroups,
         keepLeftEdges:                keepLeftEdges,
-        ensureLeftMargin:             ensureLeftMargin
+        ensureCanvasMargins:          ensureCanvasMargins
     };
 });

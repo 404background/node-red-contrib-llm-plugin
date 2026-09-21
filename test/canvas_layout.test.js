@@ -146,10 +146,12 @@ describe('Step 3.5a sibling nudge', function() {
 });
 
 describe('Grid alignment', function() {
-    // Left edges are the aligned quantity, not centres: a node's centre is
-    // derived as leftEdge + width/2 and lands on a half-grid whenever the
-    // width is an odd grid multiple (e.g. the 100px minimum).
-    it('reflowCanvasNodes produces grid-aligned left edges', function() {
+    // EDGES are the aligned quantity, not centres — on both axes. A node's
+    // centre is derived as leftEdge + width/2 and lands on a half-grid
+    // whenever the width is an odd grid multiple (e.g. the 100px minimum);
+    // its `y` is derived from the row's top edge the same way, which is what
+    // makes the gap above a flow the same as the gap beside it.
+    it('reflowCanvasNodes produces grid-aligned top and left edges', function() {
         const nodes = [
             { id: 'a', type: 'inject', wires: [['b']] },
             { id: 'b', type: 'function', name: 'compute aggregated rolling average', wires: [['c']] },
@@ -158,8 +160,14 @@ describe('Grid alignment', function() {
         Layout.reflowCanvasNodes(nodes, WIDE);
         nodes.forEach(n => assert(leftEdge(n, WIDE) % 20 === 0,
             n.id + ' left edge not grid-aligned: ' + leftEdge(n, WIDE)));
-        nodes.forEach(n => assert(n.y % 20 === 0,
-            n.id + ' y not grid-aligned: ' + n.y));
+        nodes.forEach(n => assert((n.y - NODE_HEIGHT / 2) % 20 === 0,
+            n.id + ' top edge not grid-aligned: ' + (n.y - NODE_HEIGHT / 2)));
+        // The origin means the same thing on both axes: the first node's top
+        // edge is as far from y=0 as its left edge is from x=0.
+        assert((nodes[0].y - NODE_HEIGHT / 2) === WIDE.startY,
+            'first row top edge ' + (nodes[0].y - NODE_HEIGHT / 2) + ', startY ' + WIDE.startY);
+        assert(leftEdge(nodes[0], WIDE) === WIDE.startX,
+            'first column left edge ' + leftEdge(nodes[0], WIDE));
     });
 
     it('placeAddedNodesNearNeighbors keeps left edges aligned', function() {
@@ -623,10 +631,26 @@ describe('Nothing is left hanging off the canvas', function() {
             { id: 'n1', type: 'inject', z: 'z', name: 'a', x: -40, y: 100, wires: [['n2']] },
             { id: 'n2', type: 'debug', z: 'z', name: 'b', x: 160, y: 100, wires: [[]] },
         ];
-        Layout.ensureLeftMargin(flow, OPTS);
+        Layout.ensureCanvasMargins(flow, OPTS);
         const left = flow[0].x - Layout.estimateNodeWidth(flow[0], OPTS) / 2;
         assert(left === Layout.LAYOUT_DEFAULTS.leftMargin, 'leftmost edge at ' + left);
         assert(flow[1].x - flow[0].x === 200, 'the gap between them is unchanged');
+    });
+
+    it('the gap above a boxed flow is the gap beside it', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'a', g: 'g1', wires: [['n2']] },
+            { id: 'n2', type: 'debug', z: 'z', name: 'b', g: 'g1', wires: [[]] },
+            { id: 'g1', type: 'group', z: 'z', name: 'Box', nodes: ['n1', 'n2'] },
+        ];
+        const opts = Object.assign({ startX: 200, startY: 200 }, OPTS);
+        Layout.reflowCanvasNodes(flow, Object.assign({}, opts, {
+            isCanvasNode: (n) => !!n && n.type !== 'tab' && n.type !== 'group',
+        }));
+        Layout.fitGroups(flow, opts);
+        Layout.ensureCanvasMargins(flow, opts);
+        const box = flow.find((n) => n.id === 'g1');
+        assert(box.x === box.y, 'box at (' + box.x + ',' + box.y + ')');
     });
 
     it('a box counts as the leftmost thing, not its members', function() {
@@ -635,14 +659,14 @@ describe('Nothing is left hanging off the canvas', function() {
             { id: 'g1', type: 'group', z: 'z', name: 'Box', nodes: ['n1'],
               x: -25, y: 70, w: 150, h: 80 },
         ];
-        Layout.ensureLeftMargin(flow, OPTS);
+        Layout.ensureCanvasMargins(flow, OPTS);
         assert(flow[1].x === Layout.LAYOUT_DEFAULTS.leftMargin, 'box at ' + flow[1].x);
         assert(flow[0].x === 155, 'and its member moved with it (' + flow[0].x + ')');
     });
 
     it('a canvas that already clears the edge is not moved', function() {
         const flow = [{ id: 'n1', type: 'inject', z: 'z', name: 'a', x: 110, y: 100, wires: [[]] }];
-        Layout.ensureLeftMargin(flow, OPTS);
+        Layout.ensureCanvasMargins(flow, OPTS);
         assert(flow[0].x === 110, 'x is ' + flow[0].x);
     });
 });

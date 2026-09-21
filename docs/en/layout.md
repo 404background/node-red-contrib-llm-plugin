@@ -90,7 +90,7 @@ another.
 | 3 | `repositionSubsetByAliases` | (2). Rearranges one named subset in place, so it must run after the general pass or the general pass would undo it. Reports which nodes it moved. |
 | 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Boxes whose members moved in (2) or (3) are **refitted** (`refitIds`) rather than left at the size they had. |
 | 5 | `separateGroups` | (4). Aligns each boxed sequence by its members' left edge and then pushes blocks apart vertically — both read box bounds, which only exist once the boxes are fitted. Alignment runs before the vertical pass and the block bounds are recomputed in between, so the spacing is measured on the aligned positions. |
-| 6 | `ensureLeftMargin` | (5). One uniform shift, so it cannot disturb any spacing the passes above established. |
+| 6 | `ensureCanvasMargins` | (5). One uniform shift on each axis, so it cannot disturb any spacing the passes above established. |
 
 A box left at its old size is the case this order exists to avoid: step 5 would
 line up a stale rectangle instead of the sequence inside it.
@@ -108,15 +108,15 @@ line up a stale rectangle instead of the sequence inside it.
 | `fitGroups(nodes, options?)` | Refit every group box that no longer contains its members. See [Group boxes](#group-boxes). |
 | `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
-| `ensureLeftMargin(nodes, options?)` | Slide everything right by one shared delta when the leftmost edge — a box included — is closer to `x = 0` than `leftMargin`. |
+| `ensureCanvasMargins(nodes, options?)` | Slide everything by one shared delta per axis when the topmost or leftmost edge — a box included — is nearer the canvas edge than `topMargin` / `leftMargin`. |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
 
 ```js
 LAYOUT_DEFAULTS = {
-    startX:         60,
-    startY:         60,
+    startX:         60,    // left edge of the first column
+    startY:         60,    // TOP edge of the first row — an edge, like startX
     spacingY:       40,    // edge-to-edge clearance between stacked node rows
     componentGap:   80,    // edge-to-edge clearance between disconnected components
     edgeGap:        40,    // edge-to-edge clearance between adjacent node edges (horizontal)
@@ -148,12 +148,20 @@ multiples by construction) and computes each centre as
 the same left edge regardless of label width. The same logic gives a
 uniform `rowPitch = nodeHeight + spacingY` for vertical spacing.
 
-### `ensureLeftMargin` — nothing hangs off the edge
+### `ensureCanvasMargins` — the same gap above and beside
 
-The left-edge twin of `ensureTopMargin`, and it covers **boxes** as well as
-nodes: a box is drawn `groupPadding` outside its members, so a flow starting at
-the canvas edge has a box hanging off it. Everything slides right by one shared
-delta, so relative geometry is untouched.
+The final guard, on both edges at once and counting **boxes** as well as nodes.
+`ensureTopMargin` runs mid-pipeline and can only see the nodes, so a box — drawn
+`groupPadding` outside its members — ends up nearer the top than the left, or
+off the canvas entirely. Everything slides by one shared delta per axis, so
+relative geometry is untouched.
+
+**Both origins are edges.** `startX` is the left edge of the first column and
+`startY` is the top edge of the first row; the row's centre is half a node
+further down. They used to mean different things (`startY` was the centre),
+which put a flow 15px nearer the top of the canvas than its left side, and the
+box around it nearer still. Equal origins now produce equal gaps — for a plain
+flow and for a boxed one.
 
 ## Width changes keep the left edge
 
@@ -277,8 +285,10 @@ behind. `fitGroups` runs after the layout passes and settles it:
   sits to its left in the same block: a box drawn around the middle of a chain
   has the nodes feeding it over there, and dragging those sideways is not an
   alignment. Boxes never block each other.
-- The column is the leftmost box, **clamped to `leftMargin`**. A box already
-  hanging off the canvas would otherwise drag every other sequence out with it.
+- The column is the leftmost sequence, **never further left than `startX`**.
+  One that has drifted towards the edge would otherwise drag every other
+  sequence out with it, and "aligned" would come to mean "flush against the
+  side of the screen".
 - Every box ends up at least `groupGap` (40, two grid squares) from anything
   outside it, whether that is another box or a plain node.
 - What moves is a **block**, not a node: everything tied together by wires, by

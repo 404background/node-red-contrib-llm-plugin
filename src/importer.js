@@ -427,7 +427,15 @@
             }
         });
 
-        if (Object.keys(baseIds).length === 0) {
+        // Was anything ON the canvas before? The tab itself is in `baseIds`
+        // too, so counting ids made an empty flow look like an edit to an
+        // existing one — and the fresh-layout branch, the one that starts at
+        // the canvas origin, almost never ran.
+        let hadCanvasNodes = (rebuilt || []).some(function(n) {
+            return n && n.id && baseIds[n.id] && isLayoutNode(n) &&
+                typeof n.x === 'number' && typeof n.y === 'number';
+        });
+        if (!hadCanvasNodes) {
             // Fresh flow: honour maxColumns so long chains fold neatly.
             layout.reflowCanvasNodes(rebuilt, layoutOpts);
         } else {
@@ -471,10 +479,10 @@
         // them.
         layout.separateGroups(rebuilt, layoutOpts);
 
-        // Last: whatever the passes above decided, nothing sits off the left
-        // edge of the canvas. A box hangs one padding further left than its
-        // members, so this is the pass that sees it.
-        layout.ensureLeftMargin(rebuilt, layoutOpts);
+        // Last: the canvas edges. A box hangs one padding further out than
+        // its members, so this is the pass that sees it — on both edges, so
+        // the gap above the flow is the gap beside it.
+        layout.ensureCanvasMargins(rebuilt, layoutOpts);
         return rebuilt;
     }
 
