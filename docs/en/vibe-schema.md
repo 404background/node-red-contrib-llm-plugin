@@ -171,7 +171,7 @@ in both directions: `toIntermediate` emits no `_` key, so the LLM never
 sees one, and `toNodeRed` ignores every `_` key a schema supplies, so the
 LLM cannot author one either. Metadata is written solely by `toNodeRed`
 for the importer to consume, and the importer strips all of it before the
-nodes reach the canvas. See [docs/en/design.md](./design.md) §0.1.
+nodes reach the canvas. See [docs/en/design.md](./design.md) §0, the metadata boundary.
 
 ### Editor flags (`disabled`, `showLabel`)
 

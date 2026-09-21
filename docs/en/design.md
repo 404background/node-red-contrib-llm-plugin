@@ -20,13 +20,13 @@ decisions and priorities**.
 |----------|--------|
 | **Deterministic work in code, meaning in the LLM** | This split is the premise every other pillar rests on. **Anything with exactly one right answer** — generating and de-colliding node IDs, coordinates, assembling `wires` arrays, alias numbering, preserving junctions/groups — is always the code's job: `flow_converter_core.js` / `canvas_layout.js` / `importer.js`. **The LLM is trusted with exactly two things: the logical connections between nodes, and the settings inside a node.** Give deterministic work to a probabilistic output and it fails as duplicate IDs, broken coordinates, and mis-targeted wires — failures that are also hard to verify. Conversely, "make this inject fire every 5 minutes and feed the debug" is a meaning the code cannot decide. |
 | **Interpose an intermediate "Vibe Schema"** | The boundary that enforces the split structurally. Raw Node-RED JSON carries random IDs, coordinates, and type-specific internal arrays that an LLM cannot meaningfully generate/edit. Abstracting to human-readable `{type}_{name}` aliases without coordinates means the LLM *cannot* invent IDs and has no positions to worry about. `flow_converter_core.js` handles raw JSON ↔ Vibe Schema. |
-| **`_`-prefixed properties are metadata, never shown to the LLM** | Code-side hand-offs — aliases, declaration order, a comment's anchor target — ride on nodes as `_llmAlias` / `_llmOrder` / `_llmAboveId` and friends. Both directions of the boundary hang off that naming convention (§0.1). |
+| **`_`-prefixed properties are metadata, never shown to the LLM** | Code-side hand-offs — aliases, declaration order, a comment's anchor target — ride on nodes as `_llmAlias` / `_llmOrder` / `_llmAboveId` and friends. Both directions of the boundary hang off that naming convention (§0, the metadata boundary). |
 | **Applying is always a "merge"** | The LLM does not return the whole flow every time (partial edits are the norm). Fixing the rule to "only add/update what is listed, delete what maps to `null`, leave the unmentioned as-is" keeps an incomplete LLM response from breaking the existing flow. There is no branch that lets the model choose how to apply — a misfire there falls on the side of destroying the existing flow. |
 | **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser (both sidebar and Agent node). |
 | **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
 | **The snapshot must be the "complete flow"** | The snapshot is both the merge base and the rollback state, and the fallback apply still clears the target workspace, so any canvas entity missing from it can still disappear. → junctions / groups must be included (§7). |
 
-### 0.1 The metadata boundary (`_`-prefixed properties)
+### The metadata boundary (`_`-prefixed properties)
 
 The test lives in exactly one place — `FlowConverterCore.isMetaProp(key)` (= `key` starts
 with `_`) — and it constrains **both directions** of the boundary.
@@ -135,7 +135,7 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
   - Vibe Schema path → `_llmSpecKeys` (recorded at conversion time)
   - raw JSON path → keys whose value is not `undefined`
 - All other keys are restored from the existing node (`preserveUnmentionedProperties`).
-- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0.1) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — the group pass writes only the members a schema named (§15), so every other node's membership has to survive the merge (§12, "Where it declines").
+- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0, the metadata boundary) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — the group pass writes only the members a schema named (§15), so every other node's membership has to survive the merge (§12, "Where it declines").
 - **Reason**: Even when a normaliser fills in a default value (e.g. debug's `complete`), it must not overwrite a value the user set earlier. Guarantees "settings you didn't touch are preserved."
 
 ### 4.3 Node matching: exact-alias only, no fuzzy

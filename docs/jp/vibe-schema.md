@@ -167,7 +167,7 @@ RemoveEntry = { remove: { from: alias, to: alias } }
 アンダースコア始まりのキーを一切出力しない(＝ LLM は見ない)。Node-RED の形へ戻す側は、
 スキーマに書かれたアンダースコア始まりのキーを一切受け付けない(＝ LLM は書けない)。
 メタデータを書き込めるのは変換器自身だけで、インポート側がキャンバスへ渡す前にすべて剥がす。
-詳細は [docs/jp/design.md](./design.md) §0.1。
+詳細は [docs/jp/design.md](./design.md) §0 メタデータ境界。
 
 ### エディタ上のフラグ(`disabled` / `showLabel`)
 

@@ -113,7 +113,7 @@
     // `_`-prefixed = plugin-internal bookkeeping. The rule lives here alone
     // so both invariants hold: toIntermediate never emits such a key (the
     // LLM never sees metadata) and toNodeRed never accepts one (the LLM
-    // cannot forge it). See docs/{en,jp}/design.md §0.1.
+    // cannot forge it). See docs/{en,jp}/design.md §0.
     function isMetaProp(key) {
         return typeof key === 'string' && key.charAt(0) === '_';
     }

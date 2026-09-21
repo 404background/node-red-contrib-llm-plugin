@@ -360,7 +360,7 @@ Full import workflow with these guarantees:
    is stripped before the nodes reach the canvas: once right after the
    merge (keeping only `_llmOrder` / `_llmAboveId`, which the layout
    passes still consume) and once after layout. Nothing metadata-shaped
-   is ever imported. See [docs/en/design.md](./design.md) §0.1.
+   is ever imported. See [docs/en/design.md](./design.md) §0, the metadata boundary.
 14. Apply the end state to the target workspace as a diff (with the
    destructive rebuild as the fallback); layout is delegated to
    `CanvasLayout`.
