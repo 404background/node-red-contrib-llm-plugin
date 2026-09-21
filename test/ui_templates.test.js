@@ -310,6 +310,21 @@ function scenarioRestoreAndReapplyArePaired() {
     'and the click does not toggle the block open');
   ok(CSS.indexOf('.json-collapsible > summary .reapply-btn') !== -1,
     'the button has a rule for sitting in that header');
+
+  // Two buttons, one choice: they read as a pair only while they look alike.
+  const bg = (cls) => (new RegExp('^\\' + cls + ' \\{[^}]*background: (#[0-9a-fA-F]{3,8})', 'm')
+    .exec(CSS) || [])[1];
+  ok(!!bg('.restore-btn') && bg('.reapply-btn') === bg('.restore-btn'),
+    'Apply Again wears Restore\'s colour (' + bg('.reapply-btn') + ' vs ' + bg('.restore-btn') + ')');
+  ok(CSS.indexOf('.pre-chat-actions {') !== -1 &&
+     /\.pre-chat-actions \{[^}]*text-align: right/.test(CSS),
+    'and the Restore bar sits on the prompt\'s side of the chat');
+
+  // Expanding the block must not reflow the header the button sits on.
+  ok(/classList\.add\('has-json-block'\)/.test(UI_CORE),
+    'a bubble holding a JSON block is marked as such');
+  ok(/\.message-content\.has-json-block \{[^}]*width: 100%/.test(CSS),
+    'and takes the width it will need open, so the folded header is as wide');
 }
 
 function run() {

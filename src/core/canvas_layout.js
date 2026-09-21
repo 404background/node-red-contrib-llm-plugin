@@ -1250,6 +1250,14 @@
         let opts = options || {};
         let pad = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        // Boxes whose members THIS edit moved: refitted even when the old box
+        // still contains them. "Larger than it needs to be" is the user's
+        // decision only until the layout rearranges what is inside it — after
+        // a reposition the stale box is what leaves the boxes out of line.
+        let refit = {};
+        (Array.isArray(opts.refitIds) ? opts.refitIds : []).forEach(function(id) {
+            if (id) refit[id] = true;
+        });
 
         let byId = {};
         let groups = [];
@@ -1267,7 +1275,7 @@
             let fitted = typeof g.x === 'number' && typeof g.y === 'number' &&
                          typeof g.w === 'number' && g.w > 0 &&
                          typeof g.h === 'number' && g.h > 0;
-            if (fitted &&
+            if (!refit[g.id] && fitted &&
                 g.x <= box.minX && g.y <= box.minY &&
                 g.x + g.w >= box.maxX && g.y + g.h >= box.maxY) return;
             g.x = box.minX - pad;

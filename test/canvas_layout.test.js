@@ -499,6 +499,40 @@ describe('A width change keeps the left edge', function() {
     });
 });
 
+// The order the passes run in is the contract: members are placed, then each
+// box is fitted to the members it now holds, and only then are the boxes
+// aligned and spaced against each other. A box left at its old size is a box
+// the alignment would line up INSTEAD of the sequence inside it.
+describe('A box whose members were rearranged is refitted first', function() {
+    const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
+    const PAD = 25;
+
+    function oversized() {
+        return [
+            { id: 'n1', type: 'inject', z: 'z', name: 'a', x: 110, y: 160, g: 'g1', wires: [['n2']] },
+            { id: 'n2', type: 'debug', z: 'z', name: 'b', x: 310, y: 160, g: 'g1', wires: [[]] },
+            // Wider and taller than its members need, and further left.
+            { id: 'g1', type: 'group', z: 'z', name: 'Box', nodes: ['n1', 'n2'],
+              x: 0, y: 100, w: 800, h: 200 },
+        ];
+    }
+    const box = (flow) => flow.find((n) => n.id === 'g1');
+
+    it('a box the edit did not touch keeps the size the user gave it', function() {
+        const flow = oversized();
+        Layout.fitGroups(flow, OPTS);
+        assert(box(flow).w === 800, 'width is ' + box(flow).w);
+    });
+
+    it('but one whose members moved is fitted back around them', function() {
+        const flow = oversized();
+        Layout.fitGroups(flow, Object.assign({ refitIds: ['g1'] }, OPTS));
+        const left = 110 - Layout.estimateNodeWidth(flow[0], OPTS) / 2;
+        assert(box(flow).x === left - PAD, 'left edge ' + box(flow).x + ', member at ' + left);
+        assert(box(flow).w < 800, 'and it is no longer 800 wide (' + box(flow).w + ')');
+    });
+});
+
 // Sequences stack in a column, so their boxes line up as one.
 describe('Group boxes share a left edge', function() {
     const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };

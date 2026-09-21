@@ -318,6 +318,12 @@
 .pre-chat-actions {
     margin-top: 0;
     margin-bottom: 10px;
+    /* Above the prompt and on the prompt's side: the user's own messages are
+       right-aligned, and this button undoes what one of them led to. */
+    text-align: right;
+}
+.pre-chat-actions .restore-btn {
+    margin-right: 0;
 }
 .restore-btn:hover {
     background: #d97706;
@@ -331,7 +337,8 @@
     padding: 2px 8px;
 }
 .reapply-btn {
-    background: #1c7ed6;
+    /* Restore's colour: the two are one choice, taken in either direction. */
+    background: #f59f00;
     color: white;
     border: none;
     padding: 5px 10px;
@@ -341,7 +348,7 @@
     font-size: 12px;
 }
 .reapply-btn:hover {
-    background: #1864ab;
+    background: #d97706;
 }
 /* Apply queue panel */
 .llm-queue-panel {
@@ -441,6 +448,13 @@
     font-size: 12px;
 }
 /* Collapsible JSON blocks */
+/* A bubble holding one is as wide as it will be once the block is open, so
+   the header — and the button sitting on it — does not move when it is
+   expanded. The block scrolls inside that width rather than widening it. */
+.assistant-message .message-content.has-json-block {
+    width: 100%;
+    box-sizing: border-box;
+}
 .json-collapsible {
     margin: 10px 0;
     border: 1px solid #4a5568;
@@ -479,7 +493,7 @@
     border-radius: 0;
     border-top: 1px solid #4a5568;
     max-height: 400px;
-    overflow-y: auto;
+    overflow: auto;
 }
 .llm-plugin-input {
     border-top: 1px solid #ddd;

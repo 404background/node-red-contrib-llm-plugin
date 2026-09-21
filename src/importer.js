@@ -733,13 +733,28 @@
         // Selective reposition: relayout the named subset in place,
         // keeping their IDs and properties. Runs AFTER the general
         // layout pass so coordinates of unaffected nodes are stable.
+        let moved = [];
         if (Array.isArray(directives.repositionTokens) && directives.repositionTokens.length > 0) {
-            repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts);
+            moved = repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts) || [];
         }
 
         // Whoever moved the members owns the boxes: the editor recomputes a
         // group's box only when the user drags something into or inside it.
-        layout.fitGroups(rebuilt, layoutOpts);
+        // A box whose members this edit rearranged is refitted rather than
+        // left at the size it had — a stale box is what the alignment below
+        // would then line up, instead of the sequence inside it.
+        let byIdRebuilt = {};
+        rebuilt.forEach(function(n) { if (n && n.id) byIdRebuilt[n.id] = n; });
+        let refitIds = [];
+        moved.concat(widened).forEach(function(id) {
+            let n = byIdRebuilt[id];
+            let hops = 32;
+            while (n && n.g && hops-- > 0) {
+                if (refitIds.indexOf(n.g) === -1) refitIds.push(n.g);
+                n = byIdRebuilt[n.g];
+            }
+        });
+        layout.fitGroups(rebuilt, Object.assign({}, layoutOpts, { refitIds: refitIds }));
 
         // Boxes fitted, so now they can be kept apart: the node layout spaced
         // the members, which is not the same as spacing what is drawn around
@@ -830,15 +845,18 @@
 
         let cloneById = {};
         clones.forEach(function(c) { cloneById[c.id] = c; });
+        let moved = [];
         subsetNodes.forEach(function(n) {
             let c = cloneById[n.id];
             if (!c) return;
             if (typeof c.x === 'number') n.x = c.x + dx;
             if (typeof c.y === 'number') n.y = c.y + dy;
+            moved.push(n.id);
         });
 
         // Re-align captions to follow their (now moved) anchor target.
         layout.applyCommentAnchors(allNodes, commentAnchors, layoutOpts);
+        return moved;
     }
 
     // ================================================================== //

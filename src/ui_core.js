@@ -376,6 +376,11 @@
         for (let i = 0; i < codeBlocks.length; i++) {
             if (codeBlocks[i].parentNode) foldJsonBlock(codeBlocks[i]);
         }
+        // The bubble takes the width the open block will need, so expanding
+        // one does not reflow the header it is expanded from.
+        if (container.querySelector('.json-collapsible')) {
+            container.classList.add('has-json-block');
+        }
     }
 
     // `ask / gpt-4o / → Flow 1 / 1.5s` under an assistant reply. The mode and

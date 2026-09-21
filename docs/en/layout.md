@@ -76,6 +76,25 @@ const positions = Layout.layoutNodes(
                              nodes mutated in place
 ```
 
+### Order of the passes, and why it is that order
+
+The importer runs them inside-out: place what is inside a box, fit the box to
+it, then arrange the boxes against each other. Each step depends on the one
+before having finished, so none of them can be reordered without contradicting
+another.
+
+| # | Pass | Depends on |
+|---|------|------------|
+| 1 | `keepLeftEdges` | Nothing — it corrects the *input* coordinates, so every pass below reasons about left edges that are already true. Its result also feeds step 2 as `reflowIds`. |
+| 2 | `reflowCanvasNodes` / `placeAddedNodesNearNeighbors` | (1). Places the members: columns, rows, captions, overlaps, top margin. |
+| 3 | `repositionSubsetByAliases` | (2). Rearranges one named subset in place, so it must run after the general pass or the general pass would undo it. Reports which nodes it moved. |
+| 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Boxes whose members moved in (2) or (3) are **refitted** (`refitIds`) rather than left at the size they had. |
+| 5 | `separateGroups` | (4). Aligns boxes by their left edge and then pushes blocks apart vertically — both read box bounds, which only exist once the boxes are fitted. Alignment runs before the vertical pass and the block bounds are recomputed in between, so the spacing is measured on the aligned positions. |
+| 6 | `ensureLeftMargin` | (5). One uniform shift, so it cannot disturb any spacing the passes above established. |
+
+A box left at its old size is the case this order exists to avoid: step 5 would
+line up a stale rectangle instead of the sequence inside it.
+
 ## Public API
 
 | Function | Purpose |
