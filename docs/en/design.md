@@ -88,9 +88,9 @@ The Agent node (`node/llm-request`) also publishes the response to the editor vi
 
 | | Ask | Agent |
 |--|-----|-------|
-| The question | "What does this flow do?" | "Change this flow" |
+| The question | "What does this flow do, and what is wrong with it?" | "Change this flow" |
 | System prompt | `prompt_ask.txt` — read the flow, explain it, do NOT propose one | `prompt_system.txt` — the Vibe Schema rules |
-| The reply | Prose, with node aliases in backticks so they link | A schema, applied to the canvas |
+| The reply | Prose: which node is at fault, which property to change. Node aliases in backticks | A schema, applied to the canvas |
 | In common | The flow context, the engine, the provider — and, when a reply does carry a schema, every rule for applying it | same |
 
 - **The two are different questions, not one question handled differently
@@ -100,6 +100,7 @@ The Agent node (`node/llm-request`) also publishes the response to the editor vi
   and the model proposed anyway. Ask now gets its own instructions: it is given
   the flow (it cannot explain what it cannot see) and told that a schema is
   useless here, because nothing in that mode can apply one.
+- **Node references are not a mode feature.** Both prompts ask for the node's alias in backticks, and the sidebar annotates every assistant reply the same way, so a name in an answer is a link that reveals the node on the canvas — which is most of what makes a diagnosis useful.
 - **The apply side still does not branch on mode.** Splitting the apply body is
   how you get bugs that break one side only, so `importFlowFromMessage` barely
   looks at it (only `mode==='agent'` reaches the parser, for partial-schema

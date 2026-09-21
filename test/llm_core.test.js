@@ -230,7 +230,11 @@ function askIsToldToExplainNotBuild() {
   // check is for the RULES that tell a model how to build it.
   ok(!/SEQUENCES AND GROUPS/.test(out.ask) && !/LAYOUT FIX/.test(out.ask),
     'Ask is not given the schema-building instructions');
-  ok(/EXPLAIN, DO NOT BUILD/.test(out.ask), 'it is told to explain rather than build');
+  ok(/DIAGNOSE, DO NOT BUILD/.test(out.ask), 'it is told to diagnose rather than build');
+  ok(/Name the node/.test(out.ask) && /which property/.test(out.ask),
+    'and to point at the node and the property, which is what makes an answer actionable');
+  ok(/single backticks/.test(out.ask),
+    'node names come back in backticks, which is what the sidebar turns into links');
   ok(/Agent/.test(out.ask), 'and where to go if the user wants the change made');
   ok(out.ask.includes('tick'), 'but it still gets the flow — that is what it explains');
 

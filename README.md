@@ -61,7 +61,8 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 
 ## Features
 
-- **Two modes, two questions**: **Ask** is read-only — it is given your flow and asked to explain it, so "what does this do?" gets an answer rather than a flow to import. **Agent** is the one that builds, and applies what it builds.
+- **Two modes, two questions**: **Ask** is read-only — it is given your flow and asked to explain and diagnose it, so "why does this not fire?" comes back as "`inject_tick`'s `repeat` is empty" rather than as a flow to import. **Agent** is the one that builds, and applies what it builds.
+- **Node names are links**: in either mode, a node the reply mentions is clickable — it switches to that tab and reveals the node on the canvas (config nodes open their edit dialog).
 - **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.
 - **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state. It sits above the prompt it undoes, and **Apply Again** sits on the reply's schema block, so you can switch between the flow you had and the one the model proposed. The **Restore Points** dialog lists them all, including the ones an `llm-request` node took, which have no chat message to hang a button off.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.

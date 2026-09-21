@@ -353,6 +353,31 @@ function scenarioRetryReusesTheSendPath() {
     'a failed rewind still asks, against the flow as it stands');
 }
 
+// The answer is only useful if the user can get from it to the node it is
+// about, and that holds for BOTH modes: Ask names the node at fault, Agent
+// names the ones it built. So the annotation must not be one of the things
+// the sidebar does differently per mode — and both prompts have to ask for
+// the backticked alias it keys off.
+function scenarioNodeLinksAreModeIndependent() {
+  console.log('\nNode names in a reply link to the canvas, whichever mode asked');
+  const render = (/if \(!isUser\) \{([\s\S]*?)\n        \}/.exec(UI_CORE) || [])[1] || '';
+  ok(/annotateNodeReferences\(messageContent, targetFlowIds\)/.test(render),
+    'every assistant reply is annotated as it is rendered');
+  ok(!/'agent'|'ask'/.test(render),
+    'and nothing in that path asks which mode produced it');
+  ok(/reannotateAllAssistantMessages/.test(UI_CORE) &&
+     /assistant-message/.test(UI_CORE),
+    'the refresh pass covers assistant messages as a class, not a mode');
+  ok(CSS.indexOf('.llm-node-ref') !== -1, 'and the links have a stylesheet rule');
+
+  const prompts = ['prompt_system.txt', 'prompt_ask.txt'].map((f) =>
+    fs.readFileSync(path.join(ROOT, 'src', f), 'utf8'));
+  prompts.forEach((p, i) => {
+    ok(/backticks/.test(p) && /alias/.test(p),
+      ['the Agent prompt', 'the Ask prompt'][i] + ' asks for the alias in backticks');
+  });
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
@@ -366,6 +391,7 @@ function run() {
   scenarioPromptKeysAreWired();
   scenarioRestoreAndReapplyArePaired();
   scenarioRetryReusesTheSendPath();
+  scenarioNodeLinksAreModeIndependent();
   summary();
 }
 
