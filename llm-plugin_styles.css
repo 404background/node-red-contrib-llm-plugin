@@ -599,6 +599,26 @@
     color: #999;
     font-style: italic;
 }
+/* Mode + model on one line, two when the sidebar is narrow. The model input
+   is the flexible half — it is the one whose text runs long — and its basis
+   is what decides when the row breaks. */
+.session-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.session-row .agent-mode-row {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+}
+.session-row .model-input {
+    flex: 1 1 180px;
+    min-width: 140px;
+    width: auto;
+    margin-bottom: 0;
+}
 .agent-mode-row {
     display: flex;
     align-items: center;

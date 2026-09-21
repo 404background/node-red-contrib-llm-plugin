@@ -45,14 +45,19 @@
                 </button>
                 <div class="flow-selector-panel" id="llm-plugin-flow-panel" role="listbox"></div>
             </div>
-            <div class="agent-mode-row">
-                <label for="llm-plugin-mode">Mode</label>
-                <select id="llm-plugin-mode" class="mode-select">
-                    <option value="ask" selected>Ask</option>
-                    <option value="agent">Agent</option>
-                </select>
+            <!-- Mode and model read as one setting: which engine, asked how.
+                 They share a row, and wrap onto two when the sidebar is too
+                 narrow for the model name. -->
+            <div class="session-row">
+                <div class="agent-mode-row">
+                    <label for="llm-plugin-mode">Mode</label>
+                    <select id="llm-plugin-mode" class="mode-select">
+                        <option value="ask" selected>Ask</option>
+                        <option value="agent">Agent</option>
+                    </select>
+                </div>
+                <input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
             </div>
-            <input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
         </details>
         <div class="prompt-input-group">
             <textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>

@@ -378,6 +378,22 @@ function scenarioNodeLinksAreModeIndependent() {
   });
 }
 
+// Mode and model are one setting read two ways — which engine, asked how — so
+// they share a row. The sidebar is a panel the user can drag narrow, which is
+// why the row wraps rather than squeezing the model name into nothing.
+function scenarioModeAndModelShareARow() {
+  console.log('\nMode and model sit on one row that wraps');
+  const shell = templates['llm-plugin-sidebar-template'] || '';
+  const row = (/<div class="session-row">([\s\S]*?)<\/div>\s*<\/details>/.exec(shell) || [])[1] || '';
+  ok(row.indexOf('id="llm-plugin-mode"') !== -1 && row.indexOf('id="llm-plugin-model"') !== -1,
+    'both controls are inside the same row');
+  ok(/\.session-row \{[^}]*display: flex/.test(CSS), 'the row is a flex row');
+  ok(/\.session-row \{[^}]*flex-wrap: wrap/.test(CSS),
+    'that wraps instead of squeezing the model name');
+  ok(/\.session-row \.model-input \{[^}]*flex: 1 1/.test(CSS),
+    'and the model input is the half that gives, since its text is the long one');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
@@ -392,6 +408,7 @@ function run() {
   scenarioRestoreAndReapplyArePaired();
   scenarioRetryReusesTheSendPath();
   scenarioNodeLinksAreModeIndependent();
+  scenarioModeAndModelShareARow();
   summary();
 }
 
