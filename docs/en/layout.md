@@ -313,6 +313,18 @@ Without it a caption was orphaned the moment its node moved, and a reposition
 left it behind. The box itself counts its caption members like any other
 member, so `fitGroups` fits around them too.
 
+Two rules follow from that, and both are about the boundary:
+
+- **The search never crosses it.** A caption in a box only ever heads a node in
+  the same box. The caption at the bottom of one sequence sits within touching
+  distance of the top of the next, and anchoring across tied the two groups
+  into one block — a block cannot be pushed apart from itself, so the boxes
+  overlapped by the height of the caption that bridged them.
+- **A caption in a box that touches nothing is re-stacked** above that box's
+  first member, in reading order. It is the sequence's heading; a layout pass
+  that moves the members without it can leave it below the row it names, where
+  nothing touches it and no later pass would find it again.
+
 Each comment is placed directly above its target canvas node:
 
 - **Vertically**: touching the target's top edge with **zero grid gap**

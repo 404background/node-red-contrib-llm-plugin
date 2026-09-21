@@ -459,6 +459,12 @@
             for (let i = 0; i < positioned.length; i++) {
                 let n = positioned[i];
                 if (visited[n.id]) continue;
+                // A caption in a box heads something IN that box. Letting the
+                // search cross the boundary anchored a caption sitting near
+                // the bottom of one group to the top of the next, which then
+                // tied the two groups into one block — and a block cannot be
+                // pushed apart from itself, so the boxes overlapped.
+                if (from.g && n.g !== from.g) continue;
                 let width = getNodeWidth(n, opts);
                 let nLeft = (n.x || 0) - width / 2;
                 // Sharing a BOX is the stronger statement: the schema put the
@@ -478,7 +484,24 @@
             return best;
         }
 
+        // The box's own sequence, in reading order: what a caption in that box
+        // heads when it is touching nothing.
+        function firstMemberOf(groupId) {
+            let best = null;
+            for (let i = 0; i < positioned.length; i++) {
+                let n = positioned[i];
+                if (n.g !== groupId || n.type === 'comment' || n.type === 'group') continue;
+                if (!best || n.y < best.y ||
+                    (n.y === best.y && (n.x - getNodeWidth(n, opts) / 2) <
+                                       (best.x - getNodeWidth(best, opts) / 2))) {
+                    best = n;
+                }
+            }
+            return best;
+        }
+
         let anchors = {};
+        let strandedByGroup = {};
         positioned.forEach(function(c) {
             if (c.type !== 'comment') return;
             let visited = {};
@@ -499,6 +522,28 @@
                 }
                 current = next;
             }
+            // Touching nothing, but in a box: it is that sequence's heading,
+            // and a layout pass that moved the members without it can leave it
+            // beside or below what it names. Nothing else would bring it back,
+            // so it is re-stacked above the box's first member.
+            if (!anchors[c.id] && c.g) {
+                (strandedByGroup[c.g] = strandedByGroup[c.g] || []).push(c);
+            }
+        });
+        Object.keys(strandedByGroup).forEach(function(groupId) {
+            let target = firstMemberOf(groupId);
+            if (!target) return;
+            let captions = strandedByGroup[groupId].sort(function(a, b) {
+                return (a.y - b.y) || (a.x - b.x);
+            });
+            // Earlier ones sit further from the node, the way a stack reads.
+            captions.forEach(function(c, i) {
+                anchors[c.id] = {
+                    targetId: target.id,
+                    dx: 0,
+                    dy: -stackStep * (captions.length - i)
+                };
+            });
         });
         return anchors;
     }

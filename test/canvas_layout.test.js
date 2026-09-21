@@ -580,6 +580,57 @@ describe('A caption in a box belongs to the box', function() {
         assert(!anchors.c1, 'anchored anyway: ' + JSON.stringify(anchors.c1 || null));
     });
 
+    // The caption at the bottom of one sequence sits within touching distance
+    // of the top of the next. Anchoring across that boundary tied the two
+    // groups into ONE block — and a block cannot be pushed apart from itself,
+    // so the boxes overlapped by the height of the caption that bridged them.
+    it('never anchors to a node in a different box', function() {
+        const flow = [
+            { id: 'c1', type: 'comment', z: 'z', name: 'Heading', x: 260, y: 960, g: 'gA' },
+            { id: 'a1', type: 'inject', z: 'z', name: 'a', x: 250, y: 900, g: 'gA', wires: [[]] },
+            { id: 'b1', type: 'inject', z: 'z', name: 'b', x: 250, y: 1000, g: 'gB', wires: [[]] },
+        ];
+        const anchors = Layout.captureCommentAnchors(flow, OPTS);
+        assert(!anchors.c1 || anchors.c1.targetId !== 'b1',
+            'anchored across the boundary: ' + JSON.stringify(anchors.c1 || null));
+    });
+
+    it('so two boxes a caption sits between are still pushed apart', function() {
+        const flow = [
+            { id: 'a1', type: 'inject', z: 'z', name: 'a', x: 250, y: 900, g: 'gA', wires: [[]] },
+            { id: 'c1', type: 'comment', z: 'z', name: 'Heading', x: 260, y: 960, g: 'gA' },
+            { id: 'gA', type: 'group', z: 'z', name: 'A', nodes: ['a1', 'c1'],
+              x: 175, y: 860, w: 300, h: 140 },
+            { id: 'b1', type: 'inject', z: 'z', name: 'b', x: 250, y: 1000, g: 'gB', wires: [[]] },
+            { id: 'gB', type: 'group', z: 'z', name: 'B', nodes: ['b1'],
+              x: 175, y: 960, w: 300, h: 80 },
+        ];
+        Layout.separateGroups(flow, OPTS);
+        const a = flow.find((n) => n.id === 'gA'), b = flow.find((n) => n.id === 'gB');
+        assert(b.y - (a.y + a.h) >= Layout.LAYOUT_DEFAULTS.groupGap,
+            'gap is ' + (b.y - (a.y + a.h)));
+    });
+
+    // A layout pass can move the members and leave the heading behind — below
+    // the row it names, where nothing touches it and no anchor would be found
+    // again. It is the box's heading, so it goes back above the box's first
+    // member.
+    it('a caption left below its own sequence is re-stacked above it', function() {
+        const flow = [
+            { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 790, g: 'grp', wires: [[]] },
+            { id: 'n2', type: 'debug', z: 'z', name: 'out', x: 450, y: 930, g: 'grp', wires: [[]] },
+            { id: 'c1', type: 'comment', z: 'z', name: 'Heading', x: 300, y: 970, g: 'grp' },
+        ];
+        const anchors = Layout.captureCommentAnchors(flow, OPTS);
+        assert(anchors.c1 && anchors.c1.targetId === 'n1',
+            'anchored to ' + JSON.stringify(anchors.c1 || null));
+        Layout.applyCommentAnchors(flow, anchors, OPTS);
+        const c = flow[2], n = flow[0];
+        assert(c.y < n.y, 'caption at ' + c.y + ', its node at ' + n.y);
+        const left = (x) => x.x - Layout.estimateNodeWidth(x, OPTS) / 2;
+        assert(left(c) === left(n), 'caption left ' + left(c) + ' vs node left ' + left(n));
+    });
+
     it('the box is fitted around the caption too', function() {
         const flow = [
             caption({ g: 'grp' }), node({ g: 'grp' }),
