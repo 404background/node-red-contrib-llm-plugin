@@ -43,6 +43,7 @@ ones that did.
 | `json_repair` | A reply whose JSON is not quite JSON: what is recovered (an unterminated string, unescaped quotes inside a value, a JSONata expression whose own outer quotes the repair ate) and what is left to fail loudly — a block that was already valid is never "repaired", an expression that already reads correctly is not re-quoted, and a block that was recovered is not also reported as a failure. Also `parseJsonBlock`, the reading the sidebar folds a JSON block on. |
 | `ui_templates` | The seam between `llm_plugin.html` and `ui_core.js`: every id the JS clones exists, every template has a single well-formed root, and the classes reached for after cloning are in the markup. Also the two static seams that rot silently — the docs link in the header, and the `llm-request` node, whose html must hold no plugin logic and whose help panel must stay short enough to read. |
 | `checkpoint_api` | The restore-point endpoints through the real route handlers. The Agent node's checkpoints have no message, so the listing is the only way to find them. |
+| `server_api` | The admin routes' guarantees: the unauthenticated `src/` routes serve exactly what `client.js` loads, an Agent-node reply is claimed once, the apply queue and checkpoint `meta` are bounded, an unknown provider is refused, a chat is deleted by id. |
 | `apply_queue` | Ordering between everything that writes to the same flow: an applied-but-undeployed flow is held, others targeting it wait in arrival order, and different flows never wait for each other. |
 | `apply_queue_client` | The browser half of that protocol — no apply before its turn, no second apply on a re-pushed grant, and completion always reported. |
 | `restore_queue` | Restore (including the Retry button, which rewinds before re-asking) takes its turn too: the importer requests it as an `undo` scoped to the snapshot's own flows, and restores nothing until the turn is granted. |
@@ -155,6 +156,7 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 | `json_repair` | 「ほぼ JSON」な応答の扱い。何を復元し(閉じられていない文字列、値の中の未エスケープのクォート、修復が外側のクォートを食べてしまった JSONata 式)、何を復元せずに失敗として出すか。もともと妥当なブロックは決して「修復」せず、すでに正しく読める式を囲み直さず、復元できたブロックを失敗として報告もしない。サイドバーが JSON を折りたたむときの読み取り(`parseJsonBlock`)も含む。 |
 | `ui_templates` | `llm_plugin.html` と `ui_core.js` の継ぎ目。JS が複製する id がすべて存在し、各テンプレートのルートが単一かつ整形式で、複製後に参照するクラスがマークアップ側にあること。無言で腐る 2 つの継ぎ目 — ヘッダのドキュメントリンクと、`llm-request` ノード(html にプラグインのロジックを持たないこと、ヘルプが読める長さに収まっていること)も見る。 |
 | `checkpoint_api` | リストアポイントのエンドポイントを実際のルートハンドラ経由で検証。Agent ノードのチェックポイントにはメッセージがないので、一覧こそが唯一の発見手段である。 |
+| `server_api` | 管理ルートの保証を検証。未認証の `src/` ルートが `client.js` の読み込むものだけを配ること、Agent ノードの応答が1回だけ受け取られること、適用キューとチェックポイントの `meta` に上限があること、未知のプロバイダを拒むこと、チャットを ID で削除できること。 |
 | `apply_queue` | 同じフローに書き込むもの同士の順序。適用済みで未デプロイのフローは保持され、同じフローを狙う他の要求は到着順に待ち、別のフロー同士は待たない。 |
 | `apply_queue_client` | そのプロトコルのブラウザ側。順番が来る前に適用しないこと、再送された許可で二重に適用しないこと、完了を必ず報告すること。 |
 | `restore_queue` | 復元(巻き戻してから再送するやり直しも含む)も順番を取ること。スナップショット自身のフローを範囲として `undo` で要求し、順番が付与されるまで何も復元しないこと。 |

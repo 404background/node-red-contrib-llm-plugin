@@ -58,6 +58,7 @@ src/
   ui_core.js            メッセージ描画、フローエクスポート
   vibe_ui.js            サイドバー構築 + 生成ワークフロー
   agent_apply.js        `llm-request` ノードのエディタ側: 通信チャネル → インポータ
+  agent_dispatch.js     ランタイム側: Agent ノードの応答1件を1つのエディタだけが受け取る
   llm_core.js           共有 LLM エンジン(設定/認証/プロバイダ/プロンプト/コンテキスト)
   server.js             HTTP エンドポイント + チャット/チェックポイント永続化
 node/                   `llm-request` ノード(パレットカテゴリ: llm-plugin)
@@ -87,24 +88,25 @@ common → canvas_layout → flow_converter_core → llm_json_parser
 
 | Method | Path | 権限 | 用途 |
 |--------|------|------|---------|
-| POST | `/llm-plugin/generate` | write | プロンプト + フローコンテキストを LLM へ送信。`mode: "ask"` はフローの説明を求め、それ以外はスキーマを求める。モードがシステムプロンプトを選ぶので、判断はブラウザではなくここで行う |
+| POST | `/llm-plugin/generate` | write | プロンプト + フローコンテキストを LLM へ送信。`mode: "ask"` はフローの説明を求め、それ以外はスキーマを求める。モードがシステムプロンプトを選ぶので、判断はブラウザではなくここで行う。1時間でタイムアウトし、サイドバーが接続を閉じたら(停止)打ち切る |
 | GET | `/llm-plugin/settings` | read | 設定の読み取り(API キーはマスク) |
 | POST | `/llm-plugin/settings` | write | 設定の書き込み(ホワイトリスト項目のみ) |
-| GET | `/llm-plugin/chat-histories` | read | 永続化されたチャットの一覧 |
-| POST | `/llm-plugin/save-chat` | write | チャットの永続化 |
-| POST | `/llm-plugin/delete-chat` | write | ファイル名またはチャット ID で削除 |
-| POST | `/llm-plugin/checkpoint/save` | write | フロースナップショットの保存 |
+| GET | `/llm-plugin/chats` | read | 永続化されたチャットの一覧 |
+| POST | `/llm-plugin/chats/save` | write | チャットの永続化 |
+| POST | `/llm-plugin/chats/delete` | write | チャット ID でチャットとそのチェックポイントを削除 |
+| POST | `/llm-plugin/checkpoints/save` | write | フロースナップショットの保存 |
 | GET | `/llm-plugin/apply-queue` | read | フローごとの保持者と待ち行列 |
 | POST | `/llm-plugin/apply-queue/request` | write | 対象フロー群の順番待ちに加わる |
 | POST | `/llm-plugin/apply-queue/complete` | write | 適用済みのフローをデプロイまで保持する |
 | POST | `/llm-plugin/apply-queue/cancel` | write | 適用せずに待ち行列から外れる |
-| POST | `/llm-plugin/apply-queue/release` | write | デプロイ完了。デプロイされたフローを解放する |
+| POST | `/llm-plugin/apply-queue/release` | write | デプロイを経ずにすべての保留を解除する(編集を取り消したとき) |
+| POST | `/llm-plugin/agent-apply/claim` | write | Agent ノードの応答を受け取る。最初に受け取ったエディタだけが適用する |
 | GET | `/llm-plugin/checkpoints` | read | 復元ポイントの一覧(Agent ノードのものはメッセージを持たないため、ここからしか辿れない) |
-| GET | `/llm-plugin/checkpoint/:id` | read | 保存済みチェックポイントの読み込み |
+| GET | `/llm-plugin/checkpoints/:id` | read | 保存済みチェックポイントの読み込み |
 | POST | `/llm-plugin/client-log` | write | ブラウザ側で起きた失敗を Node-RED のログへ報告 |
 | GET | `/llm-plugin/vendor/marked.js` | **なし** | 同梱の marked.js を提供(オフライン Markdown 描画) |
-| GET | `/llm-plugin_styles.css` | **なし** | プラグインスタイルシートの提供 |
-| GET | `/llm-plugin/src/*` | **なし** | クライアント JS モジュールの提供 |
+| GET | `/llm-plugin/styles.css` | **なし** | プラグインスタイルシートの提供 |
+| GET | `/llm-plugin/src/<file>` | **なし** | `client.js` が読み込むクライアントモジュールの提供(1ファイル1ルート) |
 
 権限は `llm-plugin.read` / `llm-plugin.write`。データを読む・書く・課金が発生する
 ルートにはすべて権限を付けてある。未認証の3本は、`<script>` / `<link>` タグが
@@ -188,7 +190,7 @@ LLM の JSON 出力の癖を許容するための層。コメントの除去、�
 | `complete(entryId, ok)` | クライアントが適用を終えた(または失敗した)ことを伝える。成功時は次のデプロイまでその対象フローを保留する。失敗時は何も保留しない。取り込み処理がロールバックしており、起こる理由のないデプロイを待たせるとキューが止まるためである。成功した **undo** は、保留を取るのではなく名指ししたフローの保留を解除する。範囲不明の保留は解除しない。その裏にある適用が、スナップショットの語っていないフローにも触れている可能性があるためである。 |
 | `cancel(entryId)` | 待機中の要求を取り消す。順番が付与済みの要求は適用の最中なので対象外とする。 |
 | `releaseHold()` | デプロイを経ずに保留を解除する。手作業で編集を取り消した場合のための操作。 |
-| `state()` | キューと保留中フローを返す。あわせて、失効した順番と古い保留を整理する。 |
+| `state()` | キューと保留中フローを返す。あわせて失効した順番と古い保留を整理し、それで何か変わったときだけ配信する。 |
 | `bindDeployListener()` | `runtime-event` / `runtime-deploy` を受けてすべての保留を解除する。フローエンジンが発行するものなので、どのエディタからの Deploy でも、ノードの自動デプロイでも、管理 API 経由のデプロイでも対象になる。 |
 
 エンドポイント: `GET /llm-plugin/apply-queue`、`POST .../request`・`.../complete`・
@@ -455,16 +457,19 @@ messages[1] = { role: "user", content: <user prompt> }
   `needsPermission` を付けているだけで、後から足したものは同じことをしない限り
   素通しになる。`adminAuth` が未設定なら `needsPermission` は何もしないので、
   単独利用の環境の挙動は従来どおり。
-  静的アセットの3ルート(marked.js、スタイルシート、`src/*`)は未認証のまま残す。
-  `<script>` / `<link>` タグはヘッダを送れないためである。これらが配るのは
-  プラグイン自身の公開済みクライアントコードだけで、`src/*` は `.js` / `.css` /
-  `.json` に限定する。
+  静的アセットのルート(marked.js、スタイルシート、クライアントモジュール)は未認証の
+  まま残す。`<script>` / `<link>` タグはヘッダを送れないためである。各ルートが配るのは
+  決まった1ファイルだけで、クライアントモジュールは `client.js` が読み込む一覧と
+  一致する。同じ `src/` にあるサーバ側モジュールは配らない(一覧の一致は
+  `test/server_api.test.js` が確かめる)。
 - **応答の描画。** 応答は Markdown であり、描画先は管理権限を持つエディタの中である。
   だから応答に混じった生の HTML はマークアップではなくテキストとして扱う。これを
   レンダラ側(`html()` でトークンをエスケープ)で担保する。元のテキストの `<` / `>` を
   先に潰す方式はやめた。コードブロックに含まれる実体参照を二重にエスケープしてしまう
-  副作用があったためである。Markdown のリンク・画像記法はレンダラを通り抜けるので、
-  そのあと `sanitizeRenderedHtml` が各 `href` / `src` を**不活性な DOM 上で解決**し、
+  副作用があったためである。Markdown の**画像はリンクに置き換える**。描画すればその URL を
+  取得してしまい、フロー内のテキストに誘導された応答なら、その URL にフローの中身を
+  載せられるからである。リンクならクリックされるまで何も送らない。そのあと
+  `sanitizeRenderedHtml` が各 `href` を**不活性な DOM 上で解決**し、
   `http(s)` / `mailto:` / `tel:` 以外を落とす。正規表現ではなく DOM で解決するからこそ、
   実体参照で書かれた `javascript:` も素の綴りと同じに見える。フォールバック経路は
   意図的に持たない。用意できる唯一のフォールバックが、まさにこれが避けている
@@ -498,10 +503,12 @@ messages[1] = { role: "user", content: <user prompt> }
   あわせてフローコンテキストにも独立した 1MB の上限を設ける。両者は同じシステム
   メッセージに連結されるので、後者の上限がないと、中身を `currentFlow` に移すだけで
   前者の上限を回避できてしまう。
-- 保存するデータには上限を設ける。チャット・チェックポイントは各 5MB、
-  チェックポイントは 200 件を超えたら古いものから削除する。
-- ファイルを読み書きするルートでは、パス名をファイル名部分だけに切り詰めたうえで、
-  想定ディレクトリ配下に収まっているかを確認し、パストラバーサルを防ぐ。
+- 保存するデータには上限を設ける。チャット・チェックポイントは各 5MB(`meta` を含む)、
+  チェックポイントは 200 件を超えたら古いものから削除する。変更のたびに全エディタへ
+  配信する適用キューは最大 100 件で(超えた要求は 429)、ID は 64 文字に切り詰める。
+- パスを受け取るルートはない。チャットはサニタイズした ID で探し、チェックポイント ID は
+  `cp_<数字>_<16進>` に一致しなければならず、静的ファイルは決まった一覧だけを配る。
+- `provider` は `ollama`・`openai`・`custom` のいずれかに限る。
 - エラーメッセージとクライアントからの報告は、出力前に API キー・URL・IP を除去する
   (`meta` も含む)。まず**保存済みのキーの値そのもの**を文字列一致で除去する。Custom
   エンドポイントのキーは形式が決まっていないためパターンでは捉えられず、接続先が
@@ -524,6 +531,9 @@ messages[1] = { role: "user", content: <user prompt> }
 
 - Agent モードはモデルの応答を**確認なしで**キャンバスに適用する。`Auto deploy` を
   有効にすると、そのまま即座にデプロイする。
+- 応答は開いているすべてのエディタに配信されるが、適用するのは最初に受け取った
+  (`POST /agent-apply/claim`、write 権限)エディタだけである。2つ目のエディタや
+  読み取り専用ユーザーのエディタは破棄する。
 - ノード種別の**許可リストは設けていない**。生成されたフローには `function` ノード
   (ランタイムプロセス内で動く任意の JavaScript)や `exec` ノード(任意のシェル
   コマンド)が含まれうる。モデルが作れるものを制限すると、このモードの意義そのものが

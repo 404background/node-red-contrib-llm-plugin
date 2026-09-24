@@ -537,29 +537,35 @@ function createLLMCore(RED) {
 
     // `options.timeoutMs` bounds one generation (0 / omitted = no limit).
     // The node passes its configured timeout; the sidebar passes nothing.
+    // One hour: local LLMs are slow. Shared by the sidebar and the node.
+    const DEFAULT_TIMEOUT_MS = 3600 * 1000;
+
+    // `options.timeoutMs` (0 = none) bounds the wait; `options.signal` lets
+    // the caller give up earlier, e.g. when the requester went away.
     function generateWithProvider(provider, settings, model, messages, options) {
         const timeoutMs = (options && typeof options.timeoutMs === 'number' && options.timeoutMs > 0)
             ? Math.floor(options.timeoutMs)
             : 0;
+        const signal = (options && options.signal) || undefined;
         if (provider === 'openai') {
             if (!settings.openaiApiKey) {
                 return Promise.reject(new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.'));
             }
-            return generateWithOpenAICompatible(settings.openaiApiKey, null, model, messages, timeoutMs);
+            return generateWithOpenAICompatible(settings.openaiApiKey, null, model, messages, timeoutMs, signal);
         }
         if (provider === 'custom') {
             let baseUrl = (settings.customBaseUrl && String(settings.customBaseUrl).trim()) || '';
             if (!baseUrl) {
                 return Promise.reject(new Error('Custom endpoint Base URL is not configured. Please set it in LLM Plugin settings.'));
             }
-            return generateWithOpenAICompatible(settings.customApiKey, baseUrl, model, messages, timeoutMs);
+            return generateWithOpenAICompatible(settings.customApiKey, baseUrl, model, messages, timeoutMs, signal);
         }
-        return generateWithOllamaChat(settings, model, messages, timeoutMs);
+        return generateWithOllamaChat(settings, model, messages, timeoutMs, signal);
     }
 
     // Ollama chat generation (timeout 0 = wait indefinitely). `fetch` rather
     // than http/https: one code path for both schemes.
-    async function generateWithOllamaChat(settings, model, messages, timeout = 0) {
+    async function generateWithOllamaChat(settings, model, messages, timeout = 0, callerSignal) {
         const ollamaUrlStr = (settings && settings.ollamaUrl) || 'http://localhost:11434';
         // No fallback to localhost: the settings endpoint already rejects
         // unparseable URLs, and a silent redirect would be unexplainable.
@@ -582,9 +588,11 @@ function createLLMCore(RED) {
                 headers: { 'Content-Type': 'application/json; charset=utf-8' },
                 body: body,
                 // Bounds the total wait, which is what the setting means.
-                signal: (timeout && timeout > 0) ? AbortSignal.timeout(timeout) : undefined
+                signal: combineSignals(
+                    (timeout && timeout > 0) ? AbortSignal.timeout(timeout) : null, callerSignal)
             });
         } catch (e) {
+            if (callerSignal && callerSignal.aborted) throw e;
             // Callers detect a timeout by `err.code === 'ETIMEDOUT'` rather
             // than by parsing the message (llm-request's status display),
             // and an aborted fetch carries no such code. Put it back.
@@ -613,6 +621,11 @@ function createLLMCore(RED) {
         return content;
     }
 
+    function combineSignals(a, b) {
+        if (a && b) return AbortSignal.any([a, b]);
+        return a || b || undefined;
+    }
+
     // Re-label the OpenAI SDK's cryptic "… is not valid JSON" error (an
     // endpoint that answered with plain text) into an actionable message.
     function wrapProviderError(err) {
@@ -638,7 +651,7 @@ function createLLMCore(RED) {
 
     // One adapter for OpenAI (`baseURL` null) and OpenAI-compatible
     // endpoints. A blank key becomes a placeholder: the SDK insists on one.
-    async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs) {
+    async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs, signal) {
         const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
         const openai = new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });
         let completion;
@@ -646,7 +659,7 @@ function createLLMCore(RED) {
             completion = await openai.chat.completions.create({
                 messages: Array.isArray(messages) ? messages : [],
                 model: model,
-            }, (timeoutMs > 0) ? { timeout: timeoutMs } : undefined);
+            }, { timeout: timeoutMs > 0 ? timeoutMs : undefined, signal: signal });
         } catch (e) {
             // Normalize the SDK's timeout error to the same code the Ollama
             // adapter uses, so callers detect timeouts without message parsing.
@@ -673,6 +686,7 @@ function createLLMCore(RED) {
         buildMessages: buildMessages,
         buildChatMessages: buildChatMessages,
         // generation
+        DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS,
         generateWithProvider: generateWithProvider
     };
     return sharedInstance;

@@ -48,7 +48,7 @@ function setup(opts) {
   P.Common.apiFetch = function (url, options) {
     const u = String(url);
     if (!options || options.method !== 'POST') {
-      if (/checkpoint\//.test(u)) return jsonOf({ checkpoint: { flow: clone(SNAPSHOT) } });
+      if (/checkpoints\/cp_/.test(u)) return jsonOf({ checkpoint: { flow: clone(SNAPSHOT) } });
       return jsonOf({ entries: [] });
     }
     const body = options.body ? JSON.parse(options.body) : {};

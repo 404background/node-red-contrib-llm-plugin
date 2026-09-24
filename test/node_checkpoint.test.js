@@ -50,7 +50,7 @@ function setup() {
 }
 
 function checkpointPost(log) {
-  const hit = log.find((e) => /checkpoint\/save/.test(e.url));
+  const hit = log.find((e) => /checkpoints\/save/.test(e.url));
   if (!hit) return null;
   try { return JSON.parse(hit.opts.body); } catch (e) { return null; }
 }

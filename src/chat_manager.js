@@ -39,7 +39,7 @@
      */
     function postCheckpointSave(chatId, label, flow, source, extraMeta) {
         let meta = Object.assign({ source: source }, extraMeta || {});
-        return Common.apiFetch('llm-plugin/checkpoint/save', {
+        return Common.apiFetch('llm-plugin/checkpoints/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -239,7 +239,7 @@
     ChatManager.saveChatToServer = function(chatId) {
         let chat = chatHistory[chatId];
         if (!chat) return;
-        Common.apiFetch('llm-plugin/save-chat', {
+        Common.apiFetch('llm-plugin/chats/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chatId: chatId, chatData: chat })
@@ -260,7 +260,7 @@
     };
 
     ChatManager.loadChatHistoriesFromServer = function() {
-        return Common.apiFetch('llm-plugin/chat-histories')
+        return Common.apiFetch('llm-plugin/chats')
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (!data || !data.chatHistories) return;
@@ -373,13 +373,10 @@
             if (typeof callback === 'function') callback(false);
             return;
         }
-        let chat = chatHistory[chatId] || {};
-        let payload = chat.__file ? { filename: chat.__file } : { chatId: chatId };
-
-        Common.apiFetch('llm-plugin/delete-chat', {
+        Common.apiFetch('llm-plugin/chats/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ chatId: chatId })
         }).finally(function() {
             delete chatHistory[chatId];
             if (currentChatId === chatId) ChatManager.startNewChat();

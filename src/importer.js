@@ -2504,7 +2504,7 @@
 
     Importer.restoreCheckpoint = function(checkpointId) {
         if (!checkpointId) return Promise.resolve({ ok: false, error: 'checkpointId is required' });
-        return Common.apiFetch('llm-plugin/checkpoint/' + encodeURIComponent(checkpointId))
+        return Common.apiFetch('llm-plugin/checkpoints/' + encodeURIComponent(checkpointId))
             .then(function(res) {
                 if (!res.ok) {
                     return res.json().catch(function() { return { error: 'Checkpoint load failed' }; })

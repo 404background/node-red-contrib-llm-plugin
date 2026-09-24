@@ -27,7 +27,7 @@
         oneditprepare: function() {
             $('#node-input-editorUrl').typedInput({
                 default: 'str',
-                types: ['str', 'flow', 'global'],
+                types: ['str', 'msg', 'flow', 'global'],
                 typeField: '#node-input-editorUrlType'
             });
 
@@ -109,7 +109,6 @@
     <dl class="message-properties">
         <dt>payload <span class="property-type">string | object</span></dt><dd>The prompt. Objects are JSON-stringified.</dd>
         <dt class="optional">model <span class="property-type">string</span></dt><dd>Overrides the configured model.</dd>
-        <dt class="optional">editorUrl <span class="property-type">string</span></dt><dd>Overrides the API URL used to read flow context.</dd>
         <dt class="optional">timeout <span class="property-type">number</span></dt><dd>Overrides the timeout, in seconds (0 = no limit).</dd>
     </dl>
 
@@ -131,7 +130,7 @@
         <li>Agent runs what the model writes: a generated flow may contain <code>function</code> nodes (JavaScript in this process) or <code>exec</code> nodes (shell commands). Do <b>not</b> feed untrusted text into an Agent node.</li>
         <li>Every message costs one LLM request, and one canvas edit in Agent mode — mind the trigger rate.</li>
         <li><b>Timeout</b> defaults to 3600 seconds because local models are slow; 0 = no limit.</li>
-        <li><b>API URL</b>: leave blank to auto-detect (recommended).</li>
+        <li><b>API URL</b>: leave blank to auto-detect (recommended). A <code>msg</code> property is read only when the field is set to that type.</li>
     </ul>
 
     <p>Auto deploy, the apply queue, restore points and troubleshooting are

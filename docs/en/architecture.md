@@ -60,6 +60,7 @@ src/
   ui_core.js            Message rendering, flow export
   vibe_ui.js            Sidebar build + generation workflow
   agent_apply.js        Editor half of the `llm-request` node: comms → importer
+  agent_dispatch.js     Runtime: one Agent-node reply, claimed by one editor
   llm_core.js           Shared LLM engine (settings/creds/providers/prompts/context)
   server.js             HTTP endpoints + chat/checkpoint persistence
 node/                   The `llm-request` node (palette category: llm-plugin)
@@ -90,24 +91,25 @@ everything above. All modules use the IIFE pattern and communicate via
 
 | Method | Path | Permission | Purpose |
 |--------|------|------------|---------|
-| POST | `/llm-plugin/generate` | write | Send prompt + flow context to the LLM. `mode: "ask"` asks for an explanation of the flow, anything else asks for a schema — the mode picks the system prompt, so it is decided here, not in the browser |
+| POST | `/llm-plugin/generate` | write | Send prompt + flow context to the LLM. `mode: "ask"` asks for an explanation of the flow, anything else asks for a schema — the mode picks the system prompt, so it is decided here, not in the browser. Times out after an hour, and is abandoned when the sidebar closes the connection (Stop) |
 | GET | `/llm-plugin/settings` | read | Read settings (API key masked) |
 | POST | `/llm-plugin/settings` | write | Write settings (whitelisted fields) |
-| GET | `/llm-plugin/chat-histories` | read | List persisted chats |
-| POST | `/llm-plugin/save-chat` | write | Persist a chat |
-| POST | `/llm-plugin/delete-chat` | write | Delete by filename or chat id |
-| POST | `/llm-plugin/checkpoint/save` | write | Save flow snapshot |
+| GET | `/llm-plugin/chats` | read | List persisted chats |
+| POST | `/llm-plugin/chats/save` | write | Persist a chat |
+| POST | `/llm-plugin/chats/delete` | write | Delete a chat, and its checkpoints, by chat id |
+| POST | `/llm-plugin/checkpoints/save` | write | Save flow snapshot |
 | GET | `/llm-plugin/apply-queue` | read | Current holder and waiters, per flow |
 | POST | `/llm-plugin/apply-queue/request` | write | Join the queue for a set of flows |
 | POST | `/llm-plugin/apply-queue/complete` | write | An applied edit now holds its flows until the deploy |
 | POST | `/llm-plugin/apply-queue/cancel` | write | Leave the queue without applying |
-| POST | `/llm-plugin/apply-queue/release` | write | The deploy landed; release the flows it deployed |
+| POST | `/llm-plugin/apply-queue/release` | write | Release every hold without a deploy (the edit was undone) |
+| POST | `/llm-plugin/agent-apply/claim` | write | Claim an Agent-node reply; only the first editor to claim it applies it |
 | GET | `/llm-plugin/checkpoints` | read | List restore points (the Agent node's have no message to find them by) |
-| GET | `/llm-plugin/checkpoint/:id` | read | Load saved checkpoint |
+| GET | `/llm-plugin/checkpoints/:id` | read | Load saved checkpoint |
 | POST | `/llm-plugin/client-log` | write | Report a client-side failure into the Node-RED log |
 | GET | `/llm-plugin/vendor/marked.js` | **none** | Serve the bundled marked.js (offline Markdown rendering) |
-| GET | `/llm-plugin_styles.css` | **none** | Serve plugin stylesheet |
-| GET | `/llm-plugin/src/*` | **none** | Serve client JS modules |
+| GET | `/llm-plugin/styles.css` | **none** | Serve plugin stylesheet |
+| GET | `/llm-plugin/src/<file>` | **none** | Serve the client modules `client.js` loads, one route per file |
 
 Permissions are `llm-plugin.read` / `llm-plugin.write`. Every route that
 reads data, writes data or spends money has one; the three unauthenticated
@@ -198,7 +200,7 @@ Admin API cannot clear the open editor's unsaved state.
 | `complete(entryId, ok)` | The client has applied (or failed). On success its flows are held until the next deploy; on failure nothing is held, because the importer rolled back and waiting for a deploy that has no reason to happen would wedge the queue. A successful **undo** releases the holds on the flows it names instead of taking new ones — a blanket hold survives, since the apply behind it may have touched flows the snapshot says nothing about. |
 | `cancel(entryId)` | Drop a waiting entry. An entry already granted is mid-apply and is left alone. |
 | `releaseHold()` | End the hold without a deploy, for an edit undone by hand. |
-| `state()` | The queue plus the held flows. Also sweeps expired grants and stale holds. |
+| `state()` | The queue plus the held flows. Expires timed-out grants and stale holds, and publishes only when that changed something. |
 | `bindDeployListener()` | Release every hold on `runtime-event` / `runtime-deploy` — emitted by the flow engine, so it covers a Deploy from any editor, the node's auto deploy, and a deploy made through the Admin API. |
 
 Routes: `GET /llm-plugin/apply-queue`, and `POST .../request`, `.../complete`,
@@ -221,8 +223,8 @@ Chat session lifecycle.
 |-----|-------------|
 | `getCurrentChatId()` / `getChatHistory()` / `startNewChat()` | In-memory session control. |
 | `addMessage(content, isUser, meta?)` | Append + persist; renders via `UI.addMessageToUI`. |
-| `saveChatToServer(chatId)` | `POST /save-chat`. |
-| `loadChatHistoriesFromServer()` | `GET /chat-histories`. Auto-loads the most recent if none open. |
+| `saveChatToServer(chatId)` | `POST /chats/save`. |
+| `loadChatHistoriesFromServer()` | `GET /chats`. Auto-loads the most recent if none open. |
 | `loadChat(chatId)` | Replay messages into the chat area. |
 | `showChatList()` / `deleteChat(chatId, cb)` | Chat-list modal. |
 | `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. The snapshot opts into `includeCanvasExtras` so junctions/groups are recorded (see [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group)). |
@@ -500,18 +502,21 @@ No chat history is sent — each request is stateless to the LLM.
   `needsPermission` individually, and anything added afterwards is open
   unless it does the same. `needsPermission` is a no-op when `adminAuth`
   is unset, so single-user installs behave exactly as before.
-  The three static-asset routes (`vendor/marked.js`, the stylesheet,
-  `src/*`) stay unauthenticated because `<script>` / `<link>` tags cannot
-  send an auth header; they serve only the plugin's own published client
-  code and `src/*` is restricted to `.js` / `.css` / `.json`.
+  The static-asset routes (`vendor/marked.js`, the stylesheet, the client
+  modules) stay unauthenticated because `<script>` / `<link>` tags cannot
+  send an auth header. Each serves one fixed file: the modules are exactly
+  the list `client.js` loads, so the server-side modules beside them in
+  `src/` are never served (`test/server_api.test.js` keeps the lists equal).
 - **Reply rendering.** A reply is Markdown, rendered inside the editor, which
   holds admin privileges — so raw HTML in it is text, never markup. That is
   enforced in the renderer (`html()` escapes the token) rather than by
   escaping `<` / `>` in the source text, which had the side effect of
-  double-escaping every entity a code block contained. Markdown's own link
-  and image syntax survives the renderer, so `sanitizeRenderedHtml` then
-  resolves each `href` / `src` **through the DOM** of an inert document and
-  drops any that is not `http(s)` / `mailto:` / `tel:` — resolving through
+  double-escaping every entity a code block contained. A Markdown **image
+  becomes a link**: rendering it would fetch its URL, and a reply steered
+  by text inside the flow could put the flow's contents in that URL. A link
+  sends nothing until clicked. `sanitizeRenderedHtml` then resolves each
+  `href` **through the DOM** of an inert document and drops any that is
+  not `http(s)` / `mailto:` / `tel:` — resolving through
   the DOM rather than matching a regex is what makes entity-encoded
   `javascript:` no different from the plain spelling. There is deliberately
   no fallback path: the only one available is the `innerHTML` this avoids.
@@ -548,10 +553,13 @@ No chat history is sent — each request is stateless to the LLM.
   100–100 000), plus an independent 1 MB cap on the flow context —
   both land in the same system message, so without the second cap the
   first is bypassable by moving the payload into `currentFlow`.
-- Stored documents are bounded: 5 MB per chat and per checkpoint, and
-  checkpoints are pruned oldest-first past 200 files.
-- Path traversal blocked by `path.basename` + `startsWith` containment
-  on file-serving / deletion routes.
+- Stored documents are bounded: 5 MB per chat and per checkpoint (`meta`
+  included), and checkpoints are pruned oldest-first past 200 files. The
+  apply queue, broadcast to every editor on each change, holds at most 100
+  entries (a request past that is a 429), with ids cut to 64 characters.
+- No route takes a path. A chat is found by its sanitised id, a checkpoint
+  id must match `cp_<digits>_<hex>`, and static files are a fixed list.
+- `provider` must be `ollama`, `openai` or `custom`.
 - `redactSecrets` strips API keys, URLs and IPs from every error message
   and client-reported event, `meta` included. The configured key VALUES are
   matched literally, first: a custom endpoint's key can be any shape at all,
@@ -577,6 +585,9 @@ the largest risk in the plugin:
 
 - Agent mode applies the model's reply to the canvas with **no
   confirmation step**, and `Auto deploy` deploys it immediately.
+- The reply is published to every open editor, but only the first to
+  claim it (`POST /agent-apply/claim`, write permission) applies it. A
+  second editor, or a read-only user's, drops it.
 - There is **no node-type allowlist**. Generated flows may contain
   `function` nodes (arbitrary JavaScript in the runtime process) and
   `exec` nodes (arbitrary shell commands). Restricting what the model may

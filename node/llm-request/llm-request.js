@@ -6,6 +6,7 @@ const path = require('path');
 module.exports = function(RED) {
     const createLLMCore = require(path.join(__dirname, '..', '..', 'src', 'llm_core.js'));
     const createAdminApi = require(path.join(__dirname, '..', 'lib', 'admin_api.js'));
+    const agentDispatch = require(path.join(__dirname, '..', '..', 'src', 'agent_dispatch.js'));
 
     const core = createLLMCore(RED);
     const adminApi = createAdminApi(RED);
@@ -41,8 +42,8 @@ module.exports = function(RED) {
         catch (e) { return normaliseText(String(payload)); }
     }
 
-    // Seconds, 0 = no limit. An hour by default: local LLMs are slow.
-    const DEFAULT_TIMEOUT_SEC = 3600;
+    // Seconds, 0 = no limit.
+    const DEFAULT_TIMEOUT_SEC = core.DEFAULT_TIMEOUT_MS / 1000;
     function toTimeoutSec(value, fallback) {
         if (value === undefined || value === null || value === '') return fallback;
         const n = parseInt(value, 10);
@@ -55,7 +56,9 @@ module.exports = function(RED) {
         const mode = (config.mode === 'agent') ? 'agent' : 'ask';
         const providerOverride = config.provider || '';
         const configModel = config.model || '';
-        // A literal URL, or the name of a flow/global holding one.
+        // A literal URL, or the name of a flow/global/msg property holding
+        // one. `msg` is opt-in: a URL taken from message data points the
+        // runtime's request wherever that data says.
         const configEditorUrl = config.editorUrl || '';
         const configEditorUrlType = config.editorUrlType || 'str';
         const configTimeoutSec = toTimeoutSec(config.timeout, DEFAULT_TIMEOUT_SEC);
@@ -112,8 +115,9 @@ module.exports = function(RED) {
                 if (targetFlows.length > 0) {
                     try {
                         let editorUrl = '';
-                        if (typeof msg.editorUrl === 'string' && msg.editorUrl.trim()) {
-                            editorUrl = msg.editorUrl.trim();
+                        if (configEditorUrlType === 'msg') {
+                            const v = RED.util.getMessageProperty(msg, configEditorUrl);
+                            if (typeof v === 'string') editorUrl = v.trim();
                         } else if (configEditorUrlType === 'flow' || configEditorUrlType === 'global') {
                             const v = node.context()[configEditorUrlType].get(configEditorUrl);
                             if (typeof v === 'string') editorUrl = v.trim();
@@ -160,6 +164,9 @@ module.exports = function(RED) {
                     // not knowable from here.
                     if (RED.comms && typeof RED.comms.publish === 'function') {
                         RED.comms.publish(AGENT_APPLY_TOPIC, {
+                            // Every editor receives this; the one that claims
+                            // the id applies it. See src/agent_dispatch.js.
+                            dispatchId: agentDispatch.issue(),
                             response: response,
                             targetFlows: targetFlows,
                             autoDeploy: autoDeploy,

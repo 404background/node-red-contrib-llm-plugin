@@ -17,6 +17,16 @@
         // must run before anything can be fetched. There is deliberately no
         // fallback — the only one available is the very thing this avoids.
         let holder = new DOMParser().parseFromString(html, 'text/html').body;
+        // A Markdown image becomes a link: rendering it would fetch the URL,
+        // and a reply steered by text in the flow can put the flow's contents
+        // in that URL. A link sends nothing until it is clicked.
+        holder.querySelectorAll('img').forEach(function(img) {
+            let a = holder.ownerDocument.createElement('a');
+            let src = img.getAttribute('src') || '';
+            a.textContent = img.getAttribute('alt') || src;
+            a.setAttribute('href', src);
+            img.replaceWith(a);
+        });
         // Anchors: keep the text, drop an unsafe href (relative/#/http(s)
         // resolve to http:/https: and are allowed).
         holder.querySelectorAll('a[href]').forEach(function(a) {
@@ -25,14 +35,8 @@
             if (!SAFE_URL_SCHEMES[scheme]) a.removeAttribute('href');
             a.setAttribute('rel', 'noopener noreferrer');
         });
-        // Media src (markdown images): forbid non-http(s) so data:/javascript
-        // sources can't smuggle anything past the escape of raw < >.
-        holder.querySelectorAll('[src]').forEach(function(el) {
-            let scheme = '';
-            try { scheme = new URL(el.getAttribute('src'), document.baseURI).protocol.toLowerCase(); }
-            catch (e) { scheme = ''; }
-            if (scheme && scheme !== 'http:' && scheme !== 'https:') el.removeAttribute('src');
-        });
+        // Nothing else Markdown produces loads a resource.
+        holder.querySelectorAll('[src]').forEach(function(el) { el.removeAttribute('src'); });
         return holder.innerHTML;
     }
 

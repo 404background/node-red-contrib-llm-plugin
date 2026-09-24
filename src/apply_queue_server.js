@@ -23,6 +23,12 @@ const HOLD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 // process open.
 const SWEEP_INTERVAL_MS = 15000;
 
+// Every entry is broadcast to every editor on each change, so the queue and
+// what an entry carries are bounded. Far above any real use.
+const MAX_ENTRIES = 100;
+const MAX_TARGETS = 500;
+const MAX_ID_CHARS = 64;
+
 function createApplyQueue(RED) {
     let entries = [];        // requests, in arrival order
     let holds = {};          // flowId -> { entryId, clientId, source, label, since }
@@ -36,10 +42,10 @@ function createApplyQueue(RED) {
         if (!Array.isArray(ids)) return [];
         let seen = {};
         return ids.filter(function(id) {
-            if (typeof id !== 'string' || !id || seen[id]) return false;
+            if (typeof id !== 'string' || !id || id.length > MAX_ID_CHARS || seen[id]) return false;
             seen[id] = true;
             return true;
-        });
+        }).slice(0, MAX_TARGETS);
     }
 
     // An entry with no declared scope may read or write any flow, so it
@@ -202,9 +208,14 @@ function createApplyQueue(RED) {
         /** Ask for a turn. Returns the entry, already granted when nothing blocks it. */
         request: function(opts) {
             opts = opts || {};
+            if (entries.length >= MAX_ENTRIES) {
+                let full = new Error('The apply queue is full (' + MAX_ENTRIES + ' requests). Try again later.');
+                full.status = 429;
+                throw full;
+            }
             let entry = {
                 id: 'aq_' + (++seq) + '_' + now().toString(36),
-                clientId: String(opts.clientId || 'unknown'),
+                clientId: String(opts.clientId || 'unknown').slice(0, MAX_ID_CHARS),
                 source: opts.source === 'node' ? 'node' : 'sidebar',
                 label: String(opts.label || 'Flow edit').slice(0, 120),
                 targets: normaliseTargets(opts.targetFlowIds),
@@ -253,7 +264,12 @@ function createApplyQueue(RED) {
             return { ok: true, queue: settle() };
         },
 
-        state: function() { return settle(); },
+        // A read: it expires what has timed out, and tells the other editors
+        // only when that changed something.
+        state: function() {
+            if (sweep()) { promote(); publish(); }
+            return state();
+        },
 
         /**
          * Release every hold when the runtime reports a completed deploy.
@@ -281,7 +297,8 @@ function createApplyQueue(RED) {
         },
         _constants: {
             GRANT_TIMEOUT_MS: GRANT_TIMEOUT_MS,
-            HOLD_MAX_AGE_MS: HOLD_MAX_AGE_MS
+            HOLD_MAX_AGE_MS: HOLD_MAX_AGE_MS,
+            MAX_ENTRIES: MAX_ENTRIES
         }
     };
 

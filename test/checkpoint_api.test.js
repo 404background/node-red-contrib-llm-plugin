@@ -80,7 +80,7 @@ function clearCheckpoints() {
   });
 }
 
-const saveHandler = RED.routes.post['/llm-plugin/checkpoint/save'];
+const saveHandler = RED.routes.post['/llm-plugin/checkpoints/save'];
 const listHandler = RED.routes.get['/llm-plugin/checkpoints'];
 
 function flow(n) {

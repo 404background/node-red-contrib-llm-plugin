@@ -77,8 +77,26 @@
             });
     }
 
+    // Every open editor receives the reply; only the one whose claim the
+    // server grants applies it. A refused claim (another editor took it, or
+    // this user may not write) is silent.
+    function claim(dispatchId) {
+        return P.Common.apiFetch('llm-plugin/agent-apply/claim', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dispatchId: dispatchId })
+        })
+            .then(function(res) { return res.ok ? res.json() : {}; })
+            .then(function(out) { return !!(out && out.granted); })
+            .catch(function() { return false; });
+    }
+
     RED.comms.subscribe('llm-plugin/agent-apply', function(topic, payload) {
-        try { if (payload && typeof payload.response === 'string') applyAgentResult(payload); }
-        catch (e) { if (window.console) console.error('[llm-request] agent-apply failed', e); }
+        if (!payload || typeof payload.response !== 'string' || !payload.dispatchId) return;
+        claim(payload.dispatchId).then(function(granted) {
+            if (granted) applyAgentResult(payload);
+        }).catch(function(e) {
+            if (window.console) console.error('[llm-request] agent-apply failed', e);
+        });
     });
 })();

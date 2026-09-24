@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const createLLMCore = require('./llm_core');
 const createApplyQueue = require('./apply_queue_server');
+const agentDispatch = require('./agent_dispatch');
 
 function createLLMPluginServer(RED) {
     const core = createLLMCore(RED);
@@ -53,6 +54,8 @@ function createLLMPluginServer(RED) {
     // One definition of what a checkpoint file is named, shared by the
     // pruner and the listing so they can never disagree about it.
     const CHECKPOINT_FILE_RE = /^cp_(\d+)_[a-z0-9]+\.json$/i;
+    // The id alone, as a route receives it. Nothing else can reach a path.
+    const CHECKPOINT_ID_RE = /^cp_\d+_[a-z0-9]+$/;
 
     // RED.log takes ONE message, unlike console.error(a, b, c).
     function errText(e) {
@@ -62,6 +65,15 @@ function createLLMPluginServer(RED) {
     function clip(text, max) {
         const s = String(text === undefined || text === null ? '' : text);
         return s.length > max ? s.substring(0, max) + '[truncated]' : s;
+    }
+
+    // A deliberate refusal (`status` set where it was raised) keeps its code;
+    // anything else is a 500. The message is redacted either way.
+    function fail(res, error, fallback) {
+        const status = (error && error.status >= 400 && error.status < 500) ? error.status : 500;
+        return res.status(status).json({
+            error: redactSecrets((error && error.message) || fallback || 'Request failed')
+        });
     }
 
     function assertStorableSize(value, label) {
@@ -189,10 +201,8 @@ function createLLMPluginServer(RED) {
                     const filepath = path.join(chatsDir, file);
                     const content = fs.readFileSync(filepath, 'utf8');
                     const chatData = JSON.parse(content);
-                    // include the source filename so clients can request deletion by filename
-                    if (chatData && typeof chatData === 'object') {
-                        chatData.__file = file;
-                    }
+                    // Written into older files; the id is the handle now.
+                    if (chatData && typeof chatData === 'object') delete chatData.__file;
                     chatHistories[chatData.id] = chatData;
                 } catch (error) {
                     RED.log.error('[LLM Plugin] Error reading chat file ' + file + ': ' + errText(error));
@@ -205,17 +215,61 @@ function createLLMPluginServer(RED) {
         }
     }
 
+    // Every file holding this chat: saveChatHistory names them by the
+    // sanitised id, but the id inside is what identifies a file an older
+    // build named differently.
+    function deleteChatHistory(chatId) {
+        const safeChatId = sanitizeChatId(chatId);
+        if (!persistenceEnabled) {
+            delete memChats[safeChatId];
+            return;
+        }
+        if (!fs.existsSync(chatsDir)) return;
+        fs.readdirSync(chatsDir).filter(file => file.endsWith('.json')).forEach(file => {
+            const filepath = path.join(chatsDir, file);
+            try {
+                let match = file.endsWith(`-${safeChatId}.json`);
+                if (!match) {
+                    const chatData = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+                    match = !!chatData && chatData.id === chatId;
+                }
+                if (match) fs.unlinkSync(filepath);
+            } catch (e) {
+                RED.log.warn('[LLM Plugin] Could not check chat file ' + file + ': ' + errText(e));
+            }
+        });
+    }
+
+    function deleteCheckpointsOfChat(chatId) {
+        if (!persistenceEnabled) {
+            Object.keys(memCheckpoints).forEach(function(k) {
+                if (memCheckpoints[k].chatId === chatId) delete memCheckpoints[k];
+            });
+            return;
+        }
+        if (!fs.existsSync(checkpointsDir)) return;
+        fs.readdirSync(checkpointsDir).filter(file => CHECKPOINT_FILE_RE.test(file)).forEach(file => {
+            const head = readCheckpointHeader(file);
+            if (!head || head.chatId !== chatId) return;
+            try { fs.unlinkSync(path.join(checkpointsDir, file)); }
+            catch (e) { RED.log.warn('[LLM Plugin] Failed to remove checkpoint ' + file + ': ' + errText(e)); }
+        });
+    }
+
     // Prune oldest-first: an automated Agent loop must not grow the
     // directory without bound. The `flow` is the bulk of a file, so the
     // listing reads only enough to classify it.
+    function checkpointHeader(cp) {
+        return {
+            id: cp.id, chatId: cp.chatId || null, label: cp.label,
+            created: cp.created, meta: cp.meta || {},
+            nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
+        };
+    }
+
     function readCheckpointHeader(file) {
         try {
-            const cp = JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8'));
-            return {
-                id: cp.id, chatId: cp.chatId || null, label: cp.label,
-                created: cp.created, meta: cp.meta || {},
-                nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
-            };
+            return checkpointHeader(JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8')));
         } catch (e) { return null; }
     }
 
@@ -294,6 +348,9 @@ function createLLMPluginServer(RED) {
     // The mode has to be decided HERE because it chooses the instructions the
     // model is given; what stays client-side is only what happens to a reply
     // once it arrives.
+    //
+    // Bounded like the node (core.DEFAULT_TIMEOUT_MS), and abandoned when the
+    // sidebar goes away: its Stop button only closes the connection.
     RED.httpAdmin.post('/llm-plugin/generate', guard(PERM_WRITE), async function(req, res) {
         const { model, prompt, currentFlow, activeWorkspaceId, mode } = req.body;
         if (!model || !prompt) {
@@ -327,11 +384,15 @@ function createLLMPluginServer(RED) {
         const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId, settings,
             { mode: (mode === 'ask') ? 'ask' : 'agent' });
         const genStart = Date.now();
+        const abort = new AbortController();
+        res.on('close', function() { if (!res.writableFinished) abort.abort(); });
 
         try {
-            const response = await generateWithProvider(provider, settings, model, enhancedMessages);
+            const response = await generateWithProvider(provider, settings, model, enhancedMessages,
+                { timeoutMs: core.DEFAULT_TIMEOUT_MS, signal: abort.signal });
             res.json({ response: response, elapsed: Date.now() - genStart, model: model });
         } catch (error) {
+            if (abort.signal.aborted) return;      // nobody is left to answer
             // Log only safe fields  -  never log the full error object which may contain sensitive headers
             const safeErrorText = redactSecrets(error && error.message ? error.message : error);
             RED.log.error('[LLM Plugin] Generation error: ' + safeErrorText);
@@ -339,11 +400,12 @@ function createLLMPluginServer(RED) {
             const providerLabel = provider === 'ollama'
                 ? 'Ollama'
                 : (provider === 'custom' ? 'the custom OpenAI-compatible endpoint' : 'the LLM provider');
-            if (error.code === 'ECONNREFUSED') {
+            const code = error && error.code;
+            if (code === 'ECONNREFUSED') {
                 errorMessage = 'Could not connect to ' + providerLabel + '. Please ensure it is running and accessible.';
-            } else if (error.code === 'ECONNRESET') {
+            } else if (code === 'ECONNRESET') {
                 errorMessage = 'The connection to ' + providerLabel + ' was unexpectedly closed. Please check that the server is running and stable.';
-            } else if (error.message && error.message.includes('timeout')) {
+            } else if (code === 'ETIMEDOUT' || (error && error.message && error.message.includes('timeout'))) {
                 errorMessage = 'Request timed out. The model may be too slow or not responding.';
             } else {
                 errorMessage = redactSecrets(error && error.message ? error.message : error);
@@ -412,13 +474,15 @@ function createLLMPluginServer(RED) {
             '(the stored key is never sent to a new endpoint without confirmation).');
     }
 
+    const PROVIDERS = { ollama: 1, openai: 1, custom: 1 };
+
     RED.httpAdmin.post('/llm-plugin/settings', guard(PERM_WRITE), async function(req, res) {
         try {
             const body = req.body || {};
+            const provider = body.provider || 'ollama';
+            if (!PROVIDERS[provider]) throw badRequest('Unknown provider: ' + clip(provider, 40));
             // Whitelist: only persist known settings fields
-            const newSettings = {
-                provider: body.provider || 'ollama'
-            };
+            const newSettings = { provider: provider };
             const existing = getPluginSettings();
             newSettings.ollamaUrl = urlOrExisting(body.ollamaUrl, existing.ollamaUrl || 'http://localhost:11434');
             newSettings.customBaseUrl = urlOrExisting(body.customBaseUrl, existing.customBaseUrl || '');
@@ -446,24 +510,22 @@ function createLLMPluginServer(RED) {
             await savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
-            res.status(error && error.status === 400 ? 400 : 500)
-               .json({ error: redactSecrets(error.message) });
+            fail(res, error);
         }
     });
 
     // --- Chat history endpoints ---
-    RED.httpAdmin.get('/llm-plugin/chat-histories', guard(PERM_READ), function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/chats', guard(PERM_READ), function(req, res) {
         try {
-            const chatHistories = loadAllChatHistories();
-            res.json({ chatHistories: chatHistories });
+            res.json({ chatHistories: loadAllChatHistories() });
         } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
+            fail(res, error);
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/save-chat', guard(PERM_WRITE), function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/chats/save', guard(PERM_WRITE), function(req, res) {
         try {
-            const { chatId, chatData } = req.body;
+            const { chatId, chatData } = req.body || {};
             if (!chatId || !chatData) {
                 return res.status(400).json({ error: 'Chat ID and data required' });
             }
@@ -471,169 +533,43 @@ function createLLMPluginServer(RED) {
             saveChatHistory(chatId, chatData);
             res.json({ success: true });
         } catch (error) {
-            res.status(error && error.status === 400 ? 400 : 500)
-               .json({ error: redactSecrets(error.message) });
+            fail(res, error);
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/delete-chat', guard(PERM_WRITE), function(req, res) {
+    // Idempotent: a chat that is already gone is a success. Its checkpoints
+    // go with it.
+    RED.httpAdmin.post('/llm-plugin/chats/delete', guard(PERM_WRITE), function(req, res) {
         try {
-            const { chatId, filename } = req.body || {};
-
-            if (!persistenceEnabled) {
-                if (chatId) delete memChats[chatId];
-                Object.keys(memCheckpoints).forEach(function(k) {
-                    if (memCheckpoints[k] && memCheckpoints[k].chatId === chatId) delete memCheckpoints[k];
-                });
-                return res.json({ success: true });
+            const chatId = (req.body || {}).chatId;
+            if (!chatId || typeof chatId !== 'string') {
+                return res.status(400).json({ error: 'Chat ID required' });
             }
-
-            if (!fs.existsSync(chatsDir)) return res.json({ success: true });
-
-            function cleanupCheckpointsByChatId(targetChatId) {
-                if (!targetChatId) return;
-                try {
-                    const cpFiles = fs.readdirSync(checkpointsDir).filter(file => file.endsWith('.json'));
-                    cpFiles.forEach(file => {
-                        const fp = path.join(checkpointsDir, file);
-                        try {
-                            const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
-                            if (cp && cp.chatId === targetChatId) fs.unlinkSync(fp);
-                        } catch (e) {
-                            RED.log.warn('[LLM Plugin] Failed to clean up checkpoint file ' + file + ': ' + errText(e));
-                        }
-                    });
-                } catch (e) { /* ignore cleanup issues */ }
-            }
-
-            // If filename provided, only allow basename (no path traversal) and delete directly
-            if (filename && typeof filename === 'string') {
-                const safeName = path.basename(filename);
-                const filepath = path.resolve(chatsDir, safeName);
-                if (!filepath.startsWith(path.resolve(chatsDir) + path.sep)) {
-                    return res.status(400).json({ error: 'Invalid filename' });
-                }
-                if (fs.existsSync(filepath)) {
-                    let targetChatId = null;
-                    try {
-                        const content = fs.readFileSync(filepath, 'utf8');
-                        const chatData = JSON.parse(content);
-                        if (chatData && chatData.id) targetChatId = chatData.id;
-                    } catch (e) { /* ignore parse issues */ }
-                    fs.unlinkSync(filepath);
-                    cleanupCheckpointsByChatId(targetChatId || chatId || null);
-                    return res.json({ success: true });
-                }
-                // Already gone -> idempotent success
-                cleanupCheckpointsByChatId(chatId || null);
-                return res.json({ success: true });
-            }
-
-            // No filename yet: chats created in this editor session only
-            // learn their `__file` on the next history reload.
-            if (!chatId) return res.status(400).json({ error: 'Chat ID or filename required' });
-            const chatFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith('.json'));
-            let deleted = false;
-            chatFiles.forEach(file => {
-                try {
-                    const filepath = path.join(chatsDir, file);
-                    const content = fs.readFileSync(filepath, 'utf8');
-                    const chatData = JSON.parse(content);
-                    if (chatData && chatData.id === chatId) {
-                        fs.unlinkSync(filepath);
-                        deleted = true;
-                    }
-                } catch (e) {
-                    RED.log.error('[LLM Plugin] Error checking/deleting chat file ' + file + ': ' + errText(e));
-                }
-            });
-            // Always respond success if nothing found to keep idempotency
-            // Best-effort cleanup of checkpoints for this chat
-            cleanupCheckpointsByChatId(chatId);
-            return res.json({ success: deleted });
+            deleteChatHistory(chatId);
+            deleteCheckpointsOfChat(chatId);
+            return res.json({ success: true });
         } catch (error) {
-            RED.log.error('[LLM Plugin] Error deleting chat file: ' + errText(error));
-            return res.status(500).json({ error: redactSecrets(error.message) });
+            RED.log.error('[LLM Plugin] Error deleting chat: ' + errText(error));
+            return fail(res, error);
         }
     });
 
     // --- Checkpoint endpoints ---
-    RED.httpAdmin.post('/llm-plugin/checkpoint/save', guard(PERM_WRITE), function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/checkpoints/save', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
-            const chatId = body.chatId || null;
-            const label = body.label || 'checkpoint';
             const flow = Array.isArray(body.flow) ? body.flow : [];
             const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
-
             if (flow.length === 0) {
                 return res.status(400).json({ error: 'flow array is required' });
             }
-            assertStorableSize(flow, 'Checkpoint flow');
-            const cp = saveCheckpoint(chatId, clip(label, 200), flow, meta);
+            // The whole record, not just the flow: `meta` is caller-supplied too.
+            assertStorableSize({ flow: flow, meta: meta }, 'Checkpoint');
+            const chatId = body.chatId ? clip(body.chatId, 200) : null;
+            const cp = saveCheckpoint(chatId, clip(body.label || 'checkpoint', 200), flow, meta);
             return res.json({ checkpointId: cp.id, created: cp.created, label: cp.label });
         } catch (error) {
-            return res.status(error && error.status === 400 ? 400 : 500)
-                      .json({ error: redactSecrets(error.message || 'Failed to save checkpoint') });
-        }
-    });
-
-    // ------------------------------------------------------------------ //
-    //  Apply queue                                                        //
-    // ------------------------------------------------------------------ //
-    // Ordering only; the apply itself runs in the browser.
-    // See docs/{en,jp}/design.md §13.
-
-    RED.httpAdmin.get('/llm-plugin/apply-queue', guard(PERM_READ), function(req, res) {
-        try {
-            return res.json(applyQueue.state());
-        } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to read the apply queue') });
-        }
-    });
-
-    // PERM_WRITE: taking a turn is a claim on the flows, even though the
-    // write itself happens in the browser.
-    RED.httpAdmin.post('/llm-plugin/apply-queue/request', guard(PERM_WRITE), function(req, res) {
-        try {
-            const body = req.body || {};
-            return res.json(applyQueue.request({
-                clientId: body.clientId,
-                source: body.source,
-                label: body.label,
-                targetFlowIds: body.targetFlowIds,
-                undo: body.undo
-            }));
-        } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to queue the apply') });
-        }
-    });
-
-    RED.httpAdmin.post('/llm-plugin/apply-queue/complete', guard(PERM_WRITE), function(req, res) {
-        try {
-            const body = req.body || {};
-            const out = applyQueue.complete(String(body.entryId || ""), !!body.ok);
-            return res.status(out.ok ? 200 : 404).json(out);
-        } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to complete the apply') });
-        }
-    });
-
-    RED.httpAdmin.post('/llm-plugin/apply-queue/cancel', guard(PERM_WRITE), function(req, res) {
-        try {
-            const body = req.body || {};
-            const out = applyQueue.cancel(String(body.entryId || ""));
-            return res.status(out.ok ? 200 : 404).json(out);
-        } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to cancel the request') });
-        }
-    });
-
-    RED.httpAdmin.post('/llm-plugin/apply-queue/release', guard(PERM_WRITE), function(req, res) {
-        try {
-            return res.json(applyQueue.releaseHold());
-        } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to release the hold') });
+            return fail(res, error, 'Failed to save checkpoint');
         }
     });
 
@@ -645,12 +581,7 @@ function createLLMPluginServer(RED) {
             let heads;
             if (!persistenceEnabled) {
                 heads = Object.keys(memCheckpoints).map(function(k) {
-                    const cp = memCheckpoints[k];
-                    return {
-                        id: cp.id, chatId: cp.chatId || null, label: cp.label,
-                        created: cp.created, meta: cp.meta || {},
-                        nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
-                    };
+                    return checkpointHeader(memCheckpoints[k]);
                 });
             } else {
                 heads = fs.readdirSync(checkpointsDir)
@@ -666,15 +597,14 @@ function createLLMPluginServer(RED) {
             });
             return res.json({ checkpoints: heads });
         } catch (error) {
-            return res.status(500).json({
-                error: redactSecrets(error.message || 'Failed to list checkpoints')
-            });
+            return fail(res, error, 'Failed to list checkpoints');
         }
     });
-    RED.httpAdmin.get('/llm-plugin/checkpoint/:id', guard(PERM_READ), function(req, res) {
+
+    RED.httpAdmin.get('/llm-plugin/checkpoints/:id', guard(PERM_READ), function(req, res) {
         try {
-            const id = path.basename(String(req.params.id || ''));
-            if (!id || !/^cp_\d+_[a-z0-9]+$/.test(id)) {
+            const id = String(req.params.id || '');
+            if (!CHECKPOINT_ID_RE.test(id)) {
                 return res.status(400).json({ error: 'Invalid checkpoint id' });
             }
             if (!persistenceEnabled) {
@@ -682,17 +612,65 @@ function createLLMPluginServer(RED) {
                 if (!cp) return res.status(404).json({ error: 'Checkpoint not found' });
                 return res.json({ checkpoint: cp });
             }
-            const fp = path.resolve(checkpointsDir, id + '.json');
-            if (!fp.startsWith(path.resolve(checkpointsDir) + path.sep)) {
-                return res.status(400).json({ error: 'Invalid checkpoint id' });
-            }
+            const fp = path.join(checkpointsDir, id + '.json');
             if (!fs.existsSync(fp)) {
                 return res.status(404).json({ error: 'Checkpoint not found' });
             }
-            const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
-            return res.json({ checkpoint: cp });
+            return res.json({ checkpoint: JSON.parse(fs.readFileSync(fp, 'utf8')) });
         } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to load checkpoint') });
+            return fail(res, error, 'Failed to load checkpoint');
+        }
+    });
+
+    // ------------------------------------------------------------------ //
+    //  Apply queue                                                        //
+    // ------------------------------------------------------------------ //
+    // Ordering only; the apply itself runs in the browser.
+    // See docs/{en,jp}/design.md §13.
+
+    RED.httpAdmin.get('/llm-plugin/apply-queue', guard(PERM_READ), function(req, res) {
+        try {
+            return res.json(applyQueue.state());
+        } catch (error) {
+            return fail(res, error, 'Failed to read the apply queue');
+        }
+    });
+
+    // PERM_WRITE throughout: taking a turn is a claim on the flows, even
+    // though the write itself happens in the browser.
+    const queueActions = {
+        request: function(body) {
+            return applyQueue.request({
+                clientId: body.clientId,
+                source: body.source,
+                label: body.label,
+                targetFlowIds: body.targetFlowIds,
+                undo: body.undo
+            });
+        },
+        complete: function(body) { return applyQueue.complete(String(body.entryId || ''), !!body.ok); },
+        cancel: function(body) { return applyQueue.cancel(String(body.entryId || '')); },
+        release: function() { return applyQueue.releaseHold(); }
+    };
+    Object.keys(queueActions).forEach(function(action) {
+        RED.httpAdmin.post('/llm-plugin/apply-queue/' + action, guard(PERM_WRITE), function(req, res) {
+            try {
+                const out = queueActions[action](req.body || {});
+                return res.status(out.ok === false ? 404 : 200).json(out);
+            } catch (error) {
+                return fail(res, error, 'Apply queue ' + action + ' failed');
+            }
+        });
+    });
+
+    // An Agent-node reply is published to every editor; the first one to
+    // claim it applies it, the rest drop it. PERM_WRITE, so an editor that
+    // could not deploy the edit never makes it. See docs/{en,jp}/llm-request.md.
+    RED.httpAdmin.post('/llm-plugin/agent-apply/claim', guard(PERM_WRITE), function(req, res) {
+        try {
+            return res.json({ granted: agentDispatch.claim(String((req.body || {}).dispatchId || '')) });
+        } catch (error) {
+            return fail(res, error);
         }
     });
 
@@ -702,80 +680,62 @@ function createLLMPluginServer(RED) {
             writeClientEvent(body.level, body.event, body.message, body.meta);
             return res.json({ ok: true });
         } catch (error) {
-            return res.status(500).json({ ok: false, error: redactSecrets(error.message || 'Failed to write client log') });
+            return fail(res, error, 'Failed to write client log');
         }
     });
+
+    // ------------------------------------------------------------------ //
+    //  Static client files                                                //
+    // ------------------------------------------------------------------ //
+    // Unauthenticated by necessity (script and link tags send no auth
+    // header), so each route serves a fixed list and nothing else.
+
+    function serveFile(res, filePath, contentType) {
+        try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            res.setHeader('Content-Type', contentType);
+            res.send(content);
+        } catch (error) {
+            RED.log.error('[LLM Plugin] Error serving ' + path.basename(filePath) + ': ' + errText(error));
+            res.status(404).send('/* Not found */');
+        }
+    }
 
     // The bundled marked.js, so Markdown rendering works offline. Its
     // exports map hides lib/, hence resolving through package.json.
-    let markedJsCache = null;
     RED.httpAdmin.get('/llm-plugin/vendor/marked.js', function(req, res) {
+        let markedPath;
         try {
-            if (markedJsCache === null) {
-                const markedRoot = path.dirname(require.resolve('marked/package.json'));
-                markedJsCache = fs.readFileSync(path.join(markedRoot, 'lib', 'marked.umd.js'), 'utf8');
-            }
-            res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-            res.send(markedJsCache);
+            markedPath = path.join(path.dirname(require.resolve('marked/package.json')), 'lib', 'marked.umd.js');
         } catch (error) {
-            RED.log.error('[LLM Plugin] Error serving marked.js: ' + errText(error));
-            res.status(404).send('/* marked.js not available */');
+            return res.status(404).send('/* marked.js not available */');
         }
+        serveFile(res, markedPath, 'application/javascript; charset=utf-8');
     });
 
-    RED.httpAdmin.get('/llm-plugin_styles.css', function(req, res) {
-        try {
-            const cssPath = path.join(__dirname, '..', 'llm-plugin_styles.css');
-            if (fs.existsSync(cssPath)) {
-                res.setHeader('Content-Type', 'text/css; charset=utf-8');
-                const cssContent = fs.readFileSync(cssPath, 'utf8');
-                res.send(cssContent);
-            } else {
-                res.status(404).send('/* CSS file not found */');
-            }
-        } catch (error) {
-            RED.log.error('[LLM Plugin] Error serving CSS: ' + errText(error));
-            res.status(500).send('/* Error loading CSS */');
-        }
+    RED.httpAdmin.get('/llm-plugin/styles.css', function(req, res) {
+        serveFile(res, path.join(__dirname, '..', 'llm-plugin_styles.css'), 'text/css; charset=utf-8');
     });
 
-    RED.httpAdmin.get('/llm-plugin/src/*', function(req, res) {
-        try {
-            const relPathRaw = String((req.params && req.params[0]) || '');
-            const normalized = path.normalize(relPathRaw).replace(/\\/g, '/');
-            // Prevent path traversal / absolute paths
-            if (!normalized || normalized.indexOf('..') !== -1 || normalized.startsWith('/')) {
-                return res.status(400).send('Invalid file');
-            }
-            const filePath = path.join(__dirname, normalized);
-            const srcRoot = path.join(__dirname);
-            const relativePath = path.relative(srcRoot, filePath);
-            if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-                return res.status(400).send('Invalid file path');
-            }
-            // This route is unauthenticated by necessity (script tags send no
-            // headers), so it hands out an allowlist, not whatever is in src/.
-            const CLIENT_ASSET_TYPES = {
-                '.js': 'application/javascript; charset=utf-8',
-                '.css': 'text/css; charset=utf-8',
-                '.json': 'application/json; charset=utf-8'
-            };
-            const ext = path.extname(filePath).toLowerCase();
-            if (!CLIENT_ASSET_TYPES[ext]) {
-                return res.status(404).send('/* Not found */');
-            }
-            if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-                const contentType = CLIENT_ASSET_TYPES[ext];
-                res.setHeader('Content-Type', contentType);
-                const content = fs.readFileSync(filePath, 'utf8');
-                res.send(content);
-            } else {
-                res.status(404).send('/* Not found */');
-            }
-        } catch (error) {
-            RED.log.error('[LLM Plugin] Error serving client file: ' + errText(error));
-            res.status(500).send('/* Error */');
-        }
+    // Exactly what client.js loads — never the server-side modules beside
+    // them. test/http_transport.test.js keeps the two lists equal.
+    const CLIENT_FILES = [
+        'client.js',
+        'common.js',
+        'core/canvas_layout.js',
+        'core/flow_converter_core.js',
+        'core/llm_json_parser.js',
+        'apply_queue.js',
+        'chat_manager.js',
+        'importer.js',
+        'ui_core.js',
+        'vibe_ui.js',
+        'agent_apply.js'
+    ];
+    CLIENT_FILES.forEach(function(file) {
+        RED.httpAdmin.get('/llm-plugin/src/' + file, function(req, res) {
+            serveFile(res, path.join(__dirname, file), 'application/javascript; charset=utf-8');
+        });
     });
 
     RED.log.info("[LLM Plugin] Server initialized successfully");

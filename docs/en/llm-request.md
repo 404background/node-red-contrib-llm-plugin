@@ -20,7 +20,7 @@ and URLs are inherited from the **LLM Plugin sidebar** (Settings).
 | Provider | Ollama / OpenAI / Custom. Keys & URLs come from the sidebar. |
 | Model | Free text (e.g. `llama3.1`, `gpt-4o-mini`); **required**. `msg.model` overrides per message. |
 | Flows | Multi-select (none / one / many). Sent to the LLM as context in **both** modes; the list refreshes when the `llm-request` node is opened. |
-| API URL | Admin API base used to read flow context — normally the URL the editor is served at (standalone `http://localhost:1880`; embedded: the `httpAdminRoot` base, e.g. `http://localhost:8000/red`). Accepts a string or a **flow/global** context variable. Blank = auto-detect (recommended; works when embedded on a non-1880 port). `msg.editorUrl` overrides; if the configured URL fails, the node falls back to auto-detection with a warning. |
+| API URL | Admin API base used to read flow context — normally the URL the editor is served at (standalone `http://localhost:1880`; embedded: the `httpAdminRoot` base, e.g. `http://localhost:8000/red`). Accepts a string, a **flow/global** context variable, or a **msg** property. Blank = auto-detect (recommended; works when embedded on a non-1880 port). A URL is read from the message only when the field is set to `msg`: the node fetches from that URL, so message data must not choose it by default. If the configured URL fails, the node falls back to auto-detection with a warning. |
 | Timeout | Seconds; default **3600** (1 h — local LLMs can be slow). `0` = no limit. `msg.timeout` overrides per message. |
 | Auto deploy | **Agent only, developer feature.** When checked, the editor deploys immediately after applying the changes (`RED.actions.invoke('core:deploy-flows', true)` — the editor's own Deploy with validation skipped, so no confirmation dialog can stall an unattended loop and the dirty state clears properly). The deploy is async: the editor's own deploy toast reports the outcome. No review step; keep a single editor open; prefer the Modified Nodes/Flows deploy type; use only on disposable dev instances. **Security:** with no review step and no node-type restriction, a generated `function` / `exec` node runs on this host — never drive an `llm-request` node in Agent mode from untrusted input. |
 
@@ -43,6 +43,8 @@ it would need is the plugin's already.
 
 - The `llm-request` node's **Flows** selection is passed to the importer as the write scope, exactly as the sidebar passes a message's `targetFlowIds`: the flows sent to the model are the only flows the reply may modify. Selecting nothing sends no flow context and keeps the legacy active-tab behaviour. See [docs/en/architecture.md](./architecture.md) — `importer.js`, guarantee 2.
 - An **editor must be open** with the plugin loaded; headless runs have no canvas.
+  With several open, the reply reaches all of them but only the first to claim
+  it applies it (write permission required), so it is never applied twice.
 - **No chat history** for anything driven through an `llm-request` node (unlike
   the sidebar), but the edit is still undoable: the editor saves a checkpoint of
   the target flows immediately before applying, tagged `node-apply`, and the
