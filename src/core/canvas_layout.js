@@ -213,6 +213,29 @@
         return { outgoing: outgoing, incoming: incoming };
     }
 
+    // Connected sequences over the wires: `{ id: componentIndex }`.
+    function wiredComponents(nodes) {
+        let list = (nodes || []).filter(function(n) { return n && n.id; });
+        let byId = {};
+        list.forEach(function(n) { byId[n.id] = n; });
+        let adj = buildWireAdjacency(list, byId);
+        let compOf = {};
+        let cid = 0;
+        list.forEach(function(n) {
+            if (compOf[n.id] !== undefined) return;
+            let queue = [n.id];
+            compOf[n.id] = cid;
+            while (queue.length > 0) {
+                let cur = queue.shift();
+                adj.outgoing[cur].concat(adj.incoming[cur]).forEach(function(next) {
+                    if (compOf[next] === undefined) { compOf[next] = cid; queue.push(next); }
+                });
+            }
+            cid++;
+        });
+        return compOf;
+    }
+
     // `spacingY` and `gap` are EDGE-TO-EDGE clearances, so each pitch is
     // `nodeHeight + `the clearance. See docs/{en,jp}/layout.md — Defaults.
     function computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight) {
@@ -1011,28 +1034,7 @@
         // Compute connected components over the live wire adjacency.
         // Used by Step 3.5a (within-component sibling nudge) and Step 3.5b
         // (cross-component push-down).
-        let compOf = {};
-        (function discoverComponents() {
-            let visited = {};
-            let cid = 0;
-            canvasNodes.forEach(function(n) {
-                if (visited[n.id]) return;
-                let queue = [n.id];
-                visited[n.id] = true;
-                while (queue.length > 0) {
-                    let cur = queue.shift();
-                    compOf[cur] = cid;
-                    let neighbors = (outgoing[cur] || []).concat(incoming[cur] || []);
-                    for (let i = 0; i < neighbors.length; i++) {
-                        if (!visited[neighbors[i]]) {
-                            visited[neighbors[i]] = true;
-                            queue.push(neighbors[i]);
-                        }
-                    }
-                }
-                cid++;
-            });
-        })();
+        let compOf = wiredComponents(canvasNodes);
 
         // Step 3.5a: within-component sibling nudge — when a newly-placed
         // node ends up at the same row as a same-component node (e.g. two
@@ -1512,23 +1514,21 @@
     // be. PER BOX, not per block: two sequences wired to each other are one
     // block, and a reposition leaves exactly that pair stepped.
     //
-    // A box is not moved when something in no box at all sits to its left in
-    // the same block — a box drawn around the middle of a chain has the nodes
-    // feeding it over there, and dragging those sideways is not an alignment.
-    // Boxes never block each other.
+    // A box is not moved when its block holds a node in no box at all — the
+    // chain feeding it, or a node hanging off it — since only the box would
+    // move and the wire between them would shear. Boxes never block each other.
+    //
+    // With `touchedIds` (an edit to an existing canvas) only boxes holding
+    // something this edit placed move, and they line up with the untouched
+    // ones: the user's column is the reference, not the canvas origin.
     function alignBoxesLeft(blocks, groups, byId, anchors, opts) {
         let blockOf = {};
         blocks.forEach(function(b, i) { b.nodes.forEach(function(n) { blockOf[n.id] = i; }); });
-
-        let looseLeft = {};
-        Object.keys(byId).forEach(function(id) {
-            let n = byId[id];
-            if (n.type === 'group' || n.g) return;
-            let bi = blockOf[n.id];
-            if (bi === undefined) return;
-            let left = n.x - getNodeWidth(n, opts) / 2;
-            if (looseLeft[bi] === undefined || left < looseLeft[bi]) looseLeft[bi] = left;
-        });
+        let touched = null;
+        if (Array.isArray(opts.touchedIds)) {
+            touched = {};
+            opts.touchedIds.forEach(function(id) { touched[id] = true; });
+        }
 
         // What lines up is the SEQUENCE, read from its members' own left
         // edges rather than the box drawn around them: a box the user made
@@ -1539,16 +1539,21 @@
             if (g.g) return;                             // a nested box follows its parent
             let bi = blockOf[g.id];
             if (bi === undefined) return;
-            let loose = looseLeft[bi];
-            if (loose !== undefined && g.x > loose + 0.5) return;
             let contents = boxContents(g, byId, anchors);
+            let inBox = {};
+            contents.forEach(function(n) { inBox[n.id] = true; });
+            let loose = blocks[bi].nodes.some(function(n) {
+                return !inBox[n.id] && n.type !== 'group' && !n.g;
+            });
+            if (loose) return;
             let left = Infinity;
             contents.forEach(function(n) {
                 if (n.type === 'group') return;
                 let l = n.x - getNodeWidth(n, opts) / 2;
                 if (l < left) left = l;
             });
-            if (isFinite(left)) movable.push({ group: g, contents: contents, left: left });
+            let edited = !touched || contents.some(function(n) { return touched[n.id]; });
+            if (isFinite(left)) movable.push({ group: g, contents: contents, left: left, edited: edited });
         });
         // Alignment is for sequences STACKED one above another. Two boxes
         // whose rows overlap are side by side, or interlocked because a node
@@ -1568,9 +1573,12 @@
         // drag every other one out there with it, and "aligned" would come to
         // mean "flush against the side of the screen".
         let startX = pickOption(opts, 'startX', LAYOUT_DEFAULTS.startX);
-        let target = movable.reduce(function(min, m) { return Math.min(min, m.left); }, Infinity);
-        if (target < startX) target = startX;
+        let reference = movable.filter(function(m) { return !m.edited; });
+        let target = (reference.length > 0 ? reference : movable)
+            .reduce(function(min, m) { return Math.min(min, m.left); }, Infinity);
+        if (reference.length === 0 && target < startX) target = startX;
         movable.forEach(function(m) {
+            if (!m.edited) return;
             let dx = target - m.left;
             if (!dx) return;
             m.contents.forEach(function(n) { n.x = n.x + dx; });
@@ -1744,6 +1752,7 @@
         captureCommentAnchors:        captureCommentAnchors,
         applyCommentAnchors:          applyCommentAnchors,
         nudgeFreeCaptions:            nudgeFreeCaptions,
+        wiredComponents:              wiredComponents,
         fitGroups:                    fitGroups,
         separateGroups:               separateGroups,
         keepLeftEdges:                keepLeftEdges,

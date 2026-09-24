@@ -244,10 +244,11 @@ Connections are otherwise additive — see [docs/en/architecture.md](./architect
 
 Node-RED calls two different things a flow: a **tab**, and one **connected
 sequence** of nodes. The schema separates them — `flow` on a node is always the
-tab label; a sequence is a **group**, the box the editor draws around a set of
-nodes. So "give me three flows in here" is three sequences in one tab, each in
-its own group, and only "in a new tab" means a tab. The prompt says this in as
-many words; see [design.md §15](./design.md#15-a-flow-a-tab-and-a-group).
+tab label; a sequence can be boxed by a **group**, the box the editor draws
+around a set of nodes. So "give me three flows in here" is three sequences in one
+tab, and only "in a new tab" means a tab. A sequence gets a box when it has more
+than five nodes or when the user asks for one. The prompt says this in as many
+words; see [design.md §15](./design.md#15-a-flow-a-tab-and-a-group).
 
 ```json
 {
@@ -270,8 +271,15 @@ many words; see [design.md §15](./design.md#15-a-flow-a-tab-and-a-group).
 - Membership is **additive**, like wires: the aliases listed join the box and
   the members already in it stay. A member that resolves to a config node, or
   to a node on another tab, is dropped — a group cannot span tabs.
+- A group holds **one connected sequence**. A listed node that is not wired into
+  the sequence already in the box is not added; the user gets a warning. A new
+  node wired into a boxed sequence joins that box without being listed.
+- Members may be **group aliases**: `{ "group_all": { "nodes": ["group_a",
+  "group_b"] } }` nests two boxes in a new one. That is how boxes are gathered.
 - `{ "groups": { "group_collector": null } }` deletes the **box**. The nodes
-  inside it stay on the canvas, and the `g` they pointed at is cleared.
+  inside it stay on the canvas, and the `g` they pointed at is cleared. This is
+  the only way a box that exists goes away: one whose members were all deleted
+  stays.
 - Omitted keys keep what the box has: re-declaring a group with only `nodes`
   keeps its name.
 - The **box itself is computed here**, not by the editor: Node-RED stores

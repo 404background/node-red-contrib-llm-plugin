@@ -19,7 +19,7 @@ const TABS = [{ id: 'tab1', type: 'tab', label: 'Flow 1' }];
 
 function loadSandbox(opts) {
   const mock = buildEditorMock(opts);
-  return { LLMPlugin: loadPluginSandbox(mock.RED), snapshot: mock.snapshot, idsIn: mock.idsIn };
+  return { LLMPlugin: loadPluginSandbox(mock.RED), snapshot: mock.snapshot, idsIn: mock.idsIn, RED: mock.RED };
 }
 
 function groupsIn(snapshot) {
@@ -380,21 +380,22 @@ async function scenarioRepositionTakesTheCaptionAlong() {
 // the groups happened to be written in.
 async function scenarioAMemberMovedLeavesTheBoxItCameFrom() {
   console.log('\nA member moved to another box leaves the one it came from');
+  // One sequence split over two boxes: a -> da -> db.
   const liveNodes = [
     { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
-    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 450, y: 215, g: 'gA', wires: [] },
-    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 250, y: 365, g: 'gB', wires: [] },
+    { id: 'a2', type: 'function', z: 'tab1', name: 'da', x: 410, y: 215, g: 'gA', wires: [['b1']] },
+    { id: 'b1', type: 'debug', z: 'tab1', name: 'db', x: 570, y: 365, g: 'gB', wires: [] },
   ];
   const liveGroups = [
-    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 360, h: 80 },
-    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 175, y: 325, w: 260, h: 80 },
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 310, h: 80 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 495, y: 325, w: 150, h: 80 },
   ];
 
   const { LLMPlugin, snapshot } = loadSandbox({
-    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+    tabs: TABS, nodes: clone(liveNodes.slice().reverse()), groups: clone(liveGroups), activeId: 'tab1',
   });
   const res = await LLMPlugin.Importer.importFlowFromMessage(
-    fence({ groups: { group_b: { name: 'B', nodes: ['debug_da'] } } }),
+    fence({ groups: { group_b: { name: 'B', nodes: ['function_da'] } } }),
     { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
   );
   const flow = snapshot('tab1');
@@ -406,11 +407,176 @@ async function scenarioAMemberMovedLeavesTheBoxItCameFrom() {
   ok((boxB.nodes || []).indexOf('a2') !== -1, 'the new box lists it');
   ok((boxA.nodes || []).indexOf('a2') === -1,
     'and the old one does not (' + (boxA.nodes || []).join(',') + ')');
-  // Membership with no position leaves the box reaching across the canvas.
-  ok(moved.y > 215 && boxB.y <= moved.y - 15 && boxB.y + boxB.h >= moved.y + 15,
-    'it was placed inside the box it joined (node ' + moved.y + ', box ' +
-      boxB.y + '..' + (boxB.y + boxB.h) + ')');
-  ok(boxA.y + boxA.h < boxB.y, 'so the two boxes no longer overlap');
+  ok(boxHolds(boxB, [moved]), 'the box it joined was fitted around it');
+  ok(boxA.y + boxA.h <= boxB.y || boxB.y + boxB.h <= boxA.y ||
+     boxA.x + boxA.w <= boxB.x || boxB.x + boxB.w <= boxA.x,
+    'and the two boxes do not overlap');
+  ok(JSON.stringify(moved.wires) === JSON.stringify([['b1']]), 'its wire is untouched');
+}
+
+// One box holds one wired sequence (docs/{en,jp}/design.md §15). A node from a
+// different sequence is not pulled in: the box would have to stretch across
+// whatever lies between, and the two chains would read as one.
+async function scenarioAnotherSequenceStaysOutOfTheBox() {
+  console.log('\nA node from another sequence is not put into the box');
+  const liveNodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 450, y: 215, g: 'gA', wires: [] },
+    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 250, y: 365, g: 'gB', wires: [] },
+  ];
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 360, h: 80 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 175, y: 325, w: 260, h: 80 },
+  ];
+  const { LLMPlugin, snapshot, RED } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const notes = [];
+  RED.notify = (m) => { notes.push(String(m)); };
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ groups: { group_b: { nodes: ['debug_da'] } } }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  ok(res && res.ok, 'the import applied');
+  ok(nodeById(flow, 'a2').g === 'gA', 'the node stays in its own box (' + nodeById(flow, 'a2').g + ')');
+  ok((nodeById(flow, 'gB').nodes || []).join(',') === 'b1', 'the other box is unchanged');
+  ok(nodes2d(flow).every((n) => n.x === liveNodes.find((l) => l.id === n.id).x),
+    'nothing moved');
+  ok(notes.some((m) => /debug_da/.test(m)), 'and the user is told why (' + notes.join(' | ') + ')');
+}
+
+function nodes2d(flow) { return flow.filter((n) => n && n.type !== 'group' && n.type !== 'tab'); }
+
+// A box is removed only when a reply maps its alias to null. Emptied by
+// deleting its members, or drawn empty by the user, it stays — the same as the
+// editor, which keeps a group whose members were deleted.
+async function scenarioAnExistingBoxIsNeverRemovedImplicitly() {
+  console.log('\nAn existing box stays unless the reply deletes it by name');
+  const liveNodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 450, y: 215, g: 'gA', wires: [] },
+    { id: 'c1', type: 'inject', z: 'tab1', name: 'c', x: 250, y: 400, wires: [] },
+  ];
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 360, h: 80 },
+    { id: 'gE', type: 'group', z: 'tab1', name: 'Empty', nodes: [], x: 600, y: 500, w: 200, h: 80 },
+  ];
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ nodes: { inject_a: null, debug_da: null, inject_c: { type: 'inject', name: 'c', props: { topic: 't' } } } }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  ok(res && res.ok, 'the import applied');
+  ok(!nodeById(flow, 'a1') && !nodeById(flow, 'a2'), 'the members were deleted as asked');
+  ok(!!nodeById(flow, 'gA'), 'the box they were in is still there');
+  ok(!!nodeById(flow, 'gE'), 'and so is the one the user drew empty');
+}
+
+// Wiring two boxed sequences together is an edit to the wires, not to the
+// boxes: both stay, with their members, where they were.
+async function scenarioWiringAcrossBoxesMovesNothing() {
+  console.log('\nA wire between two boxes keeps both boxes where they are');
+  const liveNodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 120, y: 100, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'function', z: 'tab1', name: 'fa', x: 280, y: 100, g: 'gA', wires: [] },
+    { id: 'b1', type: 'function', z: 'tab1', name: 'fb', x: 120, y: 260, g: 'gB', wires: [['b2']] },
+    { id: 'b2', type: 'debug', z: 'tab1', name: 'db', x: 280, y: 260, g: 'gB', wires: [] },
+  ];
+  // Left of the layout's own origin, where a user's flow often sits.
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 45, y: 55, w: 310, h: 90 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1', 'b2'], x: 45, y: 215, w: 310, h: 90 },
+  ];
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ connections: [{ from: 'function_fa', to: 'function_fb' }] }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  ok(res && res.ok, 'the import applied');
+  ok(JSON.stringify(nodeById(flow, 'a2').wires) === JSON.stringify([['b1']]), 'the wire was added');
+  ok(nodeById(flow, 'gA').nodes.join(',') === 'a1,a2' && nodeById(flow, 'gB').nodes.join(',') === 'b1,b2',
+    'each box keeps its members');
+  ok(liveNodes.every((l) => nodeById(flow, l.id).x === l.x && nodeById(flow, l.id).y === l.y),
+    'and no node moved (' + nodes2d(flow).map((n) => n.id + '@' + n.x + ',' + n.y).join(' ') + ')');
+  ok(nodeById(flow, 'gA').x === 45 && nodeById(flow, 'gB').x === 45, 'nor did either box');
+}
+
+// The model often leaves the box out when it extends a boxed sequence. The
+// new node is part of that sequence, so it belongs in the box; left outside,
+// the box and the node it no longer covers were aligned apart.
+async function scenarioANewNodeJoinsTheBoxItIsWiredInto() {
+  console.log('\nA new node wired into a boxed sequence joins that box');
+  const liveNodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 120, y: 100, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'function', z: 'tab1', name: 'fa', x: 280, y: 100, g: 'gA', wires: [] },
+    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 120, y: 260, g: 'gB', wires: [] },
+  ];
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 45, y: 55, w: 310, h: 90 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 45, y: 215, w: 150, h: 90 },
+  ];
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({
+      nodes: { change_x: { type: 'change', name: 'x' }, debug_y: { type: 'debug', name: 'y' } },
+      connections: [{ from: 'function_fa', to: 'change_x' }, { from: 'change_x', to: 'debug_y' }],
+    }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  const boxA = nodeById(flow, 'gA');
+  const x = byName(flow, 'x'), y = byName(flow, 'y');
+  ok(res && res.ok, 'the import applied');
+  ok(!!x && x.g === 'gA' && !!y && y.g === 'gA', 'both new nodes joined the box, the far one too');
+  ok(boxHolds(boxA, nodes2d(flow).filter((n) => n.g === 'gA')), 'and the box was fitted around them');
+  const members = nodes2d(flow);
+  const clash = members.some((m, i) => members.some((o, j) => j > i &&
+    Math.abs(m.x - o.x) < 100 && Math.abs(m.y - o.y) < 30));
+  ok(!clash, 'no two nodes overlap (' + members.map((n) => n.id.slice(0, 4) + '@' + n.x + ',' + n.y).join(' ') + ')');
+}
+
+// "Put these groups together" nests them: a new box whose members are boxes.
+// Each inner box still holds its one sequence.
+async function scenarioGroupsNestInANewGroup() {
+  console.log('\nTwo boxes gathered into a new one are nested, not merged');
+  const liveNodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 100, g: 'gA', wires: [['a2']] },
+    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 410, y: 100, g: 'gA', wires: [] },
+    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 250, y: 260, g: 'gB', wires: [['b2']] },
+    { id: 'b2', type: 'debug', z: 'tab1', name: 'db', x: 410, y: 260, g: 'gB', wires: [] },
+  ];
+  const liveGroups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 55, w: 310, h: 90 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1', 'b2'], x: 175, y: 215, w: 310, h: 90 },
+  ];
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(
+    fence({ groups: { group_all: { name: 'All', nodes: ['group_a', 'group_b'] } } }),
+    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
+  );
+  const flow = snapshot('tab1');
+  const outer = groupsIn(flow).find((g) => g.name === 'All');
+  ok(res && res.ok, 'the import applied');
+  ok(!!outer && outer.nodes.join(',') === 'gA,gB', 'the new box holds the two boxes');
+  ok(nodeById(flow, 'gA').g === outer.id && nodeById(flow, 'gB').g === outer.id,
+    'and each says which box it is in');
+  ok(nodeById(flow, 'gA').nodes.join(',') === 'a1,a2' && nodeById(flow, 'gB').nodes.join(',') === 'b1,b2',
+    'the inner boxes keep their sequences');
+  ok(['gA', 'gB'].every((id) => {
+    const g = nodeById(flow, id);
+    return outer.x < g.x && outer.y < g.y && outer.x + outer.w > g.x + g.w && outer.y + outer.h > g.y + g.h;
+  }), 'and the outer box is drawn around both');
 }
 
 async function scenarioCaptionJoinsTheBoxItHeads() {
@@ -489,6 +655,11 @@ async function run() {
   await scenarioRepositioningABoxMovesItsMembers();
   await scenarioRepositionTakesTheCaptionAlong();
   await scenarioAMemberMovedLeavesTheBoxItCameFrom();
+  await scenarioAnotherSequenceStaysOutOfTheBox();
+  await scenarioAnExistingBoxIsNeverRemovedImplicitly();
+  await scenarioWiringAcrossBoxesMovesNothing();
+  await scenarioANewNodeJoinsTheBoxItIsWiredInto();
+  await scenarioGroupsNestInANewGroup();
   await scenarioCaptionJoinsTheBoxItHeads();
   scenarioContextRoundTrip();
   summary();

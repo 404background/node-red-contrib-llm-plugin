@@ -25,6 +25,7 @@ decisions and priorities**.
 | **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser (both sidebar and Agent node). |
 | **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
 | **The snapshot must be the "complete flow"** | The snapshot is both the merge base and the rollback state, and the fallback apply still clears the target workspace, so any canvas entity missing from it can still disappear. → junctions / groups must be included (§7). |
+| **Keep what the reply does not name** | One rule behind several mechanisms: anything a reply does not mention stays as it is, and removing something takes an explicit instruction. Wires are added, never cut by omission (§4.1). Properties that are not mentioned keep their values (§4.2). Config nodes are never created or deleted (§5). Junctions and groups are kept in the snapshot (§7). Group membership is additive, and a box is removed only by `null`, never because it became empty (§15). An untouched flow is translated as a whole, never reflowed, and an untouched box is not realigned ([layout.md](./layout.md)). A new mechanism starts from this default. |
 
 ### The metadata boundary (`_`-prefixed properties)
 
@@ -101,6 +102,7 @@ The Agent node (`node/llm-request`) also publishes the response to the editor vi
   the flow (it cannot explain what it cannot see) and told that a schema is
   useless here, because nothing in that mode can apply one.
 - **Node references are not a mode feature.** Both prompts ask for the node's alias in backticks, and the sidebar annotates every assistant reply the same way, so a name in an answer is a link that reveals the node on the canvas — which is most of what makes a diagnosis useful.
+- **A prompt holds only what the model decides.** What the code settles on its own is left out: merge semantics beyond "a delta, `null` deletes", layout, comment stacking, which box a wired node joins, what happens to an emptied box, the tab an untagged node lands on. Describing it costs tokens on every turn, and the prompt goes stale as the code changes. Rationale belongs here, not in the prompt.
 - **The apply side still does not branch on mode.** Splitting the apply body is
   how you get bugs that break one side only, so `importFlowFromMessage` barely
   looks at it (only `mode==='agent'` reaches the parser, for partial-schema
@@ -340,11 +342,9 @@ A node belongs to exactly ONE box, so a member the schema moves has to leave the
 list of the box it came from. While both lists named it, the old box stayed
 stretched across the canvas to reach a node it no longer held, and which half of
 the membership won came down to the order the groups happened to be written in.
-And "put this node in that box" moves membership, not the node: one wired into
-the sequence there is placed beside its neighbours by the ordinary pass, but one
-wired to nothing in the box is appended below the members that were already
-there — otherwise the box has to stretch across the canvas to reach it, over
-whatever sits in between.
+And "put this node in that box" moves membership, not the node. Because a box
+holds one sequence (§15), a node that joins one is always part of the sequence
+already in it, so the ordinary pass has already placed it beside its neighbours.
 
 The other half of that relationship is the group's own `nodes` list, and Node-RED
 does not maintain it for us — `RED.nodes.remove` has no group bookkeeping at all
@@ -633,10 +633,12 @@ separate sequences into one chain just because they were asked for together.
 
 Both halves are needed, and they fix different failures:
 
-- **The prompt** now states the distinction, tells the model to build that many
-  independent sequences when asked for several flows / sequences / pipelines /
-  groups, and to wrap each in its own group. Without this the model reached for
-  the shape it knows best — one chain from one trigger.
+- **The prompt** now states the distinction, and tells the model to build that
+  many independent sequences when asked for several flows / sequences /
+  pipelines, and to box a sequence when it has more than five nodes or when the
+  user asks for a group. A box around two or three nodes only adds clutter; the
+  layout already gives each sequence its own band. Without this the model
+  reached for the shape it knows best: one chain from one trigger.
 - **The schema** grew `groups: { alias: { name, nodes: [aliases] } }`
   ([vibe-schema.md](./vibe-schema.md#groups--a-flow-in-the-sequence-sense)).
   A group is addressed by alias like a node, so a later turn edits the box it was
@@ -664,9 +666,9 @@ user made larger alone.
 
 A **caption joins the box it heads.** The padding is one row, so a comment
 anchored to the first member lands exactly on the top edge and reads as a stray
-label rather than a heading. Only a comment *this schema added*, and only into a
-group *this schema declared*, is pulled in — an existing comment would register
-as a membership change nobody asked for.
+label rather than a heading. Only a comment *this schema added* is pulled in,
+into the box that holds the node it heads. Pulling in an existing comment would
+register as a membership change nobody asked for.
 
 Membership is also two-sided in the editor: `g` on the member, the id in the
 group's `nodes` list. Only the members a schema named get their `g` written — an
@@ -674,6 +676,36 @@ existing group's own bookkeeping is not an unrelated edit's business, and
 "repairing" it would register as a change and send the whole apply down the
 rebuild path. A `g` naming a group that is no longer there is cleared, because
 that is what a deleted box leaves behind.
+
+### One box, one sequence
+
+A box holds exactly **one connected sequence**, meaning one component of the
+wire graph. Captions and nested boxes don't count as sequences. This one rule
+settles the operations a user asks for once boxes exist:
+
+- **Wiring two boxes together** is a change to the wires only. Both boxes stay
+  where they are, with the members they had. The sequence now runs through two
+  boxes, and each box still holds one part of it.
+- **Gathering boxes** means nesting: a new group whose members are group
+  aliases. Each inner box keeps its own sequence, and `fitGroups` fits the inner
+  boxes first. **Merging** two sequences into one box works only once they are
+  wired together. After that, listing one box's members in the other moves them.
+  The emptied box stays until the reply maps it to `null`.
+- **A member from a different sequence is not added.** The box would have to
+  stretch across whatever lies between the two chains, and they would read as
+  one. The node stays where it was, and the user gets a warning naming it.
+  Earlier, such a node was stacked below the box. That pass is gone: every node
+  that joins a box is now already part of its sequence.
+- **A new node wired into a boxed sequence joins that box**, as long as every
+  box among its neighbours is the same one. The model often leaves the box out
+  when it extends a sequence. Left outside, the node was separated from the box
+  it belongs to by the alignment pass.
+
+A box is never removed implicitly. When all of its members are deleted, or the
+user drew it empty, the box stays, as it does in the editor, which also keeps a
+group whose members were deleted. The one exception is a box *this reply
+declared* whose members all failed to resolve, which would only be an empty
+frame nobody asked for.
 
 ### What the model sees
 
@@ -689,7 +721,10 @@ to: they would have to appear among the nodes.
   boxes nodes that are already there; re-declaring a group adds to it instead of
   emptying it, and keeps its name; deleting the box keeps the nodes and clears
   their `g`; two sequences get two boxes that do not overlap; a new caption is
-  drawn inside the box it heads; and the context presents a group as a group
+  drawn inside the box it heads; a node from another sequence stays out of a box,
+  with a warning; an existing box survives losing all its members; wiring two
+  boxes together moves nothing; a new node wired into a boxed sequence joins it;
+  two boxes gather into a nested one; and the context presents a group as a group
   while leaving every node alias where it was. `test/json_repair.test.js` also
   pins the array rule above, because a group's member list is exactly the kind
   of array a broken expression elsewhere in the reply used to take down.

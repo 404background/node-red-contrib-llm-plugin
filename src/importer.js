@@ -376,79 +376,6 @@
     //  Rebuild Workspace Flow                                             //
     // ================================================================== //
 
-    // "Put this node in that group" moves membership, not the node. If it is
-    // wired into the sequence there, the placement pass has already put it
-    // beside its neighbours; if it is wired to nothing in the box, nothing
-    // moves it at all, and the box has to stretch across the canvas to hold
-    // it — over whatever sits in between. Such a node is appended below the
-    // members that were already there. Only for a box that EXISTED: one drawn
-    // around scattered nodes is a request to wrap them where they are.
-    // Returns the ids it moved.
-    function placeUnwiredNewMembers(rebuilt, beforeFlow, layoutOpts) {
-        let layout = LLMPlugin.CanvasLayout;
-        let spacingY = LAYOUT.spacingY;
-        let before = {};
-        (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) {
-            if (n && n.id) before[n.id] = n;
-        });
-        let byId = {};
-        (rebuilt || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
-
-        function wiredTo(node, others) {
-            let ids = {};
-            others.forEach(function(o) { ids[o.id] = true; });
-            let out = (node.wires || []).some(function(port) {
-                return (port || []).some(function(id) { return ids[id]; });
-            });
-            if (out) return true;
-            return others.some(function(o) {
-                return (o.wires || []).some(function(port) {
-                    return (port || []).indexOf(node.id) !== -1;
-                });
-            });
-        }
-
-        let movedIds = [];
-        (rebuilt || []).forEach(function(g) {
-            if (!g || g.type !== 'group') return;
-            let was = before[g.id];
-            if (!was || !(was.w > 0) || !(was.h > 0)) return;    // a new box wraps what it was given
-
-            let members = (Array.isArray(g.nodes) ? g.nodes : [])
-                .map(function(id) { return byId[id]; })
-                .filter(function(m) {
-                    return m && m.type !== 'group' && typeof m.x === 'number' && typeof m.y === 'number';
-                });
-            let settled = members.filter(function(m) {
-                return before[m.id] && before[m.id].g === g.id;
-            });
-            let joined = members.filter(function(m) {
-                // A caption is placed by the comment pass, above what it
-                // heads; it has no wires, so it would look unattached here
-                // and be dropped at the bottom of the box.
-                if (m.type === 'comment') return false;
-                return settled.indexOf(m) === -1 && !wiredTo(m, settled);
-            });
-            if (settled.length === 0 || joined.length === 0) return;
-
-            let left = Infinity, bottom = -Infinity;
-            settled.forEach(function(m) {
-                let w = layout.getNodeWidth(m, layoutOpts);
-                if (m.x - w / 2 < left) left = m.x - w / 2;
-                if (m.y > bottom) bottom = m.y;
-            });
-            if (!isFinite(left) || !isFinite(bottom)) return;
-
-            joined.sort(function(a, b) { return (a.y - b.y) || (a.x - b.x); });
-            joined.forEach(function(m, i) {
-                m.x = left + layout.getNodeWidth(m, layoutOpts) / 2;
-                m.y = bottom + (layout.LAYOUT_DEFAULTS.nodeHeight + spacingY) * (i + 1);
-                movedIds.push(m.id);
-            });
-        });
-        return movedIds;
-    }
-
     // The layout phase, run inside-out: correct the coordinates coming in,
     // place the members, rearrange a named subset, fit each box around what
     // it now holds, then arrange the boxes and the canvas edge. Each step
@@ -529,12 +456,6 @@
             moved = repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts) || [];
         }
 
-        // A node put into a box it is nowhere near, and wired to nothing in
-        // it: membership alone leaves the box stretched across the canvas to
-        // reach it, overlapping whatever is between them. It joins the end of
-        // that box's sequence instead.
-        moved = moved.concat(placeUnwiredNewMembers(rebuilt, beforeFlow, layoutOpts));
-
         // Whoever moved the members owns the boxes: the editor recomputes a
         // group's box only when the user drags something into or inside it.
         // A box whose members this edit rearranged is refitted rather than
@@ -555,8 +476,17 @@
 
         // Boxes fitted, so now they can be kept apart: the node layout spaced
         // the members, which is not the same as spacing what is drawn around
-        // them.
-        layout.separateGroups(rebuilt, layoutOpts);
+        // them. Only boxes holding something this edit added or moved are
+        // aligned; an untouched box stays where the user put it.
+        let beforeById = {};
+        (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) {
+            if (n && n.id) beforeById[n.id] = n;
+        });
+        let touchedIds = rebuilt.filter(function(n) {
+            let was = n && n.id ? beforeById[n.id] : null;
+            return n && n.id && (!was || was.x !== n.x || was.y !== n.y);
+        }).map(function(n) { return n.id; });
+        layout.separateGroups(rebuilt, Object.assign({}, layoutOpts, { touchedIds: touchedIds }));
 
         // Last: the canvas edges. A box hangs one padding further out than
         // its members, so this is the pass that sees it — on both edges, so
@@ -791,6 +721,14 @@
             let groups = rebuilt.filter(function(n) { return n && n.type === 'group'; });
             let byId = {};
             rebuilt.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+            // One box holds one wired sequence; captions and nested boxes are
+            // not sequences of their own. See docs/{en,jp}/design.md §15.
+            let seqOf = LLMPlugin.CanvasLayout.wiredComponents(rebuilt.filter(isLayoutNode));
+            function sequenceOf(n) {
+                if (!n || n.type === 'comment' || n.type === 'group') return undefined;
+                return seqOf[n.id];
+            }
+            let rejected = [];
 
             if (groups.length > 0) {
                 let newByAlias = {};
@@ -803,6 +741,11 @@
                     let members = (Array.isArray(g.nodes) ? g.nodes : []).filter(function(id) {
                         return typeof id === 'string' && byId[id] && byId[id] !== g;
                     });
+                    let ownSeqs = {};
+                    members.forEach(function(id) {
+                        let s = sequenceOf(byId[id]);
+                        if (s !== undefined) ownSeqs[s] = true;
+                    });
                     (Array.isArray(g._llmMembers) ? g._llmMembers : []).forEach(function(token) {
                         let id = newByAlias[token]
                               || (lookup.aliasToId && lookup.aliasToId[token])
@@ -812,6 +755,14 @@
                         // cannot span tabs.
                         if (!member || member === g || !isCanvasNode(member)) return;
                         if (member.z !== g.z) return;
+                        let s = sequenceOf(member);
+                        if (s !== undefined) {
+                            if (Object.keys(ownSeqs).length > 0 && !ownSeqs[s]) {
+                                rejected.push(token + ' → ' + (g._llmAlias || g.name || g.id));
+                                return;
+                            }
+                            ownSeqs[s] = true;
+                        }
                         if (members.indexOf(id) === -1) members.push(id);
                         // Membership is two-sided: the id in the group's list,
                         // `g` on the member. Only the members THIS schema named
@@ -819,26 +770,60 @@
                         // not this edit's business.
                         member.g = g.id;
                     });
-
-                    // A caption heads the sequence it names, so it belongs in
-                    // the box: left out, it lands exactly on the top edge (the
-                    // padding is one row) and reads as a stray label. Only
-                    // comments THIS schema added, and only into a group this
-                    // schema declared — pulling an existing comment in would
-                    // register as a membership change nobody asked for.
-                    if (members.length > 0) {
-                        let inBox = {};
-                        members.forEach(function(id) { inBox[id] = true; });
-                        rebuilt.forEach(function(c) {
-                            if (!c || c.type !== 'comment' || baseIds[c.id]) return;
-                            if (typeof c.g === 'string' && c.g) return;
-                            if (!inBox[c._llmAboveId]) return;
-                            members.push(c.id);
-                            c.g = g.id;
-                        });
-                    }
                     g.nodes = members;
                 });
+            }
+
+            // A new node wired into a boxed sequence joins that box, when
+            // every box among its neighbours is the same one.
+            let neighbours = {};
+            rebuilt.forEach(function(n) {
+                if (!n || !n.id || !Array.isArray(n.wires)) return;
+                n.wires.forEach(function(port) {
+                    (Array.isArray(port) ? port : []).forEach(function(to) {
+                        if (!byId[to]) return;
+                        (neighbours[n.id] = neighbours[n.id] || []).push(to);
+                        (neighbours[to] = neighbours[to] || []).push(n.id);
+                    });
+                });
+            });
+            let joined = true;
+            while (joined) {
+                joined = false;
+                rebuilt.forEach(function(n) {
+                    if (!n || !n.id || baseIds[n.id] || n.g || sequenceOf(n) === undefined) return;
+                    let boxes = {};
+                    (neighbours[n.id] || []).forEach(function(id) {
+                        let o = byId[id];
+                        if (o && o.g && byId[o.g] && byId[o.g].type === 'group') boxes[o.g] = true;
+                    });
+                    let ids = Object.keys(boxes);
+                    if (ids.length !== 1) return;
+                    let g = byId[ids[0]];
+                    g.nodes = (Array.isArray(g.nodes) ? g.nodes : []).concat([n.id]);
+                    n.g = g.id;
+                    joined = true;
+                });
+            }
+
+            // A caption heads the sequence it names, so it belongs in the
+            // box: left out, it lands exactly on the top edge (the padding is
+            // one row) and reads as a stray label. Only comments THIS schema
+            // added — pulling an existing one in would register as a
+            // membership change nobody asked for.
+            rebuilt.forEach(function(c) {
+                if (!c || c.type !== 'comment' || baseIds[c.id]) return;
+                if (typeof c.g === 'string' && c.g) return;
+                let target = byId[c._llmAboveId];
+                let g = target && target.g ? byId[target.g] : null;
+                if (!g || g.type !== 'group') return;
+                g.nodes = (Array.isArray(g.nodes) ? g.nodes : []).concat([c.id]);
+                c.g = g.id;
+            });
+
+            if (rejected.length > 0) {
+                notify('Not grouped — a group holds one connected sequence: ' + rejected.join(', ') +
+                    '. Wire them in first, or nest the groups in a new one.', 'warning');
             }
 
             // A node belongs to exactly one box, so a member this schema
@@ -862,11 +847,12 @@
                 if (n && typeof n.g === 'string' && !groupById[n.g]) delete n.g;
             });
 
-            // An empty box is noise on the canvas, and a group the LLM named
-            // but whose members all failed to resolve would be exactly that.
+            // A box this schema declared whose members all failed to resolve
+            // is noise. An existing box stays even when empty: removing one
+            // takes an explicit `null` (docs/{en,jp}/design.md §0).
             let empty = {};
             groups.forEach(function(g) {
-                if (!g.nodes || g.nodes.length === 0) empty[g.id] = true;
+                if (!baseIds[g.id] && (!g.nodes || g.nodes.length === 0)) empty[g.id] = true;
             });
             if (Object.keys(empty).length > 0) {
                 rebuilt = rebuilt.filter(function(n) { return !(n && empty[n.id]); });

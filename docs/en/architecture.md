@@ -351,8 +351,11 @@ Full import workflow with these guarantees:
    `type: 'group'` node carrying `_llmMembers` (member ALIASES). After the
    merge, each alias is resolved against both the nodes this schema adds and
    the ones already on the canvas; membership is **additive**, a member on
-   another tab or a config node is dropped, an empty box is discarded, and a
-   `g` naming a group that is gone is cleared. A comment this schema added that
+   another tab or a config node is dropped, and a `g` naming a group that is
+   gone is cleared. A box holds one wired sequence: a member from another one
+   is refused with a warning, and a new node wired into a boxed sequence joins
+   that box. Only a box this schema declared whose members all failed to
+   resolve is discarded; an existing box stays even when empty. A comment this schema added that
    heads a member joins the box, since the padding is one row and it would
    otherwise sit on the top edge. `CanvasLayout.fitGroups` then
    fits the box around the members' final positions. See

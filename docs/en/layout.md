@@ -283,17 +283,23 @@ behind. `fitGroups` runs after the layout passes and settles it:
   box, not per block: two sequences wired to each other are one block, and a
   `reposition` leaves exactly that pair stepped in and out.
 - A box moves with everything it holds — members, their members, and the
-  captions heading them. It is **not** moved when something in no box at all
-  sits to its left in the same block: a box drawn around the middle of a chain
-  has the nodes feeding it over there, and dragging those sideways is not an
-  alignment. Boxes never block each other.
+  captions heading them. It is **not** moved when its block holds a node that
+  is in no box at all, such as the chain feeding a box drawn around its middle,
+  or a node hanging off its end. Only the box would move, and the wire between
+  them would shear. Boxes never block each other.
+- On an edit to an existing canvas (`touchedIds`), **only boxes holding
+  something this edit added or moved are aligned**, and they line up with the
+  untouched boxes: the column the user chose is the reference. An untouched box
+  stays where it is (design.md §0, "Keep what the reply does not name").
 - Only sequences that are STACKED are aligned. Two boxes whose rows overlap
   are side by side, or interlocked because a node in one is wired to a node in
   the other; pulling those into one column drops one sequence onto the other.
-- The column is the leftmost sequence, **never further left than `startX`**.
-  One that has drifted towards the edge would otherwise drag every other
-  sequence out with it, and "aligned" would come to mean "flush against the
-  side of the screen".
+- With no untouched box to follow (a fresh layout), the column is the leftmost
+  sequence, **never further left than `startX`**. One that has drifted towards
+  the edge would otherwise drag every other sequence out with it, and "aligned"
+  would come to mean "flush against the side of the screen". That clamp used to
+  apply on every edit, so an unrelated change pushed every user box that sat
+  left of `startX` to the right.
 - Every box ends up at least `groupGap` (40, two grid squares) from anything
   outside it, whether that is another box or a plain node.
 - **Boxes are separated as boxes, not as blocks.** Two that are interlocked —
