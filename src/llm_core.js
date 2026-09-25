@@ -364,7 +364,13 @@ function createLLMCore(RED) {
             });
         }
 
-        const ctx = selected.concat(Array.from(wanted).map(function(id) { return configById.get(id); }));
+        // Tabs in the order they were selected and config nodes in id order,
+        // as the editor's UI.getFlowsByIds has them: the importer reads the
+        // reply against the alias numbering it rebuilds from that.
+        const rank = function(n) { return ids.indexOf(n.type === 'tab' ? n.id : n.z) * 2 + (n.type === 'tab' ? 0 : 1); };
+        selected.sort(function(a, b) { return rank(a) - rank(b); });
+        const configs = Array.from(wanted).sort().map(function(id) { return configById.get(id); });
+        const ctx = selected.concat(configs);
         return ctx.length > 0 ? ctx : null;
     }
 

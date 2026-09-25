@@ -46,7 +46,7 @@ llm-plugin_styles.css   All plugin CSS
 docs/                   All developer docs (this folder) — en/ + jp/
 src/
   client.js             Script loader (browser entry) + settings dialog controller
-  common.js             Shared helpers (escapeHtml, notify, el, randomId, …)
+  common.js             Shared helpers (escapeHtml, notice, el, randomId, …)
   prompt_system.txt     System prompt for Agent: the Vibe Schema rules
   prompt_ask.txt        System prompt for Ask: read the flow, explain it
   core/
@@ -54,8 +54,6 @@ src/
     flow_converter_core.js  Vibe Schema converter (UMD)
     llm_json_parser.js  LLM JSON parsing (UMD)
   chat_manager.js       Chat session CRUD + checkpoint persistence
-  apply_queue.js        Client half of the apply queue (browser)
-  apply_queue_server.js Apply queue: one writer per flow until the deploy
   importer.js           Extract LLM output, rebuild & import into editor
   ui_core.js            Message rendering, flow export
   vibe_ui.js            Sidebar build + generation workflow
@@ -76,13 +74,12 @@ which fetches and runs the rest **in order**:
 
 ```
 common → canvas_layout → flow_converter_core → llm_json_parser
-       → apply_queue → chat_manager → importer → ui_core → vibe_ui
+       → chat_manager → importer → ui_core → vibe_ui
        → agent_apply
 ```
 
 `canvas_layout` must precede `flow_converter_core` because the
-converter's `toNodeRed` delegates layout to it, and `apply_queue` precedes
-the two modules that enqueue through it. `agent_apply` is last: an
+converter's `toNodeRed` delegates layout to it. `agent_apply` is last: an
 `llm-request` reply can arrive the moment it binds, and applying one uses
 everything above. All modules use the IIFE pattern and communicate via
 `window.LLMPlugin`.
@@ -98,11 +95,6 @@ everything above. All modules use the IIFE pattern and communicate via
 | POST | `/llm-plugin/chats/save` | write | Persist a chat |
 | POST | `/llm-plugin/chats/delete` | write | Delete a chat, and its checkpoints, by chat id |
 | POST | `/llm-plugin/checkpoints/save` | write | Save flow snapshot |
-| GET | `/llm-plugin/apply-queue` | read | Current holder and waiters, per flow |
-| POST | `/llm-plugin/apply-queue/request` | write | Join the queue for a set of flows |
-| POST | `/llm-plugin/apply-queue/complete` | write | An applied edit now holds its flows until the deploy |
-| POST | `/llm-plugin/apply-queue/cancel` | write | Leave the queue without applying |
-| POST | `/llm-plugin/apply-queue/release` | write | Release every hold without a deploy (the edit was undone) |
 | POST | `/llm-plugin/agent-apply/claim` | write | Claim an Agent-node reply; only the first editor to claim it applies it |
 | GET | `/llm-plugin/checkpoints` | read | List restore points (the Agent node's have no message to find them by) |
 | GET | `/llm-plugin/checkpoints/:id` | read | Load saved checkpoint |
@@ -130,7 +122,7 @@ toggle, masked API-key placeholders, max prompt length 100–100 000).
 ### `common.js`
 
 Shared helpers on `LLMPlugin.Common`: `escapeHtml`, `escapeRegExp`,
-`notify` (RED.notify with guard), `el` (createElement shorthand),
+`notice` (a warning or error as a line in the chat), `el` (createElement shorthand),
 `randomId`, `flowLabels` (workspace ids → tab labels).
 
 ### `core/flow_converter_core.js` — Vibe Schema converter
@@ -184,37 +176,6 @@ steps of those entry points. The repairs are reachable only through
 `parseJsonBlock`, which exists so the sidebar can read a block exactly as the
 importer will.
 
-### `apply_queue_server.js` (server) + `apply_queue.js` (client)
-
-Orders every flow-modifying apply against the flows it touches, so two never
-merge into each other's uncommitted work. The rules are on the **server** —
-one queue for all editors, and the release signal is the runtime's own deploy
-event. The apply itself stays in the browser, because writing back through the
-Admin API cannot clear the open editor's unsaved state.
-
-**Server** (`createApplyQueue(RED)`, wired up in `server.js`):
-
-| Function | Purpose |
-|----------|---------|
-| `request({ clientId, targetFlowIds, source, label, undo })` | Take a place in the queue. Granted straight away unless a target flow is applied-but-not-deployed, or an earlier waiting entry wants an overlapping flow. An empty `targetFlowIds` means the scope is unknown and conflicts with everything, both ways. `undo: true` marks a restore: a hold cannot block it (ending that hold is what it is for), but it still waits behind an earlier request for the same flows. |
-| `complete(entryId, ok)` | The client has applied (or failed). On success its flows are held until the next deploy; on failure nothing is held, because the importer rolled back and waiting for a deploy that has no reason to happen would wedge the queue. A successful **undo** releases the holds on the flows it names instead of taking new ones — a blanket hold survives, since the apply behind it may have touched flows the snapshot says nothing about. |
-| `cancel(entryId)` | Drop a waiting entry. An entry already granted is mid-apply and is left alone. |
-| `releaseHold()` | End the hold without a deploy, for an edit undone by hand. |
-| `state()` | The queue plus the held flows. Expires timed-out grants and stale holds, and publishes only when that changed something. |
-| `bindDeployListener()` | Release every hold on `runtime-event` / `runtime-deploy` — emitted by the flow engine, so it covers a Deploy from any editor, the node's auto deploy, and a deploy made through the Admin API. |
-
-Routes: `GET /llm-plugin/apply-queue`, and `POST .../request`, `.../complete`,
-`.../cancel`, `.../release`. Every change is published to
-`llm-plugin/apply-queue` over comms, retained.
-
-**Client** — same `enqueue` / `list` / `cancel` / `releaseHold` / `onChange`
-surface as before, plus `connect()` to subscribe. `enqueue` asks for a turn,
-waits to be granted it (a grant arrives in a pushed state), runs `apply`, and
-reports the outcome. `enqueue({ undo: true })` is how a restore asks. Entries
-carry the client that asked, so the panel can tell this editor's requests from
-another's.
-
-See [docs/en/design.md](./design.md#13-ordering-two-producers-against-one-canvas).
 ### `chat_manager.js`
 
 Chat session lifecycle.
@@ -257,42 +218,34 @@ Full import workflow with these guarantees:
 2. **Workspace scope** — `options.allowedWorkspaceIds` (the sidebar
    passes the message's `targetFlowIds`, i.e. the flows that were sent
    to the model as context) confines every workspace decision to those
-   flows. `resolveFlowLabelToWorkspace`, `inferImplicitFlowTagging` and
-   `dispatchMultiFlowImport` all skip out-of-scope tabs, the default
+   flows. `resolveFlowLabelToWorkspace`, `planByWorkspace` and
+   `dispatchToWorkspaces` all skip out-of-scope tabs, the default
    target falls back to a context flow when the active tab is not one,
    and a final check before the apply aborts the import
    rather than writing outside the scope. This is a correctness
-   requirement, not a nicety: auto-generated aliases (`inject`,
-   `debug_1`, …) are unique only *within* a flow, and an apply deletes
+   requirement, not a nicety: an apply deletes
    what the merged end state does not contain — so an unscoped
    resolution can destructively rewrite a flow the conversation never
    saw. An empty
    / absent scope means "no flow context was selected" and keeps the
    legacy active-tab behaviour. Regression test:
    `test/cross_flow_isolation.test.js`.
-3. **Implicit flow inference** — when the schema omits `flow` tags but
-   its nodes / connections reference existing aliases on multiple
-   context workspaces (a common LLM mistake when the conversation spans
-   MCU / Server style splits), `inferImplicitFlowTagging` scans the
-   in-scope workspaces, seeds the tag for any schema alias that matches
-   an existing canvas node, then propagates the tag through
-   `connections` so brand-new nodes inherit the flow of their
-   existing-node neighbors. The inferred-tagged schema is then handed to
-   `collectFlowGroupsFromSchema` so the multi-flow dispatch fires even
-   without explicit `flow` markers.
-
-   **Deletion routing** — a node spec carries a `flow` tag; a *deletion*
-   (`remove: [...]`, or `nodes: { alias: null }`) does not, and the node
-   being deleted is normally not redeclared under `nodes` either. So when
-   the dispatch slices the schema per workspace, `routeDeleteTokens`
-   resolves each token against every candidate flow's live canvas: a
-   token exactly one in-scope flow can resolve is routed there; anything
-   ambiguous (an unnamed `debug` exists on several tabs) or unresolvable
-   is reported via a toast and left in place, because replaying it across
-   every flow would delete from a canvas the schema never mentioned and a
-   deletion is not recoverable from the import itself. The earlier slice
-   kept only tokens the same sub-schema also *declared*, so a fan-out
-   silently ignored every deletion. Regression test:
+3. **One alias, one node** — the model is shown one alias numbering over
+   every context flow, so each alias names exactly one node.
+   `contextAliasTable` rebuilds that numbering from `UI.getFlowsByIds`, and
+   `planByWorkspace` reads the reply against it before anything else,
+   splitting it into one sub-schema per context flow in the aliases that
+   flow's own import resolves. An existing node is edited on the tab it is
+   on, whatever `flow` the reply gave it. A new node goes to its `flow`
+   tab, else to the flow of what it is wired to or captions, else to the
+   default flow, and is renamed if its tab already gives its alias to
+   another node. Deletions, `reposition` tokens and removed connections go
+   to the flow of the node they name; a token that is not exactly an alias
+   is looked up on each flow and applied only where exactly one flow has
+   it, else reported in the chat. A wire between two tabs is not made.
+   Node ids inside properties (`scope: [...]`) are aliases to the model at
+   any depth, and `restoreNodeRefs` turns them back. Regression tests:
+   `test/cross_flow_isolation.test.js` scenarios 9–11 and
    `test/import_safety.test.js` scenarios A1–A3.
 4. **Strict delete → add → connect ordering** —
    `rebuildWorkspaceFromSnapshot` runs three labeled phases so a single
@@ -369,12 +322,9 @@ Full import workflow with these guarantees:
 
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and
 replace the workspace flow (with a deferred SVG redraw to avoid the
-"wires-only" render race). Runs **through the apply queue as an `undo`**,
-scoped to the workspaces the snapshot writes to: a restore must not interleave
-with an apply in flight, and finishing it releases those flows rather than
-holding them. Every caller gets that from here — the per-message Restore
-button, the restore-point list, and Retry, which restores before re-asking.
-See [docs/en/design.md](./design.md#a-restore-is-an-apply-and-it-is-the-way-out-of-a-hold).
+"wires-only" render race). Every caller
+goes through here — the per-message Restore button, the restore-point list,
+and Retry, which restores before re-asking.
 
 ### `ui_core.js`
 
@@ -389,7 +339,7 @@ See [docs/en/design.md](./design.md#a-restore-is-an-apply-and-it-is-the-way-out-
 | `reannotateAllAssistantMessages()` | Re-runs `annotateNodeReferences` on every assistant message in the chat panel. Registered once at module load against `RED.events` (`flows:loaded` / `deploy` / `workspace:change` / `nodes:add` / `nodes:remove` / `nodes:change`) and debounced 200 ms. Solves the cold-start race where the side panel renders chat history before `RED.nodes` is populated, and also keeps existing badges in sync when the user edits / deploys / imports new nodes. |
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
 | `showPostImportActions(message, checkpointId, content, messageMeta)` | The two halves of one choice, each placed where it acts. **Restore Checkpoint** goes above the PROMPT (`placeRestoreAboveThePrompt` → `promptAbove`, the first user message above the reply; a retry has no prompt between two replies, so the walk stops at the previous reply), because everything below it is what a rewind undoes — it is inserted among the message's neighbours, which is why `appendFlowActions` runs after the message joins the chat. **Apply Again** goes on the schema block's own header (`placeReapplyOnTheSchema` → `.json-collapsible[data-vibe-schema] > summary`, marked as the fold builds it), so the control that applies a proposal sits with the proposal; its click stops propagation, or it would just toggle the block. Switching between the two is how the versions get compared, and in Agent mode (where the Import button is hidden) Apply Again is the only way back to a rewound proposal. Both are removed before being re-added, so repeated applies do not stack. |
-| `queueImport(message, content, messageMeta, label)` | The one path every sidebar import takes, Import and Apply Again alike: read the chat id now (the turn may run after the user has moved chats), then enqueue behind any undeployed edit on the same flows ([§13](./design.md#13-ordering-two-producers-against-one-canvas)). Each run takes its own checkpoint, so Restore always undoes the most recent apply. |
+| `runImport(message, content, messageMeta)` | The one path every sidebar import takes, Import and Apply Again alike: read the chat id at click time, save a checkpoint of the flows in scope, then import. Each run takes its own checkpoint, so Restore undoes that apply. |
 | `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions **and** groups — for the rebuild, the checkpoint and the LLM context. The alias numbering the model sees is unchanged: the converter drops groups ([§15](./design.md#15-a-flow-a-tab-and-a-group)) and reads a wire through a junction or a `link out` → `link in` pair as a connection to where it leads. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
@@ -410,7 +360,7 @@ templates in `llm_plugin.html`; `initializeClientApp()` wires events:
   send the message it was confirming. Esc and the Stop button run the same
   `stopGeneration()`.
 - `AbortController` for fetch cancellation.
-- **Mode UX**: `change` toast on dropdown switch; dropdown disabled
+- **Mode UX**: dropdown disabled
   during in-flight requests; per-message mode badge in the elapsed
   line.
 - **Flow selector**: subscribes to `flows:add` / `flows:change` /
@@ -550,9 +500,7 @@ No chat history is sent — each request is stateless to the LLM.
   both land in the same system message, so without the second cap the
   first is bypassable by moving the payload into `currentFlow`.
 - Stored documents are bounded: 5 MB per chat and per checkpoint (`meta`
-  included), and checkpoints are pruned oldest-first past 200 files. The
-  apply queue, broadcast to every editor on each change, holds at most 100
-  entries (a request past that is a 429), with ids cut to 64 characters.
+  included), and checkpoints are pruned oldest-first past 200 files.
 - No route takes a path. A chat is found by its sanitised id, a checkpoint
   id must match `cp_<digits>_<hex>`, and static files are a fixed list.
 - `provider` must be `ollama`, `openai` or `custom`.

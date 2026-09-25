@@ -29,7 +29,6 @@ const COMMON = fs.readFileSync(path.join(ROOT, 'src', 'common.js'), 'utf8');
 const CLONERS = [
   ['ui_core.js', UI_CORE],
   ['chat_manager.js', CHAT_MANAGER],
-  ['vibe_ui.js', VIBE_UI],
 ];
 const CSS = fs.readFileSync(path.join(ROOT, 'llm-plugin_styles.css'), 'utf8');
 const CLIENT = fs.readFileSync(path.join(ROOT, 'src', 'client.js'), 'utf8');
@@ -120,10 +119,6 @@ function scenarioSelectorsMatchTheMarkup() {
     ['llm-plugin-checkpoint-item-template', 'checkpoint-source', 'the source badge'],
     ['llm-plugin-checkpoint-item-template', 'checkpoint-what', 'the description line'],
     ['llm-plugin-checkpoint-item-template', 'restore-btn', 'the restore click handler'],
-    ['llm-plugin-queue-item-template', 'llm-queue-source', 'the producer badge'],
-    ['llm-plugin-queue-item-template', 'llm-queue-label', 'the request description'],
-    ['llm-plugin-queue-item-template', 'llm-queue-why', 'the reason it is waiting'],
-    ['llm-plugin-queue-item-template', 'llm-queue-cancel', 'the cancel handler'],
   ];
   cases.forEach(([id, cls, why]) => {
     const inner = templates[id] || '';
@@ -175,26 +170,6 @@ function scenarioRestorePointsButtonIsWired() {
   ok(/fa-history/.test(shell), 'using an icon that exists in FA 4.7');
 }
 
-// The queue panel is markup in the sidebar template and behaviour in
-// vibe_ui.js. It is the only sign that a request is waiting rather than
-// lost, so a broken seam here reads as "the plugin stopped responding".
-function scenarioQueuePanelIsWired() {
-  console.log('\nThe queue panel markup and its handlers agree');
-  const shell = templates['llm-plugin-sidebar-template'] || '';
-  ok(/id="llm-plugin-queue-panel"/.test(shell), 'the sidebar has the panel');
-  ok(/id="llm-plugin-queue-list"/.test(shell), 'and the list it renders into');
-  ok(/class="llm-queue-release"/.test(shell), 'and the release control');
-  ['#llm-plugin-queue-panel', '#llm-plugin-queue-list', '.llm-queue-release'].forEach((sel) => {
-    ok(VIBE_UI.indexOf("querySelector('" + sel + "')") !== -1,
-      'vibe_ui.js looks up ' + sel);
-  });
-  // Hidden via the `hidden` attribute, so an idle panel takes no space and
-  // the prompt below it does not shift when the queue empties.
-  ok(shell.indexOf('hidden>') !== -1 && VIBE_UI.indexOf('panel.hidden =') !== -1,
-    'and hides it with the hidden attribute rather than a style toggle');
-  ok(CSS.indexOf('.llm-queue-panel {') !== -1, 'the panel has a stylesheet rule');
-}
-
 // The way out of the sidebar to the documentation. It is one static link, so
 // what can rot is the icon (an FA5-only name renders as an empty box) and the
 // rel that keeps the opened tab from reaching back into the editor.
@@ -224,10 +199,10 @@ function scenarioNodeLeansOnThePlugin() {
     'the node publishes on the topic the plugin subscribes to');
   ok(!/LLMPlugin/.test(NODE_HTML) && !/RED\.comms/.test(NODE_HTML),
     'and its html holds no plugin logic of its own');
-  // agent_apply.js enqueues the moment a reply arrives, so it has to load
+  // agent_apply.js applies the moment a reply arrives, so it has to load
   // after the modules it reaches for.
   const order = (f) => CLIENT.indexOf('src/' + f);
-  ['apply_queue.js', 'chat_manager.js', 'importer.js'].forEach((dep) => {
+  ['chat_manager.js', 'importer.js'].forEach((dep) => {
     ok(order(dep) !== -1 && order(dep) < order('agent_apply.js'),
       'client.js loads ' + dep + ' before agent_apply.js');
   });
@@ -284,8 +259,8 @@ function scenarioRestoreAndReapplyArePaired() {
   const pair = (/function showPostImportActions\(([\s\S]*?)\n    \}/.exec(UI_CORE) || [])[1] || '';
   ok(/placeRestoreAboveThePrompt\(/.test(pair) && /placeReapplyOnTheSchema\(/.test(pair),
     'one function places both, so neither can be shown without the other');
-  ok(/queueImport\(message, content, messageMeta, 'Apply Again'\)/.test(UI_CORE),
-    'Apply Again goes through the same queue as Import (design.md §13)');
+  ok(/runImport\(message, content, messageMeta\)/.test(UI_CORE.slice(UI_CORE.indexOf('function createReapplyButton'))),
+    'Apply Again runs the same import as Import');
 
   // Restore rewinds everything the prompt led to, so it belongs above the
   // prompt — which means it is inserted among the message's NEIGHBOURS, not
@@ -394,13 +369,25 @@ function scenarioModeAndModelShareARow() {
     'and the model input is the half that gives, since its text is the long one');
 }
 
+function scenarioThePluginRaisesNoNotifications() {
+  console.log('\nThe plugin raises no editor notifications; warnings go in the chat');
+  const walk = (dir) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(dir + '/' + e.name)
+      : (/\.(js|html)$/.test(e.name) ? [[dir + '/' + e.name, fs.readFileSync(path.join(ROOT, dir, e.name), 'utf8')]] : []));
+  const files = walk('src').concat(walk('node')).concat([['llm_plugin.html', HTML]]);
+  const callers = files.filter(([, text]) => /RED\.notify\s*\(/.test(text)).map(([name]) => name);
+  ok(callers.length === 0, 'nothing calls RED.notify (' + callers.join(', ') + ')');
+  ok(/Common\.notice = function/.test(COMMON) && /llm-plugin-chat/.test(COMMON),
+    'Common.notice writes into the chat');
+  ok(/\.llm-plugin-notice \{/.test(CSS), 'and the line has a stylesheet rule');
+}
+
 function run() {
   scenarioEveryClonedIdExists();
   scenarioTemplatesHaveOneRoot();
   scenarioSelectorsMatchTheMarkup();
   scenarioMissingTemplateIsLoud();
   scenarioRestorePointsButtonIsWired();
-  scenarioQueuePanelIsWired();
   scenarioDocsLinkIsWired();
   scenarioNodeLeansOnThePlugin();
   scenarioNodeHelpStaysShort();
@@ -409,6 +396,7 @@ function run() {
   scenarioRetryReusesTheSendPath();
   scenarioNodeLinksAreModeIndependent();
   scenarioModeAndModelShareARow();
+  scenarioThePluginRaisesNoNotifications();
   summary();
 }
 

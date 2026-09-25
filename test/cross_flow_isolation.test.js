@@ -216,6 +216,109 @@ async function scenarioUntaggedNodesFollowTheContextFlow() {
 }
 
 // ------------------------------------------------------------------ //
+//  An alias names one node across every context flow                 //
+// ------------------------------------------------------------------ //
+//
+// The model is shown one numbering over all the context flows, so each alias
+// names exactly one node. Each tab on its own numbers differently (Beta's
+// debug is `debug_2` in the context but `debug` on Beta alone), and a reply
+// is read against the numbering the model saw.
+
+function twoDebugs() {
+  return [
+    { id: 'a1', type: 'inject', z: 'tabA', name: 'alpha tick', x: 100, y: 100, wires: [['a2']] },
+    { id: 'a2', type: 'debug', z: 'tabA', name: '', x: 300, y: 100, wires: [] },
+    { id: 'b1', type: 'inject', z: 'tabB', name: 'beta tick', x: 100, y: 100, wires: [['b2']] },
+    { id: 'b2', type: 'debug', z: 'tabB', name: '', x: 300, y: 100, wires: [] },
+  ];
+}
+
+async function scenarioAnAliasNamesOneNodeAcrossTheContext() {
+  console.log('\nScenario 9: an alias is read the way the model was shown it, across the context');
+  const both = { allowedWorkspaceIds: ['tabA', 'tabB'] };
+
+  let r = await runImport(TABS, twoDebugs(), 'tabA', fence({
+    nodes: { debug_2: { type: 'debug', props: { complete: 'true' } } },
+  }), both);
+  ok(r.res && r.res.ok && r.after.b2.complete === 'true' && r.after.a2.complete === undefined,
+    'an untagged edit to `debug_2` changes Beta\'s debug, not Alpha\'s');
+
+  r = await runImport(TABS, twoDebugs(), 'tabA', fence({
+    nodes: { debug_2: { type: 'debug', flow: 'Alpha', props: { complete: 'true' } } },
+  }), both);
+  ok(r.res && r.res.ok && r.after.b2.complete === 'true' && r.after.b2.z === 'tabB' && r.after.a2.complete === undefined,
+    'a `flow` naming another tab does not move the edit: the node is edited where it is');
+
+  r = await runImport(TABS, twoDebugs(), 'tabA', fence({
+    nodes: { function_new: { type: 'function', props: { func: 'return msg;' } } },
+    connections: [{ from: 'inject_beta_tick', to: 'function_new' }],
+  }), both);
+  const fn = r.imported.find((n) => n.type === 'function');
+  ok(r.res && r.res.ok && fn && fn.z === 'tabB' && r.after.b1.wires[0].indexOf(fn.id) !== -1,
+    'a new node wired to Beta\'s inject goes to Beta, although Alpha is the active tab');
+}
+
+async function scenarioNodeReferencesInPropertiesRoundTrip() {
+  console.log('\nScenario 10: node ids inside properties are aliases to the model, and ids again after');
+  const nodes = twoDebugs().concat([
+    { id: 'c1', type: 'catch', z: 'tabB', name: 'errors', scope: ['b1', 'b2'], uncaught: false, x: 100, y: 200, wires: [[]] },
+    { id: 'lc', type: 'link call', z: 'tabB', name: 'call', links: ['li'], linkType: 'static', x: 100, y: 300, wires: [[]] },
+    { id: 'li', type: 'link in', z: 'tabB', name: 'target', links: [], x: 300, y: 300, wires: [[]] },
+  ]);
+  const mock = buildEditorMock({ tabs: TABS, nodes: clone(nodes), activeId: 'tabB' });
+  const P = loadPluginSandbox(mock.RED);
+  const ctx = P.FlowConverterCore.toIntermediate(P.UI.getFlowsByIds(['tabA', 'tabB'], { includeCanvasExtras: true }));
+  const catchNode = Object.values(ctx.nodes).find((n) => n.type === 'catch');
+  const callNode = Object.values(ctx.nodes).find((n) => n.type === 'link call');
+  ok(catchNode && JSON.stringify(catchNode.props.scope) === JSON.stringify(['inject_beta_tick', 'debug_2']),
+    'a catch node\'s scope reads as aliases (' + JSON.stringify(catchNode && catchNode.props.scope) + ')');
+  ok(callNode && !('links' in (callNode.props || {})),
+    'a property naming routing, which has no alias, is left out rather than shown as an id');
+
+  const r = await runImport(TABS, clone(nodes), 'tabB', fence({
+    nodes: {
+      catch_errors: { type: 'catch', name: 'errors', props: { scope: ['inject_beta_tick', 'debug_2', 'function_guard'] } },
+      function_guard: { type: 'function', name: 'guard', props: { func: 'return msg;' } },
+    },
+    connections: [{ from: 'inject_beta_tick', to: 'function_guard' }],
+  }), { allowedWorkspaceIds: ['tabA', 'tabB'] });
+  const guard = Object.values(r.after).find((n) => n.name === 'guard');
+  ok(r.res && r.res.ok && guard && JSON.stringify(r.after.c1.scope) === JSON.stringify(['b1', 'b2', guard.id]),
+    'the scope comes back as ids, a node this reply adds included (' + JSON.stringify(r.after.c1.scope) + ')');
+  ok(JSON.stringify(r.after.lc.links) === JSON.stringify(['li']), 'and the link call kept its target');
+}
+
+// The llm-request node builds its context on the runtime, and the editor
+// reads the reply against the numbering it rebuilds itself. Both have to
+// number alike, even with the flows selected in another order than the tab
+// bar has them and with two config nodes of one type.
+async function scenarioRuntimeAndEditorNumberAlike() {
+  console.log('\nScenario 11: the runtime and the editor number the aliases alike');
+  const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
+  const core = createLLMCore(coreRED());
+  const flows = [
+    { id: 'tabA', type: 'tab', label: 'Alpha' },
+    { id: 'tabB', type: 'tab', label: 'Beta' },
+    { id: 'a1', type: 'mqtt in', z: 'tabA', name: '', topic: 'alpha', broker: 'zz', x: 100, y: 100, wires: [[]] },
+    { id: 'b1', type: 'mqtt in', z: 'tabB', name: '', topic: 'beta', broker: 'aa', x: 100, y: 100, wires: [[]] },
+    { id: 'zz', type: 'mqtt-broker', name: '', broker: 'zz.local' },
+    { id: 'aa', type: 'mqtt-broker', name: '', broker: 'aa.local' },
+  ];
+  const selected = ['tabB', 'tabA'];
+  const system = core.buildMessages('x', core.flowContextFor(flows, selected), 'tabB', {}, { mode: 'agent' })[0].content;
+  const runtime = JSON.parse(system.slice(system.indexOf('{', system.indexOf('CURRENT FLOW'))));
+
+  const mock = buildEditorMock({ tabs: flows.filter((n) => n.type === 'tab'),
+    nodes: flows.filter((n) => n.z), configs: flows.filter((n) => n.type === 'mqtt-broker'), activeId: 'tabA' });
+  const P = loadPluginSandbox(mock.RED);
+  const editor = P.FlowConverterCore.toIntermediate(P.UI.getFlowsByIds(selected, { includeCanvasExtras: true }));
+  const label = (nodes) => Object.keys(nodes).sort().map((a) =>
+    a + '=' + ((nodes[a].props || {}).topic || (nodes[a].props || {}).broker)).join(' ');
+  ok(label(runtime.nodes) === label(editor.nodes),
+    'every alias names the same node (' + label(runtime.nodes) + ' / ' + label(editor.nodes) + ')');
+}
+
+// ------------------------------------------------------------------ //
 //  Outbound: what the llm-request node sends to the provider          //
 // ------------------------------------------------------------------ //
 
@@ -280,6 +383,9 @@ async function run() {
   await scenarioUnscopedStillUsesActiveTab();
   await scenarioMultiFlowContextStillFansOut();
   await scenarioUntaggedNodesFollowTheContextFlow();
+  await scenarioAnAliasNamesOneNodeAcrossTheContext();
+  await scenarioNodeReferencesInPropertiesRoundTrip();
+  await scenarioRuntimeAndEditorNumberAlike();
   scenarioProviderContextIsScoped();
   summary();
 }

@@ -83,7 +83,7 @@
             if (!nodeId) return;
             let node = RED.nodes.node(nodeId);
             if (!node) {
-                Common.notify('Node no longer exists', 'warning');
+                Common.notice('Node no longer exists', 'warning');
                 return;
             }
 
@@ -296,14 +296,12 @@
             btn.disabled = true;
             LLMPlugin.Importer.restoreCheckpoint(cpId)
                 .then(function(result) {
-                    if (result && result.ok) {
-                        Common.notify('Checkpoint restored', 'success');
-                    } else {
-                        Common.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
+                    if (!result || !result.ok) {
+                        Common.notice((result && result.error) || 'Failed to restore checkpoint', 'error');
                     }
                 })
                 .catch(function(err) {
-                    Common.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
+                    Common.notice((err && err.message) || 'Failed to restore checkpoint', 'error');
                 })
                 .finally(function() {
                     btn.disabled = false;
@@ -470,16 +468,17 @@
             e.preventDefault();
             e.stopPropagation();
             btn.disabled = true;
-            queueImport(message, content, messageMeta, 'Apply Again')
-                .catch(reportImportFailure)
+            runImport(message, content, messageMeta)
+                .catch(function(err) {
+                    Common.notice('Import failed: ' + ((err && err.message) || err), 'error');
+                })
                 .finally(function() { btn.disabled = false; });
         });
         return btn;
     }
 
-    // One import turn, run as the queue's `apply`. The checkpoint is taken
-    // here rather than at click time: earlier it would snapshot a flow the
-    // apply ahead of this one is about to change.
+    // One import turn: a checkpoint of the flows it may write, then the
+    // import.
     function applyImport(message, content, messageMeta, chatId) {
         let targetFlowIds = targetFlowIdsOf(messageMeta);
         return LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
@@ -500,40 +499,16 @@
                             });
                         }
                     }
-                    // The importer's result: the queue reads `ok` off it.
                     return result;
                 });
             });
     }
 
-    // Every import goes through the queue: an undeployed edit on these flows
-    // holds this one. See design.md §13. The chat id is read HERE, not inside
-    // `apply`, because the turn may run after the user has moved to another
-    // chat.
-    function queueImport(message, content, messageMeta, label) {
+    // The chat id is read at click time: the checkpoint belongs to the chat
+    // the reply is in, whichever chat is open when the apply finishes.
+    function runImport(message, content, messageMeta) {
         let chatId = LLMPlugin.ChatManager.getCurrentChatId();
-        return LLMPlugin.ApplyQueue.enqueue({
-            source: 'sidebar',
-            label: label,
-            targetFlowIds: targetFlowIdsOf(messageMeta),
-            apply: function() {
-                return applyImport(message, content, messageMeta, chatId);
-            }
-        });
-    }
-
-    // The importer reports its own errors. The queue's own outcomes have no
-    // other reporter.
-    function reportImportFailure(err) {
-        if (err && /Cancelled/.test(err.message || '')) {
-            Common.notify('Import cancelled', 'warning');
-        } else if (err && err.queueError) {
-            Common.notify('Import did not run: ' + (err.message || err), 'error');
-        } else if (err && window.console) {
-            // The apply itself reports its own failures, so anything else
-            // here happened after it.
-            console.error('[LLM Plugin] after the import:', err);
-        }
+        return applyImport(message, content, messageMeta, chatId);
     }
 
     function appendFlowActions(message, content, messageMeta) {
@@ -550,8 +525,10 @@
 
         importBtn.addEventListener('click', function() {
             importBtn.disabled = true;
-            queueImport(message, content, messageMeta, 'Import Flow')
-                .catch(reportImportFailure)
+            runImport(message, content, messageMeta)
+                .catch(function(err) {
+                    Common.notice('Import failed: ' + ((err && err.message) || err), 'error');
+                })
                 .finally(function() { importBtn.disabled = false; });
         });
 
@@ -740,7 +717,11 @@
             }
             if (nodes.length === 0) return null;
 
-            let configNodes = collectReferencedConfigs(nodes, seenIds);
+            // In id order, as the runtime's flowContextFor has them: the
+            // alias numbering has to come out the same on both sides.
+            let configNodes = collectReferencedConfigs(nodes, seenIds).sort(function(a, b) {
+                return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+            });
             let allNodes = nodes.concat(configNodes);
 
             return RED.nodes.createExportableNodeSet(allNodes);

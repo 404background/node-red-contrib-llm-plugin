@@ -14,90 +14,6 @@
     }
 
 
-    // ------------------------------------------------------------------ //
-    //  Apply queue panel                                                  //
-    // ------------------------------------------------------------------ //
-    //
-    // Appears only when there is something to say: a waiting request has no
-    // other visible sign. See docs/{en,jp}/design.md §13.
-
-    let QUEUE_REASONS = {
-        // Named for what the user does about it, not for the internal state.
-        deploy: 'waiting for a deploy',
-        queue:  'waiting for an earlier request'
-    };
-
-    function flowScopeText(targets) {
-        if (!targets || targets.length === 0) return '';
-        let names = Common.flowLabels(targets);
-        return names ? ' · ' + names : '';
-    }
-
-    function renderQueuePanel(panel, listEl, entries) {
-        while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
-
-        // Hidden when idle. `hidden` rather than a style toggle so the panel
-        // takes no space at all and the prompt does not shift.
-        if (!entries || entries.length === 0) {
-            panel.hidden = true;
-            return;
-        }
-        panel.hidden = false;
-
-        entries.forEach(function(entry) {
-            let item = Common.cloneTemplate('llm-plugin-queue-item-template');
-
-            let badge = item.querySelector('.llm-queue-source');
-            badge.textContent = entry.source === 'node' ? 'Node' : 'Chat';
-            badge.classList.add('source-' + entry.source);
-
-            // The queue is shared: "mine is waiting" and "someone else holds
-            // this flow" call for different actions.
-            item.querySelector('.llm-queue-label').textContent =
-                entry.label + flowScopeText(entry.targets) +
-                (entry.mine === false ? ' · another editor' : '');
-            item.querySelector('.llm-queue-why').textContent =
-                entry.state === 'running'
-                    ? 'applying…'
-                    : (QUEUE_REASONS[entry.blockedBy] || 'queued');
-
-            let cancel = item.querySelector('.llm-queue-cancel');
-            if (entry.state === 'running') {
-                // An apply in flight cannot be abandoned part-way; that is
-                // exactly what leaves a half-changed canvas.
-                cancel.remove();
-            } else {
-                cancel.addEventListener('click', function() {
-                    LLMPlugin.ApplyQueue.cancel(entry.id);
-                });
-            }
-
-            listEl.appendChild(item);
-        });
-    }
-
-    function bindQueuePanel(container) {
-        let panel = container.querySelector('#llm-plugin-queue-panel');
-        let listEl = container.querySelector('#llm-plugin-queue-list');
-        if (!panel || !listEl) return;
-
-        panel.querySelector('.llm-queue-release').addEventListener('click', function() {
-            // The way out when no deploy is coming — the edit was undone by
-            // hand, or a checkpoint was restored.
-            if (!confirm('Stop waiting for a deploy and apply the queued requests now?')) return;
-            LLMPlugin.ApplyQueue.releaseHold();
-        });
-
-        LLMPlugin.ApplyQueue.onChange(function(entries) {
-            renderQueuePanel(panel, listEl, entries);
-        });
-        renderQueuePanel(panel, listEl, LLMPlugin.ApplyQueue.list());
-        // Subscribes to the server's pushes. The deploy that releases a hold
-        // is detected by the runtime, not here — so a deploy from another
-        // editor releases this one's queue too.
-        LLMPlugin.ApplyQueue.connect();
-    }
-
     function createLLMPluginUI() {
         let container = document.createElement('div');
         container.className = 'llm-plugin-container';
@@ -118,8 +34,6 @@
         container.querySelector('[data-action="restore-points"]').addEventListener('click', function() {
             LLMPlugin.ChatManager.showCheckpointList();
         });
-
-        bindQueuePanel(container);
 
         // Settings manager (dialog controller defined in client.js)
         let settingsManager = null;
@@ -250,11 +164,10 @@
             .then(function(res) {
                 if (!res.ok) return res.json().then(function(d) { throw new Error(d.error || 'Failed to save settings'); });
                 cachedSettings = null;
-                Common.notify('LLM Plugin settings saved.', 'success');
                 closeSettingsDialog();
             })
             .catch(function(err) {
-                Common.notify(err.message || 'Failed to save settings', 'error');
+                Common.notice(err.message || 'Failed to save settings', 'error');
             })
             .finally(function() {
                 settingsSaving = false;
@@ -397,7 +310,6 @@
             modeSelect.addEventListener('change', function() {
                 try { localStorage.setItem('llm-plugin-last-mode', modeSelect.value); }
                 catch (e) { /* ignore localStorage errors */ }
-                Common.notify('LLM Plugin: Mode = ' + modeSelect.value, { type: 'info', timeout: 1500 });
             });
         }
 
@@ -713,7 +625,7 @@
 
             let mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
             if (!model || !prompt) {
-                Common.notify('Please enter both model and prompt', 'warning');
+                Common.notice('Please enter both model and prompt', 'warning');
                 return;
             }
 

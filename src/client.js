@@ -8,13 +8,11 @@
         'llm-plugin/src/core/canvas_layout.js',
         'llm-plugin/src/core/flow_converter_core.js',
         'llm-plugin/src/core/llm_json_parser.js',
-        // apply_queue.js before the two modules that enqueue through it.
-        'llm-plugin/src/apply_queue.js',
         'llm-plugin/src/chat_manager.js',
         'llm-plugin/src/importer.js',
         'llm-plugin/src/ui_core.js',
         'llm-plugin/src/vibe_ui.js',
-        // Last: the llm-request node's editor half enqueues through the
+        // Last: the llm-request node's editor half applies through the
         // modules above the moment a reply arrives.
         'llm-plugin/src/agent_apply.js'
     ];

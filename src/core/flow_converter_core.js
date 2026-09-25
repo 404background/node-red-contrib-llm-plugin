@@ -167,6 +167,34 @@
         return n.type === 'junction' || n.type === 'link in' || n.type === 'link out';
     }
 
+    let UNALIASED = {};
+    function aliasIdsIn(v, idToAlias, unaliased) {
+        if (typeof v === 'string') {
+            if (idToAlias[v]) return idToAlias[v];
+            return unaliased[v] ? UNALIASED : v;
+        }
+        if (Array.isArray(v)) {
+            let out = [];
+            for (let i = 0; i < v.length; i++) {
+                let r = aliasIdsIn(v[i], idToAlias, unaliased);
+                if (r === UNALIASED) return UNALIASED;
+                out.push(r);
+            }
+            return out;
+        }
+        if (v && typeof v === 'object') {
+            let obj = {};
+            let keys = Object.keys(v);
+            for (let i = 0; i < keys.length; i++) {
+                let r = aliasIdsIn(v[keys[i]], idToAlias, unaliased);
+                if (r === UNALIASED) return UNALIASED;
+                obj[keys[i]] = r;
+            }
+            return obj;
+        }
+        return v;
+    }
+
     function toIntermediate(nodeRedJson, options) {
         let opts = options || {};
         if (!Array.isArray(nodeRedJson) || nodeRedJson.length === 0) {
@@ -216,6 +244,8 @@
             usedAliases[alias] = true;
             idToAlias[node.id] = alias;
         });
+        let unaliased = {};
+        nodeRedJson.forEach(function(n) { if (n && n.id && !idToAlias[n.id]) unaliased[n.id] = true; });
 
         // --- Pass 2: build intermediate nodes & connections ---
         let intermediateNodes = {};
@@ -241,14 +271,14 @@
                 delete props.props;
             }
 
-            // Resolve config-node ID references in props → aliases.
-            // Any string prop whose value is a known node ID is replaced
-            // with that node's alias so the intermediate format stays
-            // portable (IDs are instance-specific).
+            // Node ids in props, at any depth, become aliases: the model never
+            // sees an id. A prop that names something with no alias (routing,
+            // a group, a tab) is left out; the merge keeps it as it was.
+            // See docs/{en,jp}/vibe-schema.md.
             Object.keys(props).forEach(function(key) {
-                if (typeof props[key] === 'string' && idToAlias[props[key]]) {
-                    props[key] = idToAlias[props[key]];
-                }
+                let v = aliasIdsIn(props[key], idToAlias, unaliased);
+                if (v === UNALIASED) delete props[key];
+                else props[key] = v;
             });
 
             let entry = { type: node.type };

@@ -100,10 +100,10 @@ async function scenarioNullAliasDeleteIsRoutedToo() {
 }
 
 async function scenarioAmbiguousDeleteIsRefused() {
-  console.log('\nScenario A3: a deletion no single flow owns is refused, not broadcast');
-  // Both flows hold an unnamed debug node, so both resolve the alias `debug`.
-  // There is no evidence of which one the model meant — and a deletion is not
-  // recoverable from the import — so neither may be removed.
+  console.log('\nScenario A3: a deletion removes the one node its alias names across the context');
+  // Both flows hold an unnamed debug node. Each tab on its own would call
+  // either `debug`, but the model was shown one numbering over both flows:
+  // `debug` is Alpha's and `debug_1` Beta's, so only Alpha's goes.
   const nodes = [
     { id: 'a1', type: 'inject', z: 'tabA', name: 'alpha tick', x: 100, y: 100, wires: [[]] },
     { id: 'a2', type: 'debug', z: 'tabA', name: '', x: 300, y: 100, wires: [] },
@@ -126,8 +126,8 @@ async function scenarioAmbiguousDeleteIsRefused() {
   const survivingIds = idsIn('tabA').concat(idsIn('tabB'));
 
   ok(res && res.ok, 'import returned ok');
-  ok(survivingIds.indexOf('a2') !== -1 && survivingIds.indexOf('b2') !== -1,
-    'the ambiguous deletion removed nothing from either flow');
+  ok(survivingIds.indexOf('a2') === -1 && survivingIds.indexOf('b2') !== -1,
+    'Alpha\'s debug went and Beta\'s stayed (' + survivingIds.join(',') + ')');
 }
 
 // ------------------------------------------------------------------ //
@@ -332,7 +332,7 @@ async function scenarioUnknownConfigAliasIsClearedAndReported() {
   const { LLMPlugin, RED, snapshot } = loadSandbox({
     tabs: REF_TABS, nodes: REF_CANVAS, configs: REF_CONFIGS, activeId: 'tab1',
   });
-  RED.notify = function (text) { notes.push(String(text)); };
+  LLMPlugin.Common.notice = function (text) { notes.push(String(text)); };
 
   const msg = 'Adding a widget.\n' + fence({
     nodes: { ui_markdown_readme: { type: 'ui-markdown', flow: 'Flow 1',
@@ -347,7 +347,7 @@ async function scenarioUnknownConfigAliasIsClearedAndReported() {
   ok(md && md.group === '', 'with the reference cleared rather than pointing at a stub id');
   ok(!RED.nodes.node('ui_group_nowhere'), 'and no config node was invented for it');
   ok(notes.some((t) => /ui_group_nowhere/.test(t)),
-    'the missing config node is named in a notification');
+    'the missing config node is named in the chat');
 }
 
 async function scenarioUnknownRefKeyStillResolves() {

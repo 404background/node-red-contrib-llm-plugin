@@ -28,8 +28,6 @@
     //  Basic Utilities                                                    //
     // ================================================================== //
 
-    let notify = Common.notify;
-
     function genId() { return Common.randomId('id_'); }
 
     function safeGetCurrentFlow(workspaceId) {
@@ -330,38 +328,266 @@
     // node through routing; a wire that was there before is never touched.
     // See docs/{en,jp}/vibe-schema.md.
     function dropWiresBesideRouting(nodes, beforeFlow) {
-        let byId = {};
-        (nodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+        let g = readRouting(nodes);
         let before = {};
         (Array.isArray(beforeFlow) ? beforeFlow : []).forEach(function(n) { if (n && n.id) before[n.id] = n; });
-        function routing(id) { return byId[id] && Converter.isRoutingNode(byId[id]); }
-        function reachedThrough(ids) {
-            let reached = {}, seen = {};
-            let queue = ids.filter(routing);
-            while (queue.length > 0) {
-                let r = byId[queue.shift()];
-                if (!r || seen[r.id]) continue;
-                seen[r.id] = true;
-                let next = [];
-                if (r.type === 'link out') next = Array.isArray(r.links) ? r.links : [];
-                else (r.wires || []).forEach(function(port) { next = next.concat(Array.isArray(port) ? port : []); });
-                next.forEach(function(id) {
-                    if (routing(id)) queue.push(id);
-                    else reached[id] = true;
-                });
-            }
-            return reached;
-        }
         (nodes || []).forEach(function(n) {
             if (!n || !Array.isArray(n.wires) || Converter.isRoutingNode(n)) return;
             let was = before[n.id];
             n.wires = n.wires.map(function(port, i) {
                 if (!Array.isArray(port)) return port;
-                let via = reachedThrough(port);
+                let via = {};
+                port.forEach(function(id) { if (g.isRouting(id)) Object.assign(via, g.down(id)); });
                 let had = (was && Array.isArray(was.wires) && Array.isArray(was.wires[i])) ? was.wires[i] : [];
                 return port.filter(function(id) { return !via[id] || had.indexOf(id) !== -1; });
             });
         });
+    }
+
+    // The routing graph under the connections the model is shown. An edge is
+    // a wire, or a link out's link to a link in. A source is a node's output
+    // port (`id#port`); a link in fed from another tab, or called by a link
+    // call, has a source that is never cut (`ext:` / `call:`), and a link to
+    // another tab ends at an `ext:` target. `carried(edge)` is the set of
+    // `source>target` connections the edge lies on.
+    function readRouting(nodes) {
+        let byId = {};
+        (nodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+        function isRouting(id) { return !!byId[id] && Converter.isRoutingNode(byId[id]); }
+        let edges = [], out = {};
+        function add(e) { edges.push(e); (out[e.src] = out[e.src] || []).push(e); }
+        (nodes || []).forEach(function(n) {
+            if (!n || !n.id) return;
+            let routing = Converter.isRoutingNode(n);
+            (Array.isArray(n.wires) ? n.wires : []).forEach(function(port, i) {
+                (Array.isArray(port) ? port : []).forEach(function(to) {
+                    if (!byId[to]) return;
+                    add({ key: 'w|' + n.id + '|' + i + '|' + to, kind: 'wire', from: n.id, port: i, to: to,
+                          src: routing ? n.id : n.id + '#' + i });
+                });
+            });
+            let links = Array.isArray(n.links) ? n.links : [];
+            if (n.type === 'link out' && n.mode !== 'return') {
+                links.forEach(function(to) {
+                    add({ key: 'l|' + n.id + '|' + to, kind: 'link', from: n.id, to: byId[to] ? to : 'ext:' + to, src: n.id });
+                });
+            } else if (n.type === 'link in') {
+                links.forEach(function(from) {
+                    if (!byId[from]) add({ key: 'x|' + from + '|' + n.id, kind: 'fixed', to: n.id, src: 'ext:' + from });
+                });
+            } else if (n.type === 'link call') {
+                links.forEach(function(to) {
+                    if (isRouting(to)) add({ key: 'c|' + n.id + '|' + to, kind: 'fixed', to: to, src: 'call:' + n.id });
+                });
+            }
+        });
+
+        let memo = {};
+        function down(v, stack) {
+            if (!isRouting(v)) { let one = {}; one[v] = true; return one; }
+            if (memo[v]) return memo[v];
+            stack = stack || {};
+            if (stack[v]) return {};
+            stack[v] = true;
+            let set = {};
+            (out[v] || []).forEach(function(e) { Object.assign(set, down(e.to, stack)); });
+            delete stack[v];
+            memo[v] = set;
+            return set;
+        }
+        function logical(s) {
+            let set = {};
+            (out[s] || []).forEach(function(e) { Object.assign(set, down(e.to)); });
+            return set;
+        }
+        // Which sources reach each routing node.
+        let sourcesAt = {};
+        Object.keys(out).forEach(function(s) {
+            if (isRouting(s)) return;
+            let seen = {}, queue = out[s].map(function(e) { return e.to; });
+            while (queue.length > 0) {
+                let v = queue.shift();
+                if (!isRouting(v) || seen[v]) continue;
+                seen[v] = true;
+                (sourcesAt[v] = sourcesAt[v] || []).push(s);
+                (out[v] || []).forEach(function(e) { queue.push(e.to); });
+            }
+        });
+        function carried(e) {
+            let set = {};
+            let sources = isRouting(e.src) ? (sourcesAt[e.src] || []) : [e.src];
+            let targets = Object.keys(down(e.to));
+            sources.forEach(function(s) { targets.forEach(function(t) { set[s + '>' + t] = true; }); });
+            return set;
+        }
+        return { byId: byId, edges: edges, isRouting: isRouting, down: down, logical: logical, carried: carried };
+    }
+
+    function cutRoutingEdge(byId, e) {
+        let from = byId[e.from];
+        if (!from) return;
+        if (e.kind === 'wire') {
+            if (Array.isArray(from.wires) && Array.isArray(from.wires[e.port])) {
+                from.wires[e.port] = from.wires[e.port].filter(function(id) { return id !== e.to; });
+            }
+        } else if (e.kind === 'link') {
+            let to = e.to.indexOf('ext:') === 0 ? e.to.substring(4) : e.to;
+            from.links = (from.links || []).filter(function(id) { return id !== to; });
+            let li = byId[to];
+            if (li && Array.isArray(li.links)) li.links = li.links.filter(function(id) { return id !== from.id; });
+        }
+    }
+
+    // `remove: { from, to }` names a connection the model was shown, which
+    // may run through junctions and link nodes. The routing that carries only
+    // what is being removed is cut; when the connection shares its path with
+    // ones that stay, the source leaves that path and is wired back to what
+    // it should still reach — through routing that leads nowhere else, or
+    // directly. Every other connection reads the same afterwards.
+    // See docs/{en,jp}/vibe-schema.md.
+    function severConnections(nodes, removals) {
+        let g = readRouting(nodes);
+        let pairs = [], removedPair = {};
+        (removals || []).forEach(function(rc) {
+            let n = g.byId[rc.from];
+            if (!n || !Array.isArray(n.wires) || !g.byId[rc.to]) return;
+            n.wires.forEach(function(port, i) {
+                if (rc.port !== null && i !== rc.port) return;
+                let s = rc.from + '#' + i;
+                if (!g.logical(s)[rc.to] || removedPair[s + '>' + rc.to]) return;
+                removedPair[s + '>' + rc.to] = true;
+                pairs.push({ s: s, from: rc.from, port: i, to: rc.to });
+            });
+        });
+        if (pairs.length === 0) return;
+
+        let want = {};
+        pairs.forEach(function(p) {
+            if (want[p.s]) return;
+            let keep = g.logical(p.s);
+            Object.keys(keep).forEach(function(t) { if (removedPair[p.s + '>' + t]) delete keep[t]; });
+            want[p.s] = keep;
+        });
+
+        pairs.forEach(function(p) {
+            let port = g.byId[p.from].wires[p.port];
+            if (Array.isArray(port)) g.byId[p.from].wires[p.port] = port.filter(function(id) { return id !== p.to; });
+        });
+
+        // An edge on no remaining connection's path can go; cutting only
+        // those can never break a connection that stays.
+        g = readRouting(nodes);
+        g.edges.forEach(function(e) {
+            if (e.kind === 'fixed') return;
+            let keys = Object.keys(g.carried(e));
+            if (keys.some(function(k) { return removedPair[k]; }) &&
+                keys.every(function(k) { return removedPair[k]; })) {
+                cutRoutingEdge(g.byId, e);
+            }
+        });
+
+        pairs.forEach(function(p) {
+            g = readRouting(nodes);
+            if (!g.logical(p.s)[p.to]) return;
+            let n = g.byId[p.from];
+            n.wires[p.port] = n.wires[p.port].filter(function(id) { return !(g.isRouting(id) && g.down(id)[p.to]); });
+            let keep = want[p.s];
+            for (;;) {
+                g = readRouting(nodes);
+                let have = g.logical(p.s);
+                let lost = Object.keys(keep).filter(function(t) { return !have[t]; });
+                if (lost.length === 0) return;
+                // A wire can only go into a junction or a link out.
+                let best = null, bestCover = 0;
+                Object.keys(g.byId).forEach(function(id) {
+                    let r = g.byId[id];
+                    if (r.type !== 'junction' && r.type !== 'link out') return;
+                    let reach = Object.keys(g.down(id));
+                    if (reach.length === 0 || !reach.every(function(t) { return keep[t]; })) return;
+                    let cover = lost.filter(function(t) { return reach.indexOf(t) !== -1; }).length;
+                    if (cover > bestCover) { best = id; bestCover = cover; }
+                });
+                if (best) { n.wires[p.port].push(best); continue; }
+                lost.forEach(function(t) { if (g.byId[t]) n.wires[p.port].push(t); });
+                return;
+            }
+        });
+    }
+
+    // Routing this edit left with nothing to carry is taken down: an edge
+    // that carried a connection before and carries none now is cut, then a
+    // junction left with no wire at all, a link out left with no link, and a
+    // link in left unreferenced or with nowhere to send go. Routing that was
+    // already idle before the edit is the user's and stays as it is.
+    // Returns the surviving nodes. See docs/{en,jp}/vibe-schema.md.
+    function removeIdleRouting(nodes, beforeFlow) {
+        if (!Array.isArray(beforeFlow) || beforeFlow.length === 0) return nodes;
+        let gb = readRouting(beforeFlow);
+        let busyBefore = {};
+        gb.edges.forEach(function(e) {
+            if (Object.keys(gb.carried(e)).length > 0) busyBefore[e.key] = true;
+        });
+        function ends(g, id) {
+            let r = { in: 0, out: 0, links: 0, refs: 0 };
+            g.edges.forEach(function(e) {
+                if (e.to === id) { r.in++; if (e.kind !== 'wire') r.refs++; }
+                if (e.from === id || e.src === id) { r.out++; if (e.kind === 'link') r.links++; }
+            });
+            return r;
+        }
+        function idle(g, n, wasActive) {
+            if (!wasActive) return false;
+            let r = ends(g, n.id);
+            if (n.type === 'junction') return r.in === 0 && r.out === 0;
+            if (n.type === 'link out') return n.mode !== 'return' && r.links === 0;
+            if (n.type === 'link in') return r.refs === 0 || r.out === 0;
+            return false;
+        }
+        let active = {};
+        Object.keys(gb.byId).forEach(function(id) {
+            let n = gb.byId[id];
+            if (!Converter.isRoutingNode(n)) return;
+            let r = ends(gb, id);
+            if (n.type === 'junction') active[id] = r.in > 0 || r.out > 0;
+            else if (n.type === 'link out') active[id] = n.mode !== 'return' && r.links > 0;
+            else active[id] = r.refs > 0 && r.out > 0;
+        });
+
+        for (;;) {
+            let changed = false;
+            let g = readRouting(nodes);
+            g.edges.forEach(function(e) {
+                // A link to another tab is that tab's too: cross-flow isolation.
+                if (e.kind === 'fixed' || !busyBefore[e.key] || e.to.indexOf('ext:') === 0) return;
+                if (!g.isRouting(e.from) && !g.isRouting(e.to)) return;
+                if (Object.keys(g.carried(e)).length > 0) return;
+                cutRoutingEdge(g.byId, e);
+                changed = true;
+            });
+            g = readRouting(nodes);
+            let gone = {};
+            nodes.forEach(function(n) {
+                if (n && n.id && Converter.isRoutingNode(n) && idle(g, n, active[n.id])) gone[n.id] = true;
+            });
+            if (Object.keys(gone).length > 0) {
+                changed = true;
+                nodes = nodes.filter(function(n) { return !(n && gone[n.id]); });
+                nodes.forEach(function(n) {
+                    if (Array.isArray(n.wires)) {
+                        n.wires = n.wires.map(function(port) {
+                            return Array.isArray(port) ? port.filter(function(id) { return !gone[id]; }) : port;
+                        });
+                    }
+                    if (Array.isArray(n.links) && /^link /.test(n.type)) {
+                        n.links = n.links.filter(function(id) { return !gone[id]; });
+                    }
+                    if (n.type === 'group' && Array.isArray(n.nodes)) {
+                        n.nodes = n.nodes.filter(function(id) { return !gone[id]; });
+                    }
+                });
+            }
+            if (!changed) return nodes;
+        }
     }
 
     // ================================================================== //
@@ -725,22 +951,18 @@
         let connLookup = buildUnifiedLookup(rebuilt);
 
         if (Array.isArray(directives.removeConnections) && directives.removeConnections.length > 0) {
-            directives.removeConnections.forEach(function(rc) {
-                let fromId = connLookup.resolve(rc.from);
-                let toId = connLookup.resolve(rc.to);
-                if (!fromId || !toId || !connLookup.byId[fromId]) return;
-                let fromNode = connLookup.byId[fromId];
-                if (!Array.isArray(fromNode.wires)) return;
-                let onlyPort = (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : null;
-                fromNode.wires = fromNode.wires.map(function(port, i) {
-                    if (!Array.isArray(port) || (onlyPort !== null && i !== onlyPort)) return port;
-                    return port.filter(function(tid) { return tid !== toId; });
-                });
-            });
+            severConnections(rebuilt, directives.removeConnections.map(function(rc) {
+                return {
+                    from: connLookup.resolve(rc.from),
+                    to: connLookup.resolve(rc.to),
+                    port: (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : null
+                };
+            }).filter(function(rc) { return rc.from && rc.to; }));
         }
 
         applyConnectionHints(rebuilt, connectionHints || [], connLookup);
         dropWiresBesideRouting(rebuilt, beforeFlow);
+        rebuilt = removeIdleRouting(rebuilt, beforeFlow);
 
         // `above: <alias>` -> node id. The alias may name a node this schema
         // is adding, or one already on the canvas.
@@ -760,6 +982,35 @@
                       || (existingLookup.aliasToId && existingLookup.aliasToId[want])
                       || existingLookup.resolve(want);
                 if (id && id !== c.id) c._llmAboveId = id;
+            });
+        })();
+
+        // A property listing nodes may name one this reply adds, whose id
+        // exists only now; planByWorkspace restored every other reference.
+        (function resolveNewNodeRefs() {
+            let newByAlias = {}, known = {};
+            rebuilt.forEach(function(n) {
+                if (!n || !n.id) return;
+                known[n.id] = true;
+                if (typeof n._llmAlias === 'string') newByAlias[n._llmAlias] = n.id;
+            });
+            function walk(v) {
+                if (Array.isArray(v)) {
+                    let refs = v.length > 0 && v.every(function(x) { return typeof x === 'string' && (known[x] || newByAlias[x]); });
+                    if (refs) return v.map(function(x) { return known[x] ? x : newByAlias[x]; });
+                    return v.map(walk);
+                }
+                if (v && typeof v === 'object') {
+                    Object.keys(v).forEach(function(k) { v[k] = walk(v[k]); });
+                }
+                return v;
+            }
+            rebuilt.forEach(function(n) {
+                if (!n || typeof n._llmAlias !== 'string') return;
+                Object.keys(n).forEach(function(k) {
+                    if (isMetaKey(k) || k === 'wires' || k === 'links') return;
+                    if (n[k] && typeof n[k] === 'object') n[k] = walk(n[k]);
+                });
             });
         })();
 
@@ -1596,331 +1847,259 @@
     }
 
     // ================================================================== //
-    //  Multi-flow Dispatch Helpers                                        //
+    //  Multi-flow Dispatch                                                //
     // ================================================================== //
 
-    // Where untagged nodes go: the active tab, or the context flow the import
-    // will actually target when that tab is out of scope.
-    function getDefaultWorkspaceLabel(allowedSet) {
-        let id = pickDefaultWorkspace(allowedSet);
-        if (!id || !window.RED || !RED.nodes) return null;
-        let ws = RED.nodes.workspace(id);
-        if (ws && ws.label) return ws.label;
-        return id;
+    // The aliases exactly as the model was shown them: one numbering over
+    // every context flow, so each names one node. Each canvas node also
+    // carries the alias its own tab gives it, which is what the per-workspace
+    // import resolves. See docs/{en,jp}/design.md §6.
+    function contextAliasTable(ids) {
+        let opts = { includeCanvasExtras: true };
+        let context = LLMPlugin.UI.getFlowsByIds(ids, opts) || [];
+        let inter = Converter.toIntermediate(context, { includeIdMap: true });
+        let idToAlias = (inter && inter._meta && inter._meta.idToAlias) || {};
+        let byId = {};
+        context.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+        let local = {};
+        ids.forEach(function(ws) { local[ws] = buildFlowLookup(LLMPlugin.UI.getFlowsByIds([ws], opts) || []); });
+        let entries = {};
+        Object.keys(idToAlias).forEach(function(id) {
+            let n = byId[id];
+            let ws = (n && n.z && ids.indexOf(n.z) !== -1) ? n.z : null;
+            entries[idToAlias[id]] = { id: id, ws: ws, local: ws ? local[ws].idToAlias[id] : null };
+        });
+        return { entries: entries, local: local, byId: byId, idToAlias: idToAlias };
     }
 
-    // Group canvas nodes by their Vibe Schema `flow` label so each group
-    // can target its own workspace. Untagged canvas nodes fall into the
-    // default (in-scope) flow when any other node is tagged.
-    function collectFlowGroupsFromSchema(schema, allowedSet) {
-        if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return null;
-        let groups = {};
-        let untagged = [];
-        Object.keys(schema.nodes).forEach(function(alias) {
-            let spec = schema.nodes[alias];
-            if (!spec || typeof spec !== 'object') return;
-            if (spec.config === true) return;
-            if (spec.type === 'tab' || String(spec.type).toLowerCase() === 'tab') return;
-            if (spec.type && isConfigNodeType(spec.type)) return;
-            let flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
-            if (!flow) { untagged.push(alias); return; }
-            if (!groups[flow]) groups[flow] = [];
-            groups[flow].push(alias);
-        });
-        if (untagged.length > 0 && Object.keys(groups).length > 0) {
-            let defaultLabel = getDefaultWorkspaceLabel(allowedSet);
-            if (defaultLabel) {
-                if (!groups[defaultLabel]) groups[defaultLabel] = [];
-                untagged.forEach(function(a) { groups[defaultLabel].push(a); });
-            }
-        }
-        return groups;
-    }
-
-    // Slice a schema down to one flow: its tagged canvas nodes, the untagged
-    // ones, its internal connections, and its share of the deletions.
-    function buildSubSchemaForFlow(schema, aliases, ownedDeletes) {
-        let aliasSet = {};
-        aliases.forEach(function(a) { aliasSet[a] = true; });
-        let subNodes = {};
-
-        // Deletions are never broadcast: an alias collision (`debug` on both
-        // tabs) would delete from a flow the schema never mentioned.
-        function deletionBelongsHere(token) {
-            return !!aliasSet[token] || !!(ownedDeletes && ownedDeletes[token]);
-        }
-
-        aliases.forEach(function(alias) {
-            if (Object.prototype.hasOwnProperty.call(schema.nodes || {}, alias)) {
-                subNodes[alias] = schema.nodes[alias];
-            }
-        });
-        Object.keys(schema.nodes || {}).forEach(function(alias) {
-            if (aliasSet[alias]) return;
-            let spec = schema.nodes[alias];
-            if (spec === null) {
-                if (deletionBelongsHere(alias)) subNodes[alias] = spec;
-                return;
-            }
-            if (!spec || typeof spec !== 'object') return;
-            let isUntagged = !spec.flow || typeof spec.flow !== 'string' || !spec.flow.trim();
-            if (isUntagged) subNodes[alias] = spec;
-        });
-
-        // There are no cross-flow wires, so a connection is forwarded only
-        // when neither endpoint is tagged to a different flow.
-        function endpointBelongsToAnotherFlow(endpoint) {
-            if (aliasSet[endpoint]) return false;
-            let spec = schema.nodes && schema.nodes[endpoint];
-            if (!spec || typeof spec !== 'object') return false;
-            let flow = (typeof spec.flow === 'string') ? spec.flow.trim() : '';
-            return flow.length > 0;
-        }
-
-        let subConns = [];
-        (schema.connections || []).forEach(function(c) {
-            if (!c || typeof c !== 'object') return;
-            if (c.remove && typeof c.remove === 'object') {
-                let r = c.remove;
-                if (!r || typeof r.from !== 'string' || typeof r.to !== 'string') return;
-                if (!aliasSet[r.from] && !aliasSet[r.to]) return;
-                if (endpointBelongsToAnotherFlow(r.from)) return;
-                if (endpointBelongsToAnotherFlow(r.to)) return;
-                subConns.push(c);
-                return;
-            }
-            if (typeof c.from !== 'string' || typeof c.to !== 'string') return;
-            if (!aliasSet[c.from] && !aliasSet[c.to]) return;
-            if (endpointBelongsToAnotherFlow(c.from)) return;
-            if (endpointBelongsToAnotherFlow(c.to)) return;
-            subConns.push(c);
-        });
-
-        let out = {
-            nodes: subNodes,
-            connections: subConns
-        };
-
-        if (typeof schema.description === 'string') out.description = schema.description;
-        if (Array.isArray(schema.remove)) {
-            out.remove = schema.remove.filter(deletionBelongsHere);
-        }
-        return out;
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Routing deletions across a fan-out                                 //
-    // ------------------------------------------------------------------ //
-
-    // Every deletion a schema can express: the top-level `remove` array and
-    // the `nodes: { alias: null }` form.
-    function collectDeleteTokens(schema) {
-        let tokens = [];
-        let seen = {};
-        function add(t) {
-            if (typeof t !== 'string') return;
-            let s = t.trim();
-            if (!s || seen[s]) return;
-            seen[s] = true;
-            tokens.push(s);
-        }
-        if (schema && Array.isArray(schema.remove)) schema.remove.forEach(add);
-        if (schema && schema.nodes && typeof schema.nodes === 'object') {
-            Object.keys(schema.nodes).forEach(function(alias) {
-                if (schema.nodes[alias] === null) add(alias);
+    // A node reference inside a property — a catch node's `scope`, say — is
+    // an alias on the way to the model (toIntermediate) and goes back to the
+    // id here. A string array naming only nodes is references; any other
+    // string is restored only where the node already held that reference, so
+    // text that happens to read like an alias is left alone. Top-level
+    // strings are config references, resolved later by their own rules.
+    function restoreNodeRefs(value, was, t, isNewAlias, depth) {
+        if (Array.isArray(value)) {
+            let allRefs = value.length > 0 && value.every(function(v) {
+                return typeof v === 'string' && (!!t.entries[v] || isNewAlias(v));
+            });
+            if (allRefs) return value.map(function(v) { return t.entries[v] ? t.entries[v].id : v; });
+            return value.map(function(v, i) {
+                return restoreNodeRefs(v, Array.isArray(was) ? was[i] : undefined, t, isNewAlias, depth + 1);
             });
         }
-        return tokens;
+        if (value && typeof value === 'object') {
+            let out = {};
+            Object.keys(value).forEach(function(k) {
+                out[k] = restoreNodeRefs(value[k], (was && typeof was === 'object') ? was[k] : undefined, t, isNewAlias, depth + 1);
+            });
+            return out;
+        }
+        if (depth > 0 && typeof value === 'string' && typeof was === 'string' && t.idToAlias[was] === value) return was;
+        return value;
     }
 
-    // A deletion has no `flow` tag, so the only evidence is which canvas
-    // holds it. Routed only when exactly one in-scope flow resolves it;
-    // anything ambiguous is reported, not applied.
-    // → { byLabel: { <flow label>: { <token>: true } }, unrouted: [] }
-    function routeDeleteTokens(tokens, labelToWorkspaceId) {
-        let byLabel = {};
-        let unrouted = [];
-        let labels = Object.keys(labelToWorkspaceId || {});
-        if (tokens.length === 0 || labels.length === 0) {
-            return { byLabel: byLabel, unrouted: tokens.slice() };
+    // Splits a reply into one sub-schema per context flow, in the aliases
+    // that flow's own import resolves. An existing node is edited on the tab
+    // it is on, whatever `flow` the reply gave it. A new node goes to its
+    // `flow`, else to the flow of what it is wired to or captions, else to
+    // the default flow. A wire between two tabs is not made; a removed one is
+    // severAcrossFlows'. Returns { wsId: subSchema }.
+    function planByWorkspace(schema, ids, allowedSet) {
+        let t = contextAliasTable(ids);
+        let nodes = (schema.nodes && typeof schema.nodes === 'object' && !Array.isArray(schema.nodes)) ? schema.nodes : {};
+        function existing(tok) {
+            let e = (typeof tok === 'string') ? t.entries[tok] : null;
+            return (e && e.ws) ? e : null;
+        }
+        function isConfigSpec(k) {
+            let spec = nodes[k];
+            if (t.entries[k] && !t.entries[k].ws) return true;
+            return !!spec && typeof spec === 'object' &&
+                (spec.config === true || (typeof spec.type === 'string' && isConfigNodeType(spec.type)));
+        }
+        function isNewCanvas(k) {
+            let spec = nodes[k];
+            return !!spec && typeof spec === 'object' && !existing(k) && !isConfigSpec(k);
         }
 
-        let lookups = {};
-        labels.forEach(function(label) {
-            lookups[label] = buildFlowLookup(RED.nodes.filterNodes({ z: labelToWorkspaceId[label] }) || []);
+        let home = {};
+        let refused = [];
+        Object.keys(nodes).forEach(function(k) {
+            let e = existing(k);
+            if (e) { home[k] = e.ws; return; }
+            if (!isNewCanvas(k)) return;
+            let flow = (typeof nodes[k].flow === 'string') ? nodes[k].flow.trim() : '';
+            if (!flow) return;
+            let ws = resolveFlowLabelToWorkspace(flow, allowedSet);
+            if (ws) home[k] = ws;
+            else if (refused.indexOf(flow) === -1) refused.push(flow);
+        });
+        refused.forEach(function(flow) {
+            Common.notice('Target flow "' + flow + '" is not one of the flows this chat is working on. Using the context flow instead.', 'warning');
         });
 
-        tokens.forEach(function(token) {
-            let owners = labels.filter(function(l) {
-                return !!lookups[l].resolve(token, { exactOnly: true });
-            });
-            if (owners.length !== 1) {
-                // Looser tiers only when the exact pass was inconclusive: the
-                // alias numbering the model sees spans every context flow
-                // (`debug_2`), while these lookups are per-flow (`debug`).
-                owners = labels.filter(function(l) {
-                    return !!lookups[l].resolve(token);
-                });
-            }
-            if (owners.length === 1) {
-                (byLabel[owners[0]] = byLabel[owners[0]] || {})[token] = true;
-            } else {
-                unrouted.push(token);
-            }
-        });
-        return { byLabel: byLabel, unrouted: unrouted };
-    }
-
-    // ================================================================== //
-    //  Implicit Flow Tagging                                              //
-    // ================================================================== //
-
-    // Models routinely omit `flow` tags; recover them from the context
-    // canvases and propagate along connections (the schema is cloned). The
-    // `allowedSet` scope is load-bearing: the map is first-workspace-wins.
-    // See docs/{en,jp}/design.md §6.
-    function inferImplicitFlowTagging(schema, allowedSet) {
-        if (!schema || !schema.nodes || typeof schema.nodes !== 'object') return schema;
-
-        let aliasToWorkspaceLabel = {};
-        try {
-            RED.nodes.eachWorkspace(function(ws) {
-                if (!ws || ws.type !== 'tab' || !ws.id) return;
-                if (!isWorkspaceAllowed(allowedSet, ws.id)) return;
-                let label = (typeof ws.label === 'string' && ws.label.trim()) ? ws.label : ws.id;
-                let nodes = RED.nodes.filterNodes({ z: ws.id }) || [];
-                if (nodes.length === 0) return;
-                let inter = Converter.toIntermediate(nodes, { includeIdMap: true });
-                let interNodes = (inter && inter.nodes) ? inter.nodes : {};
-                Object.keys(interNodes).forEach(function(alias) {
-                    if (!aliasToWorkspaceLabel[alias]) {
-                        aliasToWorkspaceLabel[alias] = label;
-                    }
-                });
-            });
-        } catch (e) { return schema; }
-
-        if (Object.keys(aliasToWorkspaceLabel).length === 0) return schema;
-
-        // Seed inferred flow per schema-node alias.
-        let inferred = {};
-        Object.keys(schema.nodes).forEach(function(alias) {
-            let spec = schema.nodes[alias];
-            if (!spec || typeof spec !== 'object') return;
-            if (spec.config === true) return;
-            if (typeof spec.flow === 'string' && spec.flow.trim()) {
-                inferred[alias] = spec.flow.trim();
-                return;
-            }
-            if (aliasToWorkspaceLabel[alias]) {
-                inferred[alias] = aliasToWorkspaceLabel[alias];
-            }
-        });
-
-        // Propagate along connections: an endpoint whose label is unknown
-        // inherits it from the endpoint that has one.
-        let connections = Array.isArray(schema.connections) ? schema.connections : [];
-        let changed = true;
-        let safety = 64;
-        while (changed && safety-- > 0) {
+        let conns = Array.isArray(schema.connections) ? schema.connections : [];
+        function wsOf(tok) { let e = existing(tok); return e ? e.ws : home[tok]; }
+        let changed = true, guard = 64;
+        while (changed && guard-- > 0) {
             changed = false;
-            connections.forEach(function(c) {
-                if (!c || typeof c !== 'object' || c.remove) return;
-                let from = c.from, to = c.to;
-                if (typeof from !== 'string' || typeof to !== 'string') return;
-                let fromFlow = inferred[from] || aliasToWorkspaceLabel[from];
-                let toFlow   = inferred[to]   || aliasToWorkspaceLabel[to];
-                if (fromFlow && schema.nodes[to] && !inferred[to]) {
-                    let toSpec = schema.nodes[to];
-                    if (toSpec && typeof toSpec === 'object' && toSpec.config !== true) {
-                        inferred[to] = fromFlow;
-                        changed = true;
-                    }
-                }
-                if (toFlow && schema.nodes[from] && !inferred[from]) {
-                    let fromSpec = schema.nodes[from];
-                    if (fromSpec && typeof fromSpec === 'object' && fromSpec.config !== true) {
-                        inferred[from] = toFlow;
-                        changed = true;
-                    }
-                }
+            conns.forEach(function(c) {
+                if (!c || c.remove || typeof c.from !== 'string' || typeof c.to !== 'string') return;
+                let a = wsOf(c.from), b = wsOf(c.to);
+                if (a && !b && isNewCanvas(c.to)) { home[c.to] = a; changed = true; }
+                if (b && !a && isNewCanvas(c.from)) { home[c.from] = b; changed = true; }
+            });
+            Object.keys(nodes).forEach(function(k) {
+                if (!isNewCanvas(k) || home[k] || typeof nodes[k].above !== 'string') return;
+                let ws = wsOf(nodes[k].above);
+                if (ws) { home[k] = ws; changed = true; }
+            });
+        }
+        let defaultWs = pickDefaultWorkspace(allowedSet);
+        Object.keys(nodes).forEach(function(k) { if (isNewCanvas(k) && !home[k]) home[k] = defaultWs; });
+
+        // A new node whose alias its tab already gives another node would be
+        // read as an edit to that node, so it is renamed.
+        let renamed = {};
+        Object.keys(nodes).forEach(function(k) {
+            if (!isNewCanvas(k) || !home[k]) return;
+            let taken = t.local[home[k]] ? t.local[home[k]].aliasToId : {};
+            if (!taken[k]) return;
+            let n = 2, name = k + '_new';
+            while (taken[name] || nodes[name] || t.entries[name]) name = k + '_new' + (n++);
+            renamed[k] = name;
+        });
+        function nameIn(tok) {
+            let e = existing(tok);
+            if (e) return e.local;
+            return renamed[tok] || tok;
+        }
+        function isNewAlias(tok) { return isNewCanvas(tok); }
+
+        let subs = {};
+        function sub(ws) { return (subs[ws] = subs[ws] || { nodes: {}, connections: [] }); }
+
+        // A deletion names an alias the model was shown; one that is not
+        // exactly one is looked for on each flow, and applied only where
+        // exactly one flow has it.
+        let unrouted = [];
+        function routeDelete(tok) {
+            let e = existing(tok);
+            if (e) return { ws: e.ws, name: e.local };
+            let owners = ids.filter(function(ws) { return !!t.local[ws].resolve(tok, { exactOnly: true }); });
+            if (owners.length !== 1) owners = ids.filter(function(ws) { return !!t.local[ws].resolve(tok); });
+            if (owners.length === 1) return { ws: owners[0], name: tok };
+            unrouted.push(tok);
+            return null;
+        }
+
+        Object.keys(nodes).forEach(function(k) {
+            let spec = nodes[k];
+            if (spec === null) {
+                let d = routeDelete(k);
+                if (d) sub(d.ws).nodes[d.name] = null;
+                return;
+            }
+            if (!isNewCanvas(k) && !existing(k)) return;
+            let ws = home[k];
+            if (!ws) return;
+            let copy = JSON.parse(JSON.stringify(spec));
+            delete copy.flow;
+            if (typeof copy.above === 'string') {
+                if (wsOf(copy.above) === ws) copy.above = nameIn(copy.above);
+                else delete copy.above;
+            }
+            if (copy.props && typeof copy.props === 'object') {
+                let e = existing(k);
+                let was = e ? t.byId[e.id] : null;
+                Object.keys(copy.props).forEach(function(p) {
+                    copy.props[p] = restoreNodeRefs(copy.props[p], was ? was[p] : undefined, t, isNewAlias, 0);
+                });
+            }
+            sub(ws).nodes[nameIn(k)] = copy;
+        });
+
+        conns.forEach(function(c) {
+            if (!c || typeof c !== 'object') return;
+            let r = c.remove && typeof c.remove === 'object' ? c.remove : c;
+            if (typeof r.from !== 'string' || typeof r.to !== 'string') return;
+            let a = wsOf(r.from), b = wsOf(r.to);
+            if (a && b && a !== b) return;
+            let ws = a || b || defaultWs;
+            if (!ws) return;
+            let out = { from: nameIn(r.from), to: nameIn(r.to) };
+            if (typeof r.fromPort === 'number') out.fromPort = r.fromPort;
+            sub(ws).connections.push(c.remove ? { remove: out } : out);
+        });
+
+        let repo = schema.reposition || schema.relayout || schema.reflow;
+        if (Array.isArray(repo)) {
+            [].concat.apply([], repo.map(function(x) { return Array.isArray(x) ? x : [x]; })).forEach(function(tok) {
+                if (typeof tok !== 'string' || !tok.trim()) return;
+                let ws = wsOf(tok) || defaultWs;
+                if (!ws) return;
+                let s = sub(ws);
+                (s.reposition = s.reposition || []).push(nameIn(tok));
             });
         }
 
-        let touched = false;
-        Object.keys(inferred).forEach(function(alias) {
-            let spec = schema.nodes[alias];
-            if (!spec || typeof spec !== 'object') return;
-            if (typeof spec.flow === 'string' && spec.flow.trim()) return;
-            touched = true;
-        });
-        if (!touched) return schema;
+        let remove = schema.remove || schema.delete || schema.removeNodes || schema.deleted;
+        if (Array.isArray(remove)) {
+            remove.forEach(function(tok) {
+                if (typeof tok !== 'string' || !tok.trim()) return;
+                let d = routeDelete(tok.trim());
+                if (!d) return;
+                let s = sub(d.ws);
+                (s.remove = s.remove || []).push(d.name);
+            });
+        }
+        if (unrouted.length > 0) {
+            Common.notice('Could not tell which flow these node(s) should be deleted from; left in place: ' +
+                unrouted.join(', '), 'warning');
+        }
 
-        let cloned = JSON.parse(JSON.stringify(schema));
-        Object.keys(cloned.nodes).forEach(function(alias) {
-            let spec = cloned.nodes[alias];
-            if (!spec || typeof spec !== 'object') return;
-            if (spec.config === true) return;
-            if (typeof spec.flow === 'string' && spec.flow.trim()) return;
-            if (inferred[alias]) spec.flow = inferred[alias];
+        // Config nodes live outside every tab: each flow's import sees them.
+        Object.keys(nodes).forEach(function(k) {
+            if (!isConfigSpec(k) || !nodes[k] || typeof nodes[k] !== 'object') return;
+            let targets = Object.keys(subs);
+            if (targets.length === 0 && defaultWs) targets = [defaultWs];
+            targets.forEach(function(ws) { sub(ws).nodes[k] = JSON.parse(JSON.stringify(nodes[k])); });
         });
-        return cloned;
+
+        if (typeof schema.description === 'string') {
+            Object.keys(subs).forEach(function(ws) { subs[ws].description = schema.description; });
+        }
+        return subs;
     }
 
-    // Back into a fenced block: the sub-import path re-parses a message,
+    // Back into a fenced block: the per-workspace import re-parses a message,
     // not a schema object.
     function serializeSchemaAsMessage(schema) {
         return '```json\n' + JSON.stringify(schema, null, 2) + '\n```';
     }
 
-    async function dispatchMultiFlowImport(schema, flowGroups, options, allowedSet) {
+    async function dispatchToWorkspaces(subs, options) {
         let results = [];
         let aggregatedAdded = 0;
         let aggregatedImported = 0;
-        let unresolved = [];
-        let flowLabels = Object.keys(flowGroups);
-
-        // Up front, because deletions are routed against the whole set of
-        // candidates. Out-of-scope labels resolve to null and are skipped.
-        let labelToWs = {};
-        flowLabels.forEach(function(label) {
-            let wsId = resolveFlowLabelToWorkspace(label, allowedSet);
-            if (wsId) labelToWs[label] = wsId;
-            else unresolved.push(label);
-        });
-
-        let routedDeletes = routeDeleteTokens(collectDeleteTokens(schema), labelToWs);
-        if (routedDeletes.unrouted.length > 0) {
-            notify('Could not tell which flow these node(s) should be deleted from; left in place: ' +
-                routedDeletes.unrouted.join(', '), 'warning');
-        }
-
-        for (let li = 0; li < flowLabels.length; li++) {
-            let label = flowLabels[li];
-            let wsId = labelToWs[label];
-            if (!wsId) continue;
-
-            let subSchema = buildSubSchemaForFlow(schema, flowGroups[label], routedDeletes.byLabel[label]);
-            let subMessage = serializeSchemaAsMessage(subSchema);
+        let wsIds = Object.keys(subs);
+        for (let i = 0; i < wsIds.length; i++) {
+            let wsId = wsIds[i];
             try {
-                let res = await Importer.importFlowFromMessage(subMessage, Object.assign({}, options, {
+                let res = await Importer.importFlowFromMessage(serializeSchemaAsMessage(subs[wsId]), Object.assign({}, options, {
                     targetWorkspaceId: wsId,
                     _isSubImport: true
                 }));
-                results.push(Object.assign({}, res, { flow: label, workspaceId: wsId }));
+                results.push(Object.assign({}, res, { workspaceId: wsId }));
                 if (res && res.ok) {
                     aggregatedAdded += (res.addedNodeCount || 0);
                     aggregatedImported += (res.importedCount || 0);
                 }
             } catch (e) {
-                results.push({ ok: false, error: String(e && e.message ? e.message : e), flow: label, workspaceId: wsId });
+                results.push({ ok: false, error: String(e && e.message ? e.message : e), workspaceId: wsId });
             }
         }
-
-        if (unresolved.length > 0) {
-            notify('Skipped unknown flow(s): ' + unresolved.join(', '), 'warning');
-        }
-
         let allOk = results.length > 0 && results.every(function(r) { return r && r.ok; });
         return {
             ok: allOk,
@@ -1935,6 +2114,55 @@
     //  Main Import Entry Point                                            //
     // ================================================================== //
 
+    // A connection the model was shown across tabs — `A → link out` on one,
+    // `link in → B` on another, both in the context — is cut here, over all
+    // the context flows at once: every other step works one workspace at a
+    // time and cannot see the far end. Tabs outside the context are never
+    // touched. See docs/{en,jp}/vibe-schema.md.
+    function severAcrossFlows(messageContent, allowedWorkspaceIds) {
+        let ids = Array.isArray(allowedWorkspaceIds) ? allowedWorkspaceIds.filter(Boolean) : [];
+        if (ids.length < 2) return;
+        let removals = (extractFlowDirectives(messageContent).removeConnections || []);
+        if (removals.length === 0) return;
+        let context = LLMPlugin.UI.getFlowsByIds(ids, { includeCanvasExtras: true });
+        if (!Array.isArray(context)) return;
+        let before = context.filter(function(n) { return n && n.z && ids.indexOf(n.z) !== -1; });
+        let inter = Converter.toIntermediate(context, { includeIdMap: true });
+        let idToAlias = (inter && inter._meta && inter._meta.idToAlias) || {};
+        let aliasToId = {};
+        Object.keys(idToAlias).forEach(function(id) { aliasToId[idToAlias[id]] = id; });
+
+        let all = readRouting(before);
+        let cross = [];
+        removals.forEach(function(rc) {
+            let from = all.byId[aliasToId[rc.from]], to = all.byId[aliasToId[rc.to]];
+            if (!from || !to || !Array.isArray(from.wires)) return;
+            let port = (typeof rc.fromPort === 'number' && rc.fromPort >= 0) ? rc.fromPort : null;
+            let ownTab = readRouting(before.filter(function(n) { return n.z === from.z; }));
+            let reaches = from.wires.some(function(p, i) {
+                if (port !== null && i !== port) return false;
+                return all.logical(from.id + '#' + i)[to.id] && !ownTab.logical(from.id + '#' + i)[to.id];
+            });
+            if (reaches) cross.push({ from: from.id, to: to.id, port: port });
+        });
+        if (cross.length === 0) return;
+
+        let after = JSON.parse(JSON.stringify(before));
+        severConnections(after, cross);
+        after = removeIdleRouting(after, before);
+
+        ids.forEach(function(wsId) {
+            let was = JSON.stringify(before.filter(function(n) { return n.z === wsId; }));
+            let desired = after.filter(function(n) { return n.z === wsId; });
+            if (JSON.stringify(desired) === was) return;
+            let res = applyWorkspaceDiff(desired, wsId);
+            if (res && res.fallback) res = replaceWorkspaceFlow(desired, wsId);
+            if (!res || !res.ok) {
+                Common.notice('Could not cut a connection across flows: ' + ((res && res.error) || 'unknown error'), 'error');
+            }
+        });
+    }
+
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
         try {
@@ -1942,34 +2170,19 @@
             // leaves the active tab as the only sensible target.
             let allowedSet = buildAllowedWorkspaceSet(options.allowedWorkspaceIds);
 
-            // Split a `flow`-tagged schema per workspace before importing.
-            // inferImplicitFlowTagging fills in tags the LLM omitted, so the
-            // dispatch still fires without explicit markers.
-            if (!options._isSubImport) {
+            // Read the reply against the aliases the model was shown, then
+            // import each context flow's share of it on its own.
+            if (!options._isSubImport && allowedSet) {
+                let ids = Object.keys(allowedSet);
+                severAcrossFlows(messageContent, ids);
                 let rawSchema = extractLastVibeSchema(messageContent);
-                let dispatchSchema = inferImplicitFlowTagging(rawSchema, allowedSet);
-                let inferredContent = (dispatchSchema && dispatchSchema !== rawSchema)
-                    ? serializeSchemaAsMessage(dispatchSchema)
-                    : messageContent;
-                let flowGroups = collectFlowGroupsFromSchema(dispatchSchema, allowedSet);
-                let flowLabels = flowGroups ? Object.keys(flowGroups) : [];
-                if (flowLabels.length > 1) {
-                    return await dispatchMultiFlowImport(dispatchSchema, flowGroups, options, allowedSet);
-                }
-                if (flowLabels.length === 1) {
-                    let targetLabel = flowLabels[0];
-                    let onlyWs = resolveFlowLabelToWorkspace(targetLabel, allowedSet);
-                    if (onlyWs) {
-                        options = Object.assign({}, options, { targetWorkspaceId: onlyWs });
-                        // Use the inferred-tagged message so downstream
-                        // parsing sees the same flow tags that drove the
-                        // workspace decision.
-                        if (inferredContent !== messageContent) {
-                            messageContent = inferredContent;
-                        }
-                    } else {
-                        notify('Target flow "' + targetLabel + '" is not one of the flows this chat is working on. Using the context flow instead.', 'warning');
-                    }
+                if (rawSchema && Converter.isVibeSchema(rawSchema)) {
+                    let subs = planByWorkspace(rawSchema, ids, allowedSet);
+                    let wsIds = Object.keys(subs);
+                    if (wsIds.length > 1) return await dispatchToWorkspaces(subs, options);
+                    if (wsIds.length === 0) return { ok: true, importedCount: 0, addedNodeCount: 0, addedNodes: [] };
+                    options = Object.assign({}, options, { targetWorkspaceId: wsIds[0] });
+                    messageContent = serializeSchemaAsMessage(subs[wsIds[0]]);
                 }
             }
 
@@ -2016,14 +2229,14 @@
                             : '';
                         let near = diag.snippet ? ' Near: …' + diag.snippet + '…' : '';
                         let detail = 'JSON parse failed' + where + ': ' + diag.error + '.' + near;
-                        notify(detail, { type: 'warning', timeout: 12000 });
+                        Common.notice(detail, 'warning');
                         try { console.warn('[LLM Plugin] JSON parse failed:', diag); } catch (e) {}
                         postTerminalLog('warn', 'json-parse-failed',
                             'LLM response contained a fenced code block that failed to parse',
                             { line: diag.line, column: diag.column, error: diag.error });
                         return { ok: false, error: detail };
                     }
-                    notify('No JSON flow found in message', 'warning');
+                    Common.notice('No JSON flow found in message', 'warning');
                     return { ok: false, error: 'No JSON flow found in message' };
                 }
             }
@@ -2256,7 +2469,7 @@
                 });
                 let names = Object.keys(missing);
                 if (names.length > 0) {
-                    notify('Config node(s) not found: ' + names.join(', ') +
+                    Common.notice('Config node(s) not found: ' + names.join(', ') +
                         '. The node(s) referring to them were left unconfigured.', 'warning');
                     postTerminalLog('warn', 'config-ref-unresolved',
                         'A schema referenced config nodes that do not exist', { aliases: names });
@@ -2272,7 +2485,7 @@
                     if (isCanvasNode(n)) n.z = currentWorkspace;
                 });
             } else {
-                notify('Warning: could not determine active workspace; imported nodes may not be in the deployed flow', 'warning');
+                Common.notice('Could not determine active workspace; imported nodes may not be in the deployed flow', 'warning');
             }
 
             let hasDirectives = (flowDirectives.removeTokens || []).length > 0 ||
@@ -2280,13 +2493,13 @@
                                 (flowDirectives.repositionTokens || []).length > 0 ||
                                 (connectionHints || []).length > 0;
             if (!newNodes.length && !hasDirectives) {
-                notify('Import aborted: no valid nodes found (removed tab/blank nodes)', 'warning');
+                Common.notice('Import aborted: no valid nodes found (removed tab/blank nodes)', 'warning');
                 return { ok: false, error: 'No valid nodes after sanitization' };
             }
 
             let bad = newNodes.find(function(n) { return typeof n.type !== 'string' || n.type.length === 0; });
             if (bad) {
-                notify('Import aborted: invalid node shape', 'error');
+                Common.notice('Import aborted: invalid node shape', 'error');
                 console.warn('[LLM Plugin] bad node', bad);
                 return { ok: false, error: 'Invalid node shape' };
             }
@@ -2295,7 +2508,7 @@
             // canvas, so an out-of-scope id here would destroy a flow.
             if (!isWorkspaceAllowed(allowedSet, currentWorkspace)) {
                 let scopeErr = 'Import aborted: target flow is outside this chat\'s flow context';
-                notify(scopeErr, 'error');
+                Common.notice(scopeErr, 'error');
                 postTerminalLog('warn', 'import-scope-violation',
                     'Refused to write outside the conversation flow context',
                     { target: currentWorkspace || null, allowed: Object.keys(allowedSet || {}) });
@@ -2314,7 +2527,7 @@
             }
             if (!rebuiltResult || !rebuiltResult.ok) {
                 let errMsg = (rebuiltResult && rebuiltResult.error) || 'Failed to rebuild flow from snapshot';
-                notify('Import failed: ' + errMsg, 'error');
+                Common.notice('Import failed: ' + errMsg, 'error');
                 return {
                     ok: false,
                     error: errMsg
@@ -2326,17 +2539,6 @@
             }).map(function(n) {
                 return { id: n.id, type: n.type || '', name: n.name || '' };
             });
-
-            // One toast, counting what the edit DID: an edit that reuses an
-            // alias rewrites that node in place and adds nothing. The counts
-            // come from the diff, which the fallback path does not report.
-            let summary = [];
-            if (addedNodes.length > 0) summary.push(addedNodes.length + ' added');
-            if (rebuiltResult.updated > 0) summary.push(rebuiltResult.updated + ' changed');
-            if (rebuiltResult.removed > 0) summary.push(rebuiltResult.removed + ' removed');
-            notify(summary.length > 0
-                ? 'Flow updated (' + summary.join(', ') + ')'
-                : 'Flow updated', 'success');
 
             return {
                 ok: true,
@@ -2350,7 +2552,7 @@
             postTerminalLog('error', 'import-exception', 'Unhandled import exception', {
                 message: err && err.message ? err.message : String(err)
             });
-            notify('Failed to import flow: ' + (err && err.message ? err.message : String(err)), 'error');
+            Common.notice('Failed to import flow: ' + (err && err.message ? err.message : String(err)), 'error');
             return { ok: false, error: err && err.message ? err.message : String(err) };
         }
     };
@@ -2434,31 +2636,6 @@
         });
     }
 
-    // The workspaces a snapshot will write to — the restore's queue scope.
-    function checkpointWorkspaceIds(nodes) {
-        let ids = LLMPlugin.UI ? LLMPlugin.UI.extractWorkspaceIds(nodes) : [];
-        if (ids.length > 0) return ids;
-        let active = getActiveWorkspaceId();
-        return active ? [active] : [];
-    }
-
-    // Through the queue, as an undo: a restore must not interleave with an
-    // apply that is running, and it ends the hold on the flows it rewinds
-    // rather than owing a deploy for them. See design.md §13.
-    function queuedRestore(nodes) {
-        let Queue = LLMPlugin.ApplyQueue;
-        if (!Queue || typeof Queue.enqueue !== 'function') {
-            return restoreMultiFlowCheckpoint(nodes);
-        }
-        return Queue.enqueue({
-            source: 'sidebar',
-            label: 'Restore flow',
-            targetFlowIds: checkpointWorkspaceIds(nodes),
-            undo: true,
-            apply: function() { return restoreMultiFlowCheckpoint(nodes); }
-        });
-    }
-
     Importer.restoreCheckpoint = function(checkpointId) {
         if (!checkpointId) return Promise.resolve({ ok: false, error: 'checkpointId is required' });
         return Common.apiFetch('llm-plugin/checkpoints/' + encodeURIComponent(checkpointId))
@@ -2474,7 +2651,7 @@
                 if (!cp || !Array.isArray(cp.flow)) {
                     return { ok: false, error: 'Invalid checkpoint data' };
                 }
-                return queuedRestore(cp.flow);
+                return restoreMultiFlowCheckpoint(cp.flow);
             })
             .catch(function(err) {
                 return { ok: false, error: err && err.message ? err.message : String(err) };

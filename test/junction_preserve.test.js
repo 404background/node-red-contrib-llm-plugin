@@ -171,7 +171,6 @@ async function scenarioEditsNeverMoveOrRewireAJunction() {
     'a node added from Start': { nodes: { debug_tap: { type: 'debug', name: 'Tap' } },
       connections: [{ from: 'inject_start', to: 'debug_tap' }] },
     'a reposition of the sequence': { reposition: ['inject_start', 'change_left', 'debug_right'] },
-    'a removal of a wire the context showed': { connections: [{ remove: { from: 'inject_start', to: 'change_left' } }] },
   };
   for (const label of Object.keys(edits)) {
     const canvas = junctionCanvas();
@@ -212,11 +211,111 @@ async function scenarioTheContextReadsThroughJunctions() {
   const second = await runImport(canvas.nodes, canvas.junctions, [], throughLink);
   ok(second.res && second.res.ok && JSON.stringify(second.byId['b'].wires) === JSON.stringify([['lo']]),
     'nor beside a link out -> link in (' + JSON.stringify(second.byId['b'].wires) + ')');
-  const cut = fence({ connections: [{ remove: { from: 'change_left', to: 'debug_far' } }] });
-  const third = await runImport(canvas.nodes, canvas.junctions, [], cut);
-  ok(third.res && third.res.ok && JSON.stringify(third.byId['b'].wires) === JSON.stringify([['lo']]) &&
-     JSON.stringify(third.byId['lo'].links) === JSON.stringify(['li']),
-    'and removing it cuts nothing: the link belongs to the user');
+}
+
+// ------------------------------------------------------------------ //
+//  A removed connection is cut through its routing                     //
+// ------------------------------------------------------------------ //
+//
+// The model sees `A -> B` wherever A reaches B through junctions and link
+// nodes, so removing it has to cut there — and nothing else may change: every
+// other connection reads the same afterwards. Routing the cut leaves idle
+// goes with it.
+
+// The connections the model would read off a flow, as `from>to` strings.
+function connectionsOf(P, flow) {
+  return P.FlowConverterCore.toIntermediate(flow.filter((n) => n.type !== 'tab'))
+    .connections.map((c) => c.from + (c.fromPort ? ':' + c.fromPort : '') + '>' + c.to).sort();
+}
+
+async function cutCase(label, canvas, reply, expectGone, check) {
+  const mock = buildEditorMock({ tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }],
+    nodes: canvas.nodes, junctions: canvas.junctions || [], activeId: 'tab1' });
+  const P = loadPluginSandbox(mock.RED);
+  const before = connectionsOf(P, canvas.nodes.concat(canvas.junctions || []));
+  const removed = (reply.connections || []).map((c) => c.remove.from + '>' + c.remove.to);
+  const res = await P.Importer.importFlowFromMessage(fence(reply), { mode: 'agent' });
+  const flow = mock.snapshot('tab1');
+  const byId = {};
+  flow.forEach((n) => { byId[n.id] = n; });
+  const after = connectionsOf(P, flow);
+  const expected = before.filter((c) => removed.indexOf(c) === -1 &&
+    !(reply.nodes && Object.keys(reply.nodes).some((a) => c.split('>').indexOf(a) !== -1)));
+  ok(res && res.ok && JSON.stringify(after) === JSON.stringify(expected),
+    label + ': the model reads exactly the connections that stay (' + after.join(' ') + ')');
+  const left = expectGone.filter((id) => byId[id]);
+  ok(left.length === 0, label + ': the routing left idle is gone (' + left.join(',') + ')');
+  if (check) check(byId);
+}
+
+async function scenarioARemovedConnectionIsCutThroughRouting() {
+  console.log('\nScenario 9: removing a connection cuts it through junctions and link nodes');
+  const node = (id, type, name, wires, extra) =>
+    Object.assign({ id, type, z: 'tab1', name, x: 100, y: 100, wires }, extra || {});
+  const junction = (id, wires) => ({ id, type: 'junction', z: 'tab1', x: 200, y: 100, wires });
+
+  await cutCase('fan-out, one branch', junctionCanvas(),
+    { connections: [{ remove: { from: 'inject_start', to: 'change_left' } }] }, [],
+    (byId) => ok(JSON.stringify(byId['j1'].wires) === JSON.stringify([['c']]) &&
+      JSON.stringify(byId['a'].wires) === JSON.stringify([['j1']]),
+      'fan-out: only the junction\'s wire to Left went (' + JSON.stringify(byId['j1'].wires) + ')'));
+
+  await cutCase('fan-out, every branch', junctionCanvas(),
+    { connections: [{ remove: { from: 'inject_start', to: 'change_left' } },
+                    { remove: { from: 'inject_start', to: 'debug_right' } }] }, ['j1']);
+
+  await cutCase('through a link', junctionCanvas(),
+    { connections: [{ remove: { from: 'change_left', to: 'debug_far' } }] }, ['lo', 'li']);
+
+  await cutCase('fan-in', {
+    nodes: [node('a', 'inject', 'A', [['j']]), node('c', 'inject', 'C', [['j']]), node('b', 'debug', 'B', [])],
+    junctions: [junction('j', [['b']])],
+  }, { connections: [{ remove: { from: 'inject_a', to: 'debug_b' } }] }, [],
+  (byId) => ok(JSON.stringify(byId['a'].wires) === JSON.stringify([[]]) &&
+    JSON.stringify(byId['j'].wires) === JSON.stringify([['b']]),
+    'fan-in: A left the junction, which still serves C'));
+
+  // A and C share J to B and D: no wire serves A -> B alone, so A leaves J
+  // and is wired back to D.
+  await cutCase('a shared crossing', {
+    nodes: [node('a', 'inject', 'A', [['j']]), node('c', 'inject', 'C', [['j']]),
+            node('b', 'debug', 'B', []), node('d', 'debug', 'D', [])],
+    junctions: [junction('j', [['b', 'd']])],
+  }, { connections: [{ remove: { from: 'inject_a', to: 'debug_b' } }] }, [],
+  (byId) => ok(JSON.stringify(byId['a'].wires) === JSON.stringify([['d']]),
+    'a shared crossing: A is wired straight to D (' + JSON.stringify(byId['a'].wires) + ')'));
+
+  // ... unless routing that leads only to D is already there.
+  await cutCase('a shared crossing beside other routing', {
+    nodes: [node('a', 'inject', 'A', [['j']]), node('c', 'inject', 'C', [['j']]), node('e', 'inject', 'E', [['k']]),
+            node('b', 'debug', 'B', []), node('d', 'debug', 'D', [])],
+    junctions: [junction('j', [['b', 'd']]), junction('k', [['d']])],
+  }, { connections: [{ remove: { from: 'inject_a', to: 'debug_b' } }] }, [],
+  (byId) => ok(JSON.stringify(byId['a'].wires) === JSON.stringify([['k']]),
+    'beside other routing: A is wired into the junction that reaches D alone (' + JSON.stringify(byId['a'].wires) + ')'));
+
+  // A link in a link call uses stays, and so does its wire on.
+  await cutCase('a link in a link call uses', {
+    nodes: [node('a', 'inject', 'A', [['lo']]), node('lc', 'link call', 'call', [[]], { links: ['li'] }),
+            node('lo', 'link out', 'out', [], { mode: 'link', links: ['li'] }),
+            node('li', 'link in', 'in', [['d']], { links: ['lo'] }), node('d', 'debug', 'D', [])],
+  }, { connections: [{ remove: { from: 'inject_a', to: 'debug_d' } }] }, ['lo'],
+  (byId) => ok(byId['li'] && JSON.stringify(byId['li'].wires) === JSON.stringify([['d']]) &&
+    JSON.stringify(byId['li'].links) === JSON.stringify([]),
+    'the called link in keeps its wire and forgets the link out'));
+
+  await cutCase('a deleted target', junctionCanvas(), { nodes: { debug_far: null } }, ['lo', 'li'],
+    (byId) => ok(JSON.stringify(byId['j1'].wires) === JSON.stringify([['b', 'c']]),
+      'a deleted target: the junction serving others is untouched'));
+
+  await cutCase('a deleted source', junctionCanvas(), { nodes: { inject_start: null } }, ['j1']);
+
+  // Routing idle before the edit is the user's work in progress.
+  await cutCase('routing idle before the edit', {
+    nodes: [node('a', 'inject', 'A', [['b']]), node('b', 'debug', 'B', [])],
+    junctions: [junction('j', [[]])],
+  }, { connections: [{ remove: { from: 'inject_a', to: 'debug_b' } }] }, [],
+  (byId) => ok(!!byId['j'], 'an idle junction nobody touched stays'));
 }
 
 async function scenarioAHoverOnlyLinkDoesNotJoinASequence() {
@@ -274,6 +373,57 @@ async function scenarioRoutingFollowsTheBoxItServes() {
   ok(lo.x === b1.x && lo.y - b1.y === 100, 'and so did the link out it feeds (' + (lo.x - b1.x) + ',' + (lo.y - b1.y) + ')');
 }
 
+// A on Flow 1 reaches B on Flow 2 through a link out / link in pair. The same
+// link out also feeds a link in on Flow 3, which is not in the context.
+async function scenarioACrossTabConnectionIsCutWhenBothTabsAreInContext() {
+  console.log('\nScenario 10: a connection across tabs is cut when both tabs are in the context');
+  const tabs = [{ id: 't1', type: 'tab', label: 'Flow 1' }, { id: 't2', type: 'tab', label: 'Flow 2' },
+    { id: 't3', type: 'tab', label: 'Flow 3' }];
+  function canvas(withFlow3) {
+    return [
+      { id: 'a', type: 'inject', z: 't1', name: 'A', x: 100, y: 100, wires: [['lo']] },
+      { id: 'lo', type: 'link out', z: 't1', name: '', x: 250, y: 100, mode: 'link',
+        links: withFlow3 ? ['li', 'li3'] : ['li'], wires: [] },
+      { id: 'li', type: 'link in', z: 't2', name: '', x: 100, y: 100, links: ['lo'], wires: [['b']] },
+      { id: 'b', type: 'debug', z: 't2', name: 'B', x: 250, y: 100, wires: [] },
+    ].concat(withFlow3 ? [
+      { id: 'li3', type: 'link in', z: 't3', name: '', x: 100, y: 100, links: ['lo'], wires: [['c']] },
+      { id: 'c', type: 'debug', z: 't3', name: 'C', x: 250, y: 100, wires: [] },
+    ] : []);
+  }
+  async function run(withFlow3, allowed) {
+    const mock = buildEditorMock({ tabs, nodes: canvas(withFlow3), activeId: 't1' });
+    const P = loadPluginSandbox(mock.RED);
+    const ctx = P.FlowConverterCore.toIntermediate(P.UI.getFlowsByIds(allowed, { includeCanvasExtras: true }));
+    const shown = ctx.connections.map((c) => c.from + '>' + c.to);
+    const res = await P.Importer.importFlowFromMessage(
+      fence({ connections: [{ remove: { from: 'inject_a', to: 'debug_b' } }] }),
+      { mode: 'agent', allowedWorkspaceIds: allowed });
+    const byId = {};
+    tabs.forEach((t) => mock.snapshot(t.id).forEach((n) => { byId[n.id] = n; }));
+    return { res, byId, shown };
+  }
+
+  const only = await run(false, ['t1', 't2']);
+  ok(only.shown.indexOf('inject_a>debug_b') !== -1, 'the model is shown A -> B across the tabs');
+  ok(only.res && only.res.ok && !only.byId['lo'] && !only.byId['li'] &&
+     JSON.stringify(only.byId['a'].wires) === JSON.stringify([[]]),
+    'removing it cuts the link, and both link nodes, left idle, go');
+
+  const shared = await run(true, ['t1', 't2']);
+  ok(shared.res && shared.res.ok && shared.byId['lo'] &&
+     JSON.stringify(shared.byId['lo'].links) === JSON.stringify(['li3']) && !shared.byId['li'],
+    'a link out that also feeds a tab outside the context keeps that link (' +
+      JSON.stringify(shared.byId['lo'] && shared.byId['lo'].links) + ')');
+  ok(JSON.stringify(shared.byId['li3'].links) === JSON.stringify(['lo']) &&
+     JSON.stringify(shared.byId['a'].wires) === JSON.stringify([['lo']]),
+    'and the tab outside the context is untouched');
+
+  const oneTab = await run(false, ['t1']);
+  ok(oneTab.shown.indexOf('inject_a>debug_b') === -1 && oneTab.byId['lo'] && oneTab.byId['li'],
+    'with one of the tabs out of the context, nothing is shown and nothing is cut');
+}
+
 async function run() {
   await scenarioJunctionSurvivesAddNode();
   await scenarioEditKeepsGroupMembership();
@@ -283,6 +433,8 @@ async function run() {
   await scenarioTheContextReadsThroughJunctions();
   await scenarioAHoverOnlyLinkDoesNotJoinASequence();
   await scenarioRoutingFollowsTheBoxItServes();
+  await scenarioARemovedConnectionIsCutThroughRouting();
+  await scenarioACrossTabConnectionIsCutWhenBothTabsAreInContext();
   summary();
 }
 

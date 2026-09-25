@@ -50,13 +50,11 @@ it would need is the plugin's already.
   the target flows immediately before applying, tagged `node-apply`, and the
   sidebar's **Restore Points** dialog is where to find it — a node checkpoint has
   no chat message to hang a Restore button off. If the checkpoint cannot be
-  saved the edit still applies and the notification says so. Review on the canvas
+  saved the edit still applies and a line in the chat panel says so. Review on the canvas
   before Deploy; the editor's undo works too.
-- **Applies are queued.** A reply arrives whenever the model finishes, which
-  may be while an edit of your own is applied and not yet deployed. Rather than
-  merge on top of uncommitted work, the edit waits for that deploy — see
-  [design.md §13](./design.md). With **Auto deploy** the node releases its own
-  hold; without it the wait ends when you deploy.
+- **Applies are not queued.** A reply is applied when it arrives, onto the
+  canvas as it stands then — see [design.md §13](./design.md). Its checkpoint
+  is what undoes it.
 - **Auto deploy skips validation.** The editor half invokes
   `core:deploy-flows` with the deploy action's `skipValidation` flag, which is
   the path behind the confirm dialog's own Confirm button. Without it a single

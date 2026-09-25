@@ -19,7 +19,6 @@ const CLIENT_MODULES = [
   'src/core/canvas_layout.js',
   'src/core/flow_converter_core.js',
   'src/core/llm_json_parser.js',
-  'src/apply_queue.js',
   'src/chat_manager.js',
   'src/importer.js',
   'src/ui_core.js',
@@ -211,6 +210,8 @@ function buildEditorMock(opts) {
     live.wires = clone(n.wires || []);
     linkFromWires(live);
   });
+  // A junction's wires are links in the registry too, as in the editor.
+  Object.values(junctionsById).forEach(linkFromWires);
   // `captured` is the record of what the code under test did, so the links
   // laid down building the starting flow must not appear in it.
   captured.linksAdded.length = 0;
@@ -243,8 +244,12 @@ function buildEditorMock(opts) {
       out.nodes = (entity.nodes || []).map((m) => (typeof m === 'string' ? m : m && m.id)).filter(Boolean);
       return out;
     }
-    if (junctionsById[entity.id] || configById[entity.id]) return out;
+    if (configById[entity.id]) return out;
     const w = wiresOf(entity);
+    if (junctionsById[entity.id]) {
+      out.wires = w.length > 0 ? w : [[]];
+      return out;
+    }
     const ports = typeof entity.outputs === 'number' ? entity.outputs : entity._ports;
     if (typeof ports === 'number') while (w.length < ports) w.push([]);
     out.wires = w;
@@ -282,7 +287,7 @@ function buildEditorMock(opts) {
         const added = [];
         clone(nodes).forEach((n) => {
           if (!n || !n.id) return;
-          if (n.type === 'junction') junctionsById[n.id] = n;
+          if (n.type === 'junction') { junctionsById[n.id] = n; added.push(n); }
           else if (n.type === 'group') groupsById[n.id] = n;
           else if (n.z === undefined) configById[n.id] = n;
           else { nodesById[n.id] = n; added.push(n); }

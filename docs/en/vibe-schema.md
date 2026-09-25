@@ -234,8 +234,30 @@ and deletions in any order.
 the user's routing: the context reads a wire through them as a connection to
 where it leads (`A → junction → B` and `A → link out ⇢ link in → B` both show as
 `A → B`). A reply that restates that connection adds no wire beside the
-routing, and one that removes it cuts nothing; routing is only ever changed by
-hand.
+routing.
+
+A reply that removes such a connection cuts it inside the routing, and every
+other connection reads the same afterwards:
+
+1. Every routing edge (a wire, or a link out's link) that carries only removed
+   connections is cut: `A → J → {B, C}` minus `A → B` cuts `J → B`; `{A, C} →
+   J → B` minus `A → B` cuts `A → J`.
+2. When no such edge exists because the path is shared (`{A, C} → J → {B, D}`
+   minus `A → B`), the source port leaves the routing that reaches the removed
+   target and is wired back to what it should still reach: into an existing
+   junction or link out that leads only to kept targets, otherwise directly.
+3. Routing the edit left idle goes: a routing edge that carried a connection
+   before and carries none now is cut, then a junction left with no wire at
+   all, a link out left with no link, and a link in left unreferenced (by a
+   link out or a `link call`) or with nowhere to send are deleted. The same
+   runs after a node delete. Routing that was already idle before the edit is
+   left alone, and so is a link to a tab outside the context.
+
+A link between two tabs that are both in the context is read the same way:
+`A` on Flow 1 through a link out ⇢ link in to `B` on Flow 2 shows as `A → B`,
+and removing it cuts it by the rules above, over all the context flows at once
+(`severAcrossFlows`). A link to a tab outside the context is never shown as a
+connection, and never cut.
 
 An edge delete without `fromPort` removes the wire from whichever port it
 leaves from; with `fromPort`, only from that one. Connections are otherwise
@@ -339,8 +361,13 @@ list — declaration order doesn't matter once the anchor is named. See
    where it leads and emitted as a connection there.
 2. Generate aliases via `generateAlias`.
 3. For each remaining node, collect non-META, non-metadata keys (see
-   `isMetaProp`) into `props`. Resolve string props matching another node
-   ID to that node's alias so the schema is portable.
+   `isMetaProp`) into `props`. A node id anywhere in a prop — nested in an
+   array or object too, like a catch node's `scope` — becomes that node's
+   alias, so the model never sees an id. A prop naming something with no alias
+   (routing, a group, a tab — a `link call`'s `links`) is left out, and the
+   merge keeps it as it was. On the way back the importer's
+   `restoreNodeRefs` turns a string array naming only nodes back into ids, and
+   any other nested string only where the node already held that reference.
 4. Walk each node's `wires[port][i]` and emit a `{ from, to, fromPort? }`
    entry per target.
 5. Auto-generate a short description (`"3 node(s): inject, function, debug"`).

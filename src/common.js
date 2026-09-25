@@ -15,11 +15,20 @@
         return String(str).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
     };
 
-    // RED.notify with the availability guard every caller was repeating.
-    // `type` may be a string ('success' | 'warning' | 'error' | 'info')
-    // or a Node-RED options object ({ type, timeout, ... }).
-    Common.notify = function(text, type) {
-        if (window.RED && RED.notify) RED.notify(text, type || 'info');
+    // A warning or error, shown as a line in the chat. The plugin raises no
+    // editor notifications of its own, and says nothing when things work.
+    // Not kept in the chat history.
+    Common.notice = function(text, level) {
+        let chat = (typeof document !== 'undefined') ? document.getElementById('llm-plugin-chat') : null;
+        if (!chat) {
+            if (window.console) console.warn('[LLM Plugin] ' + text);
+            return;
+        }
+        let line = document.createElement('div');
+        line.className = 'llm-plugin-notice ' + (level === 'error' ? 'notice-error' : 'notice-warning');
+        line.textContent = String(text);
+        chat.appendChild(line);
+        chat.scrollTop = chat.scrollHeight;
     };
 
     // createElement with optional className / textContent.

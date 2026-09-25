@@ -26,6 +26,7 @@ decisions and priorities**.
 | **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
 | **The snapshot must be the "complete flow"** | The snapshot is both the merge base and the rollback state, and the fallback apply still clears the target workspace, so any canvas entity missing from it can still disappear. → junctions / groups must be included (§7). |
 | **Keep what the reply does not name** | One rule behind several mechanisms: anything a reply does not mention stays as it is, and removing something takes an explicit instruction. Wires are added, never cut by omission (§4.1). Properties that are not mentioned keep their values (§4.2). Config nodes are never created or deleted (§5). Junctions and groups are kept in the snapshot (§7). A group box is the user's: a reply cannot create, edit or delete one, and it is never removed because it became empty (§15). **Position is the exception**: the layout tidies the whole canvas, whoever placed things. Every box is fitted and aligned, and every overlap is resolved. Only a flow's shape is kept, since an untouched flow is translated, never reflowed ([layout.md](./layout.md)). A new mechanism starts from this default. |
+| **The plugin raises no notifications** | Only Node-RED's own system notices (a deploy result, for one) reach the user as notifications. The plugin says nothing when things work, and a warning or error it has to report is a line in the chat panel (`Common.notice`), not kept in the chat history. |
 
 ### The metadata boundary (`_`-prefixed properties)
 
@@ -169,11 +170,15 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
 
 ---
 
-## 6. Multi-flow / implicit flow tagging
+## 6. Multi-flow: one alias, one node
 
-- If schema nodes carry `flow: "<tab name>"`, apply per workspace (`dispatchMultiFlowImport`).
-- **Implicit tagging** (`inferImplicitFlowTagging`): even if the LLM forgets the tags, when the schema's aliases/connections resolve against existing nodes across multiple workspaces, infer alias→tab name, and follow connections so new nodes inherit the tab of their existing neighbors.
-- **Reason**: For instructions spanning multiple tabs like "MCU side / Server side", the LLM tends to drop the `flow` tag. Without tags, connections cannot cross the active-tab boundary, producing the "nothing connects to mqtt_out" symptom. Inference fills the gap.
+- **The model is shown one alias numbering over every context flow**, so each alias names exactly one node. The importer reads a reply against that same numbering (`contextAliasTable`, rebuilt from `UI.getFlowsByIds`) before anything else, and `planByWorkspace` splits the reply into one sub-schema per context flow, written in the aliases that flow's own import resolves.
+- **An existing node is edited on the tab it is on.** A `flow` on it is ignored; nothing moves between tabs.
+- **A new node** goes to its `flow` tab when that is a context flow, else to the flow of what it is wired to or captions, else to the default flow. It is renamed when its tab already gives that alias to another node.
+- A deletion, a `reposition` and a removed connection go to the flow of the node they name. A token that is not exactly an alias is looked up on each flow and applied only where exactly one flow has it.
+- A wire between two tabs is not made. A removed connection across two context tabs (through link nodes) is cut by `severAcrossFlows` ([vibe-schema.md](./vibe-schema.md)).
+- The llm-request node builds its context on the runtime (`flowContextFor`) with tabs in the order selected and config nodes in id order — the order `UI.getFlowsByIds` gives — so both sides number alike.
+- **Reason**: each tab on its own numbers its nodes independently, so two tabs both have a `debug`. Reading a reply tab by tab, or guessing the tab from the first one that had the alias, is how an edit landed on the wrong node. The numbering the model saw has no such ambiguity.
 
 ### The scan is confined to the context flows (mandatory)
 
@@ -183,7 +188,7 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 - Scoping makes "flows written ⊆ flows checkpointed" hold, which is what keeps Restore meaningful.
 - When the active tab is out of scope (the user switched tabs after Send), the target is a context flow, not the active tab. Only an empty scope (no flow selected) keeps the legacy active-tab behaviour.
 - A final check right before the apply **aborts** the import if the target escaped the scope.
-- Regression test: `test/cross_flow_isolation.test.js` (alias collision / tab switch / fan-out / out-of-scope `flow` tag / unscoped backwards compatibility).
+- Regression test: `test/cross_flow_isolation.test.js` (alias collision / tab switch / fan-out / out-of-scope `flow` tag / unscoped backwards compatibility / one alias one node / node ids in properties / runtime and editor numbering alike).
 
 ---
 
@@ -196,13 +201,13 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 ### Design (opt-in inclusion)
 - Added **`opts.includeCanvasExtras`** to `getFlowsByIds(flowIds, opts)` / `getCurrentFlow(flowIds, opts)`. Only when enabled, junctions / groups are included in the snapshot (`createExportableNodeSet` emits junctions correctly, with their wires).
 - The rebuild base (`importer.safeGetCurrentFlow`), the checkpoint save (`chat_manager.snapshotCurrentFlow`) and the LLM context (`vibe_ui.js`) opt in.
-- **Routing is the user's, and the model is not offered it.** Junctions and `link in` / `link out` nodes (`isRoutingNode`) get no alias in `toIntermediate`, and a wire through them reads as a connection to where it leads: `A → junction → B`, and `A → link out ⇢ link in → B`, both show as `A → B`. The model understands where messages go, and the alias numbering is the same with or without routing. A reply that restates such a connection would add a direct wire beside the routing, and the node would get every message twice: `dropWiresBesideRouting` drops a wire the reply added when the same port already reaches that node through routing. A reply that removes the connection finds no direct wire to cut. Routing is only ever changed by hand. (`link call` is not routing: it is a step that returns, and stays an ordinary node.)
+- **Routing is the user's, and the model is not offered it.** Junctions and `link in` / `link out` nodes (`isRoutingNode`) get no alias in `toIntermediate`, and a wire through them reads as a connection to where it leads: `A → junction → B`, and `A → link out ⇢ link in → B`, both show as `A → B`. The model understands where messages go, and the alias numbering is the same with or without routing. A reply that restates such a connection would add a direct wire beside the routing, and the node would get every message twice: `dropWiresBesideRouting` drops a wire the reply added when the same port already reaches that node through routing. A reply that removes the connection is cut inside the routing (`severConnections`), and routing the edit left idle is taken down (`removeIdleRouting`), so every other connection reads the same afterwards; see [vibe-schema.md](./vibe-schema.md). The model never adds or places routing itself. (`link call` is not routing: it is a step that returns, and stays an ordinary node.)
 
 ### Excluding groups from layout
 - A junction has x/y/wires, so `isCanvasNode` is true. It is a real routing point and stays in the layout adjacency graph, so a chain is laid out through it; then it goes back where it was. **The layout never places a junction** itself: it moves only with what it serves. A junction or link node outside a box follows the nodes it leads to (a `link out`, the nodes feeding it) by as much as they moved, so one between two boxes goes with the lower box when a node added above pushes it down ([layout.md](./layout.md#routing-follows-what-it-serves)). It is measured at its real 10×10, and `settleCollisions` moves whatever lands on one (a junction on a box edge is an ordinary route and is left alone).
 - A group also has x/y, so `isCanvasNode` is true too, but **a group's bounding box encloses its own members**. Feeding it to the collision-resolution passes makes it "collide with its own contents" and break.
 - → Added `isLayoutNode()` (= `isCanvasNode && type!=='group'`), applied to all layout calls. **Groups are excluded from layout** (their positions are kept as-is).
-- Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive; that no edit moves a junction whose targets stayed put, rewires it or lands on it; that routing between two boxes follows the box it feeds when that box is pushed down; that the context reads through junctions and a restated connection adds no wire; and that a link node's hover-only virtual link does not join two sequences.
+- Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive; that no edit moves a junction whose targets stayed put, rewires it or lands on it; that routing between two boxes follows the box it feeds when that box is pushed down; that the context reads through junctions and a restated connection adds no wire; that a removed connection is cut through junctions and link nodes with every other connection kept and idle routing removed; and that a link node's hover-only virtual link does not join two sequences.
 
 ### The rollback snapshot is subject to the same rule
 - Both appliers take their own backup before touching the workspace, so a failing `RED.nodes.import` can put the flow back. That backup used to hold **regular nodes only** — so the error path, the one case that is supposed to change nothing, deleted the workspace's junctions and groups for good.
@@ -246,10 +251,8 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 Main points to discuss on top of this document:
 
 1. **Group type classification**: In `isConfigNode`'s structural fallback, a group is treated as config before export and as canvas after export (with x/y). Currently reconciled by "excluding it from layout only" — should `type==='group'`/`'junction'` be made explicit in the type check?
-2. **Misfire risk of implicit flow tagging**: When the same alias exists on multiple tabs, inference adopts the first tab hit. Should ambiguous cases be handled more strictly?
-3. **Fuzzy matching scope**: Node matching is exact-only, while prose annotation and hint resolution use fuzzy (minLen 8). Is this boundary (how much approximate matching to allow) appropriate?
-4. **adminAuth support**: Should authenticated environments be brought into the supported scope?
-5. **Raw IDs still left inside props**: `toIntermediate`'s ID→alias substitution only inspects **top-level string values** of props. IDs nested in arrays or objects pass through to the model verbatim, which breaks the §0 premise that the LLM never sees IDs. Substituting recursively would require making `toNodeRed`'s alias→ID restoration symmetric to the same depth — miss that and the links break.
+2. **Fuzzy matching scope**: Node matching is exact-only, while prose annotation and hint resolution use fuzzy (minLen 8). Is this boundary (how much approximate matching to allow) appropriate?
+3. **adminAuth support**: Should authenticated environments be brought into the supported scope?
 
 ### Reference: alias resolution priority (`buildFlowLookup().resolve`)
 ```
@@ -417,144 +420,25 @@ edit that never landed.
 
 ---
 
-## 13. Ordering two producers against one canvas
+## 13. Two producers, one canvas
 
-### The collision
-The sidebar's Import button and the Agent node both apply flow edits to the same
-canvas, and the node's reply arrives whenever the model finishes — not at a moment
-anyone chose. Nothing separated them.
+The sidebar and the `llm-request` node both apply edits to the canvas, and a
+node reply arrives whenever its model finishes. **They are not ordered**: each
+apply lands when it arrives, merged onto the canvas as it stands at that moment.
 
-The damage lands on the **first** edit, not the second. Applying is a merge against
-the flow as it currently stands (§0, §3), so when the second apply takes its
-snapshot, the first edit is already there: undeployed, unreviewed, and now part of
-the base the second edit merges into. Both changes end up on the canvas, and the
-second apply's checkpoint rewinds to a state that already contains the first — so
-neither can be undone cleanly any more.
-
-### The rule
-A flow that has been **applied but not yet deployed is held**, and anything else
-targeting that flow waits. Applies that touch different flows never wait for each
-other, and among those that do wait, the earlier request goes first.
-
-"Held until deployed" is the right boundary because it is the same boundary the
-runtime uses. Until a deploy, the edit exists only in the editor: it is the user's
-to review, undo, or restore, and a second edit merging into it takes that decision
-away. After a deploy it is simply the flow, and the next edit merging into it is
-what merging is for.
-
-### Where the queue lives
-On the **server**, in `apply_queue_server.js`. The apply itself cannot move there —
-writing flows back through the Admin API cannot clear the open editor's unsaved
-state, which is why the plugin applies to the canvas in the browser at all — but the
-*ordering* has no reason to sit in a browser, and three things go wrong when it does:
-
-- **Two editors are two queues.** Ordering the sidebar against the Agent node inside
-  one browser leaves two people editing the same flows completely unsynchronised.
-  Worse, the node's reply is broadcast to *every* connected editor, so each one
-  applies it against its own view.
-- **A browser only sees its own deploys.** The release signal has to be a deploy, and
-  the editor's `deploy` event fires only in the browser that made it.
-- **A closed tab is a stuck queue.** Nothing outside the browser can notice that the
-  turn it took is never coming back.
-
-The client asks for a turn, waits to be granted it, applies, and reports back. State
-is pushed to every editor over comms (`llm-plugin/apply-queue`, retained, so an
-editor opened halfway through sees what is already waiting rather than an empty
-panel).
-
-### Release
-The runtime emits `runtime-event` with id `runtime-deploy` once a deploy has
-completed, and the queue listens for that. It is the same emitter the flow engine
-uses (`@node-red/util`'s `events`, which `RED.events` exposes to plugins), so it
-fires for a Deploy from **any** editor, for the Agent node's auto deploy — which goes
-through `core:deploy-flows`, the same action as the Deploy button — and for a deploy
-driven through the Admin API by something that is not an editor at all. None of those
-last two are visible to a browser.
-
-So an unattended node releases its own hold, a node without auto deploy waits for the
-user, and one person's Deploy frees the flow for everyone — all from one listener,
-with nothing needing to tell the cases apart.
-
-Two cases the deploy event does not cover, both surfaced in the sidebar's queue
-panel rather than left to deadlock:
-- **A failed apply holds nothing.** The importer rolls back, so nothing was
-  committed; holding its flows would make the next request wait for a deploy that
-  has no reason to happen.
-- **An edit undone by hand** ends it without a deploy. **Release** clears the hold
-  manually. A waiting request can also be cancelled, and its caller is told rather
-  than left hanging.
-- **A browser that takes its turn and closes** would hold everyone up. A grant that
-  is not completed within `GRANT_TIMEOUT_MS` expires, and a hold older than
-  `HOLD_MAX_AGE_MS` is dropped as a backstop. The cost of being wrong about an
-  expiry is one duplicate apply attempt; the cost of no timeout is a queue that never
-  moves again.
-
-An apply with **no declared scope** (no flow context was selected) conflicts with
-everything in both directions: it may read or write any flow, and guessing otherwise
-is how an edit lands somewhere nobody looked.
-
-### A restore is an apply, and it is the way out of a hold
-Restore writes to the canvas exactly as an import does — the button under a message,
-the restore-point list, and **Retry**, which rewinds to the retried turn's checkpoint
-before re-asking. So it goes through the queue too: rewinding the canvas under an
-apply that is mid-flight is the same collision as two imports, and the queue is the
-only thing that can see it.
-
-But it is not another edit owing a deploy — it is the remedy. A restore is queued as
-an **undo**, and the two rules differ from an edit's on exactly two points:
-
-- **A hold cannot block it.** Ending that hold is what it is for. It still waits
-  behind an earlier request for the same flows.
-- **Completing it releases** the holds on the flows it rewound, instead of taking
-  new ones. Those flows now match what the runtime has, so no deploy is owed for
-  them. A restore that **failed** releases nothing, for the same reason a failed
-  apply holds nothing: the canvas did not change.
-
-Without this, Retry was the worst of both: it rewound the flow and then queued its
-new edit behind a deploy nobody was going to make, so from the user's side the canvas
-simply stopped changing. A **blanket** hold (an apply whose scope was unknown)
-survives a scoped restore — that apply may have touched flows the snapshot says
-nothing about — and the panel's Release is still the way out of one.
-
-- Regression tests: `test/apply_queue.test.js` for the server rules (an undo is
-  granted while the flow is held, still waits behind a running apply, releases only
-  the flows it names, and releases nothing when it failed) and
-  `test/restore_queue.test.js` for the importer: the turn is requested as an undo
-  with the snapshot's own flows as its scope, and **nothing is restored until the
-  turn is granted**.
-
-### Saying that a turn is waiting
-Waiting is the normal outcome of the rule above, and from the outside it looks
-exactly like the failure it is meant to prevent: the canvas does not change. In Agent
-mode there is not even a click to attribute it to. So a request that is not granted
-immediately says so once, when it is queued, naming what it waits for — the panel
-then carries the detail and the way out.
-
-The same reasoning applies to a request that never joins the queue at all (the
-endpoint is unreachable, the runtime half is older than the editor half). That used
-to be swallowed by the sidebar on the grounds that "the importer reports its own
-errors" — true, but only for an import that actually ran. Everything the queue
-itself decides is now reported, and only what happens *after* a completed apply is
-left to the console.
-
-### What this does and does not cover
-It covers every editor talking to one Node-RED, which is what "several people working
-on the same flows" means in practice. It does not extend past that runtime: two
-Node-RED instances behind a shared store would each keep their own queue.
-
-Node-RED's own guard remains the backstop for the moment of writing: the flows POST
-carries a revision, and a deploy against a stale one comes back `409` and raises the
-editor's merge-conflict dialog. The queue covers the window *before* that — the time
-an edit sits applied and undeployed, which the revision check cannot see.
-
-- Regression tests: `test/apply_queue.test.js` drives the server rules (different
-  flows do not wait, the same flow waits for the deploy, arrival order is preserved,
-  a deploy from another editor releases the hold, a failure holds nothing, an unknown
-  scope holds everything, an abandoned grant expires, and every change is published).
-  `test/apply_queue_client.test.js` drives the browser protocol — that nothing is
-  applied before the turn is granted, that a re-pushed grant does not apply twice,
-  that a failure is still reported so the turn is given up, and that another editor's
-  grant is not run locally.
+- Each apply saves its checkpoint immediately before it runs. Restoring it puts
+  its flows back as they were then, which also takes away anything applied
+  after it.
+- A node reply reaches every open editor, and only the first to claim it
+  (`agent-apply/claim`) applies it, so it is applied once.
+- The write itself is still Node-RED's to guard: a deploy against an old
+  revision returns `409` and opens the editor's merge-conflict dialog.
+- **Why there is no queue.** An applied-but-undeployed flow used to be held
+  until a deploy, and every other edit to it waited. That protected the review
+  window, but a follow-up instruction in the same chat then waited on a deploy
+  nobody meant to make yet, and a panel, a Release button and timeouts were
+  needed just to get out of it. Review now rests on the checkpoint, and on
+  deploying being the user's decision.
 
 ## 14. Two readings of a value the model broke
 

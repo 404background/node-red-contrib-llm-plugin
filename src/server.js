@@ -5,16 +5,10 @@ const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
 const createLLMCore = require('./llm_core');
-const createApplyQueue = require('./apply_queue_server');
 const agentDispatch = require('./agent_dispatch');
 
 function createLLMPluginServer(RED) {
     const core = createLLMCore(RED);
-
-    // One queue for every editor, and the deploy that releases a hold is
-    // observed here. See docs/{en,jp}/design.md §13.
-    const applyQueue = createApplyQueue(RED);
-    applyQueue.bindDeployListener();
 
     // Storage locations resolved once by the shared core.
     const chatsDir = core.chatsDir;
@@ -622,47 +616,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // ------------------------------------------------------------------ //
-    //  Apply queue                                                        //
-    // ------------------------------------------------------------------ //
-    // Ordering only; the apply itself runs in the browser.
-    // See docs/{en,jp}/design.md §13.
-
-    RED.httpAdmin.get('/llm-plugin/apply-queue', guard(PERM_READ), function(req, res) {
-        try {
-            return res.json(applyQueue.state());
-        } catch (error) {
-            return fail(res, error, 'Failed to read the apply queue');
-        }
-    });
-
-    // PERM_WRITE throughout: taking a turn is a claim on the flows, even
-    // though the write itself happens in the browser.
-    const queueActions = {
-        request: function(body) {
-            return applyQueue.request({
-                clientId: body.clientId,
-                source: body.source,
-                label: body.label,
-                targetFlowIds: body.targetFlowIds,
-                undo: body.undo
-            });
-        },
-        complete: function(body) { return applyQueue.complete(String(body.entryId || ''), !!body.ok); },
-        cancel: function(body) { return applyQueue.cancel(String(body.entryId || '')); },
-        release: function() { return applyQueue.releaseHold(); }
-    };
-    Object.keys(queueActions).forEach(function(action) {
-        RED.httpAdmin.post('/llm-plugin/apply-queue/' + action, guard(PERM_WRITE), function(req, res) {
-            try {
-                const out = queueActions[action](req.body || {});
-                return res.status(out.ok === false ? 404 : 200).json(out);
-            } catch (error) {
-                return fail(res, error, 'Apply queue ' + action + ' failed');
-            }
-        });
-    });
-
     // An Agent-node reply is published to every editor; the first one to
     // claim it applies it, the rest drop it. PERM_WRITE, so an editor that
     // could not deploy the edit never makes it. See docs/{en,jp}/llm-request.md.
@@ -725,7 +678,6 @@ function createLLMPluginServer(RED) {
         'core/canvas_layout.js',
         'core/flow_converter_core.js',
         'core/llm_json_parser.js',
-        'apply_queue.js',
         'chat_manager.js',
         'importer.js',
         'ui_core.js',

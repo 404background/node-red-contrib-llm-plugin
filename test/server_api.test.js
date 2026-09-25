@@ -79,23 +79,6 @@ async function scenarioAgentReplyClaimedOnce() {
   ok(forged.body.granted === false, 'an id the node never issued is refused');
 }
 
-async function scenarioQueueIsBounded() {
-  console.log('The apply queue refuses to grow without bound');
-  const request = RED.routes.post['/llm-plugin/apply-queue/request'];
-  let last;
-  for (let i = 0; i < 101; i++) {
-    last = await call(request, { body: { clientId: 'c', targetFlowIds: ['tab' + i] } });
-  }
-  ok(last.status === 429, 'the request past the cap is refused with 429 (' + last.status + ')');
-  const queue = (await call(RED.routes.get['/llm-plugin/apply-queue'])).body;
-  ok(queue.entries.length === 100, 'and the queue holds exactly the cap (' + queue.entries.length + ')');
-  const finished = await call(RED.routes.post['/llm-plugin/apply-queue/complete'], { body: { entryId: queue.entries[0].id, ok: false } });
-  const again = await call(request, { body: { clientId: 'x'.repeat(10000), targetFlowIds: ['t'] } });
-  ok(finished.status === 200 && again.status === 200, 'a finished entry frees a place');
-  const mine = (await call(RED.routes.get['/llm-plugin/apply-queue'])).body.entries.find((e) => e.id === again.body.entryId);
-  ok(mine && mine.clientId.length === 64, 'and a long client id is cut short (' + (mine && mine.clientId.length) + ')');
-}
-
 async function scenarioSettingsRejectUnknownProvider() {
   console.log('Settings refuse a provider that does not exist');
   const r = await call(RED.routes.post['/llm-plugin/settings'], { body: { provider: 'evil' } });
@@ -132,7 +115,6 @@ async function scenarioChatDeletedById() {
 (async function run() {
   scenarioServesOnlyClientFiles();
   await scenarioAgentReplyClaimedOnce();
-  await scenarioQueueIsBounded();
   await scenarioSettingsRejectUnknownProvider();
   await scenarioCheckpointMetaCounts();
   await scenarioChatDeletedById();

@@ -81,7 +81,6 @@
             // One bad listener must not leave the chat half-started.
             try { fn(currentChatId); } catch (e) { /* ignore */ }
         });
-        Common.notify('Started new chat', 'success');
     };
 
     // A Restore Checkpoint taken immediately before a flow-modifying import.
@@ -195,14 +194,12 @@
                     btn.disabled = true;
                     LLMPlugin.Importer.restoreCheckpoint(cp.id)
                         .then(function(result) {
-                            if (result && result.ok) {
-                                Common.notify('Restore point applied', 'success');
-                            } else {
-                                Common.notify((result && result.error) || 'Failed to restore', 'error');
+                            if (!result || !result.ok) {
+                                Common.notice((result && result.error) || 'Failed to restore', 'error');
                             }
                         })
                         .catch(function(err) {
-                            Common.notify((err && err.message) || 'Failed to restore', 'error');
+                            Common.notice((err && err.message) || 'Failed to restore', 'error');
                         })
                         .finally(function() { btn.disabled = false; });
                 });
@@ -251,11 +248,11 @@
             return res.json()
                 .catch(function() { return {}; })
                 .then(function(d) {
-                    Common.notify('Failed to save chat: ' +
+                    Common.notice('Failed to save chat: ' +
                         ((d && d.error) || ('HTTP ' + (res ? res.status : '?'))), 'warning');
                 });
         }).catch(function() {
-            Common.notify('Failed to save chat', 'warning');
+            Common.notice('Failed to save chat', 'warning');
         });
     };
 
@@ -281,7 +278,7 @@
                 try { ChatManager.loadChat(currentChatId); } catch(e) {}
             })
             .catch(function() {
-                Common.notify('Failed to load chat histories', 'warning');
+                Common.notice('Failed to load chat histories', 'warning');
             });
     };
 
@@ -353,7 +350,6 @@
         (chat.messages || []).forEach(function(msg) {
             LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, msg);
         });
-        Common.notify('Loaded chat: ' + chat.title, 'success');
     };
 
     ChatManager.updateMessageMeta = function(messageId, patch) {
