@@ -882,6 +882,14 @@
                 // Handle case where LLM generates Node-RED array 'props' (e.g. for inject nodes) directly
                 mergedProps.props = spec.props;
             }
+            // `config` is the config-node flag; an object there is the node's
+            // properties under the wrong key. `props` wins a clash.
+            if (spec.config && typeof spec.config === 'object' && !Array.isArray(spec.config)) {
+                Object.keys(spec.config).forEach(function(key) {
+                    if (isMetaProp(key) || key in mergedProps) return;
+                    mergedProps[key] = spec.config[key];
+                });
+            }
 
             // Flatten spec root keys into mergedProps, skipping META_KEYS,
             // the Vibe-Schema-only keys (props, config, flow, above), and any

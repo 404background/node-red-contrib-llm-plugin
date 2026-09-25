@@ -130,6 +130,19 @@ it('vibe-schema.md Example 1 produces exactly its 5 declared nodes', function() 
     assert.deepStrictEqual(out.wires, []);
 });
 
+// --- Properties written under `config` ---
+// `config` is the config-node flag; models also use it as `props`.
+it('properties written under config reach the node, and props win a clash', function() {
+    const flow = Cfg.toNodeRed({
+        nodes: { http_in_hello: { type: 'http in', config: { url: '/hello', method: 'get' }, props: { method: 'post' } } },
+        connections: []
+    }, { workspace: 'ws' });
+    const n = byType(flow, 'http in')[0];
+    assert.strictEqual(n.url, '/hello');
+    assert.strictEqual(n.method, 'post');
+    assert.ok(n.z === 'ws' && typeof n.x === 'number', 'still a canvas node, not a config node');
+});
+
 // --- A debug asked for the whole message ---
 // Models write `complete: "msg"` or `true`; the editor's value is `"true"`.
 it('a debug told to show msg shows the whole message', function() {
