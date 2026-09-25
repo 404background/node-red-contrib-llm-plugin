@@ -242,7 +242,7 @@ function askIsToldToExplainNotBuild() {
   ok(/NO FLOW WAS SENT/.test(out.askWithNoFlow),
     'and with nothing selected it is told so, rather than left promising a flow that is not there');
 
-  ok(/SEQUENCES AND GROUPS/.test(out.agent) && /Vibe Schema/.test(out.agent),
+  ok(/SEQUENCES:/.test(out.agent) && /Vibe Schema/.test(out.agent),
     'Agent still gets the schema-building instructions');
   ok(out.agent === out.byDefault,
     'and so does a caller that names no mode, which is every existing one');

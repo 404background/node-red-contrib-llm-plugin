@@ -86,12 +86,13 @@ another.
 | # | Pass | Depends on |
 |---|------|------------|
 | 1 | `keepLeftEdges` | Nothing — it corrects the *input* coordinates, so every pass below reasons about left edges that are already true. Its result also feeds step 2 as `reflowIds`. |
-| 2 | `reflowCanvasNodes` / `placeAddedNodesNearNeighbors` | (1). Places the members: columns, rows, captions, overlaps, top margin. |
-| 3 | `repositionSubsetByAliases` | (2). Rearranges one named subset in place, so it must run after the general pass or the general pass would undo it. Reports which nodes it moved. |
-| 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Boxes whose members moved in (2) or (3) are **refitted** (`refitIds`) rather than left at the size they had. |
-| 5 | `separateGroups` | (4). Aligns each boxed sequence by its members' left edge and then pushes blocks apart vertically — both read box bounds, which only exist once the boxes are fitted. Alignment runs before the vertical pass and the block bounds are recomputed in between, so the spacing is measured on the aligned positions. |
-| 6 | `ensureCanvasMargins` | (5). One uniform shift on each axis, so it cannot disturb any spacing the passes above established. |
-| 7 | `applyCommentAnchors` + `nudgeFreeCaptions` | (6). The last word on captions, once every node has its final position: one that would sit on the node it heads is clamped to a full row above it, and an annotation belonging to nobody that a sequence landed on is moved clear. |
+| 2 | `reflowCanvasNodes` / `placeAddedNodesNearNeighbors` | (1). Places the members: columns, rows, captions. |
+| 3 | `repositionSubsetByAliases` | (2). Rearranges one named subset in place, so it must run after the general pass or the general pass would undo it. Then the **routing** that was already there is placed: chains are laid out through a junction, but the layout never places one itself. Each junction, and each link node outside a box, goes back where it was, shifted by as much as what it serves moved (see [Routing follows what it serves](#routing-follows-what-it-serves)). |
+| 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Every box is fitted tightly. |
+| 5 | `separateGroups` | (4). Aligns each boxed sequence by its members' left edge, then settles collisions (below), which is what keeps the boxes `groupGap` apart. Both read box bounds, which only exist once the boxes are fitted. |
+| 6 | `applyCommentAnchors` | (5). Every caption onto the node it heads, re-read from where the passes above left it: one that would sit on its node is clamped to a full row above it. |
+| 7 | `settleCollisions` | (6). The invariant, checked on the result rather than trusted to the passes above: no node on a node, no box on a box (closer than `groupGap`), no node inside a box it is not a member of. Comments count too. Siblings are compared level by level, and every collision counts, whoever placed the things involved. The lower party goes under the upper one as a whole (a box with its contents, a wired chain with its captions), except inside one chain, where the lower node steps off alone with its captions. A comment that heads nothing is the one that moves. Routing outside a box moves with what it serves. A junction (measured at its real 10×10) is never moved on its own account: what lands on it steps off below, and one on a box edge is an ordinary route, left alone. A link node on what it serves steps off alone. A caption outside a box that heads a member from on top of the frame joins that box. Boxes are refitted after each move, and a push that lands on something else is resolved in turn. It is the last pass that moves anything apart, so captions are placed before it. |
+| 8 | `ensureCanvasMargins` | (7). One uniform shift on each axis, so it cannot disturb any spacing the passes above established. |
 
 A box left at its old size is the case this order exists to avoid: step 5 would
 line up a stale rectangle instead of the sequence inside it.
@@ -100,17 +101,18 @@ line up a stale rectangle instead of the sequence inside it.
 
 | Function | Purpose |
 |----------|---------|
-| `layoutNodes(aliases, outgoing, incoming, maxColumns?)` | Pure topological layout. Returns `{ alias: { col, row, comp } }`. |
+| `layoutNodes(aliases, outgoing, incoming)` | Pure topological layout. Returns `{ alias: { col, row, comp } }`. |
 | `reflowCanvasNodes(nodes, options?)` | Full canvas re-layout (recomputes every position). |
 | `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Incremental layout (keeps existing nodes pinned, places only the new ones). |
 | `estimateNodeWidth(node, options?)` | Label-based width estimate, snapped to `gridSize`. |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
-| `fitGroups(nodes, options?)` | Refit every group box that no longer contains its members. See [Group boxes](#group-boxes). |
+| `fitGroups(nodes, options?)` | Fit every group box to its members. See [Group boxes](#group-boxes). |
 | `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
 | `ensureCanvasMargins(nodes, options?)` | Slide everything by one shared delta per axis when the topmost or leftmost edge — a box included — is nearer the canvas edge than `topMargin` / `leftMargin`. |
-| `nudgeFreeCaptions(nodes, anchors, options?)` | Move an unanchored comment that something else is sitting on, a row at a time, until it is readable again. |
+| `settleCollisions(nodes, options?)` | Resolve every collision on the canvas: node or caption on node, box on box, node inside a foreign box. Returns the ids it moved. |
+| `routingAnchors(nodes)` | For every junction / `link in` / `link out` outside a box, the nodes it serves. See [Routing follows what it serves](#routing-follows-what-it-serves). |
 | `LAYOUT_DEFAULTS` | Default constants. |
 
 ## Defaults
@@ -125,7 +127,6 @@ LAYOUT_DEFAULTS = {
     minNodeWidth:  100,    // Node-RED MIN_NODE_WIDTH
     nodeHeight:     30,    // Node-RED's standard rendered node height
     gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
-    maxColumns:      5,
     topMargin:      20,    // min clearance between the canvas top (y=0) and the topmost edge
     leftMargin:     20,    // the same on the left edge (x=0), boxes included
     groupPadding:   25,    // the editor's own clearance between a group's box and its members
@@ -152,11 +153,11 @@ uniform `rowPitch = nodeHeight + spacingY` for vertical spacing.
 
 ### `ensureCanvasMargins` — the same gap above and beside
 
-The final guard, on both edges at once and counting **boxes** as well as nodes.
-`ensureTopMargin` runs mid-pipeline and can only see the nodes, so a box — drawn
-`groupPadding` outside its members — ends up nearer the top than the left, or
-off the canvas entirely. Everything slides by one shared delta per axis, so
-relative geometry is untouched.
+The only margin guard, on both edges at once and counting **boxes** as well as
+nodes: a box is drawn `groupPadding` outside its members, so measuring nodes
+alone leaves it nearer the edge than they are, or off the canvas entirely. A
+caption stacked above a node near the top is caught here too. Everything slides
+by one shared delta per axis, so relative geometry is untouched.
 
 **Both origins are edges.** `startX` is the left edge of the first column and
 `startY` is the top edge of the first row; the row's centre is half a node
@@ -199,16 +200,6 @@ to `componentGap`) for the orphan-band offset, and either function
 takes `options.isCanvasNode` for a custom canvas-node predicate
 (default keeps everything that is not a `tab` or `subflow:*`
 definition).
-
-Both entry points end with a **top-edge guard** (`ensureTopMargin`):
-comment stacks grow upward from their target, so a caption added above
-a node near the canvas top can land at `y <= 0`. When any canvas node's
-top edge ends up above `topMargin` (default 20), every canvas node is
-translated down by the same grid-snapped delta — relative geometry is
-preserved, the whole flow just slides down. Pinned component reflows
-(`reflowComponentInPlace`) skip the guard via `options.skipTopMargin`
-so the component stays where it was; the caller's own final guard
-covers the canvas as a whole.
 
 ## Width-aware spacing
 
@@ -264,9 +255,8 @@ behind. `fitGroups` runs after the layout passes and settles it:
 - A node's edges come from its centre and `getNodeWidth` / `nodeHeight`; a
   **nested** group's `x` / `y` is already its top-left corner, so inner boxes
   are fitted first (deepest first) and the outer one then contains them.
-- A box that **already contains** every member is left alone, even when it is
-  larger than it needs to be: the user resized it, and shrinking it back would
-  undo that.
+- **Every** box is fitted tightly, including one the user made larger: a box
+  bigger than its contents cannot be lined up or spaced by what is in it.
 - Groups are not laid out as nodes (`isLayoutNode` excludes them), so they never
   displace anything — which also means nothing keeps two boxes apart. The node
   layout spaces MEMBERS: `componentGap` (80) minus two paddings leaves 30px
@@ -277,46 +267,53 @@ behind. `fitGroups` runs after the layout passes and settles it:
 ### `separateGroups` — lining the boxes up, and keeping them apart
 
 - Stacked sequences read as a column, so they **share a left edge**. What is
-  aligned is the SEQUENCE — the members' own left edges — not the border drawn
-  around it: a box the user made larger still holds its members at their column,
-  and lining up the border would push that column out of line. Alignment is per
+  aligned is the SEQUENCE: the members' own left edges. Alignment is per
   box, not per block: two sequences wired to each other are one block, and a
   `reposition` leaves exactly that pair stepped in and out.
 - A box moves with everything it holds — members, their members, and the
   captions heading them. It is **not** moved when its block holds a node that
   is in no box at all, such as the chain feeding a box drawn around its middle,
   or a node hanging off its end. Only the box would move, and the wire between
-  them would shear. Boxes never block each other.
-- On an edit to an existing canvas (`touchedIds`), **only boxes holding
-  something this edit added or moved are aligned**, and they line up with the
-  untouched boxes: the column the user chose is the reference. An untouched box
-  stays where it is (design.md §0, "Keep what the reply does not name").
+  them would shear. Routing that serves only the box is not such a node: it
+  moves with the box. Boxes never block each other.
 - Only sequences that are STACKED are aligned. Two boxes whose rows overlap
   are side by side, or interlocked because a node in one is wired to a node in
   the other; pulling those into one column drops one sequence onto the other.
-- With no untouched box to follow (a fresh layout), the column is the leftmost
-  sequence, **never further left than `startX`**. One that has drifted towards
-  the edge would otherwise drag every other sequence out with it, and "aligned"
-  would come to mean "flush against the side of the screen". That clamp used to
-  apply on every edit, so an unrelated change pushed every user box that sat
-  left of `startX` to the right.
+- Every stacked box is aligned, whoever drew it, to the **leftmost** sequence.
+  The canvas margin is restored afterwards by `ensureCanvasMargins`, for
+  everything at once.
 - Every box ends up at least `groupGap` (40, two grid squares) from anything
-  outside it, whether that is another box or a plain node.
-- **Boxes are separated as boxes, not as blocks.** Two that are interlocked —
-  a member of one wired to a member of the other — are a single block, and a
-  block cannot be pushed apart from itself, so the block pass alone left the
-  two borders crossing. `stackBoxes` runs after it and moves each box with
-  everything it holds, which is what makes "boxes never overlap" a guarantee
-  rather than a usual outcome.
-- What moves is a **block**, not a node: everything tied together by wires, by
-  either half of group membership, or by being the caption of a member. A
-  sequence is therefore translated whole and never sheared — the same rule the
-  cross-component push follows.
-- Blocks are settled top-down and only ever pushed **down**, so the pass is
-  idempotent: a canvas that already clears settles with nothing moved, and
-  running it again does not drift.
+  outside it, whether that is another box or a plain node. That is
+  `settleCollisions`' job: it moves each box with everything it holds, so two
+  boxes interlocked by a wire are still pulled apart.
+- Pushes only ever go **down**, so the pass is idempotent: a canvas that
+  already clears settles with nothing moved, and running it again does not
+  drift.
 - Only blocks that overlap horizontally are compared. Two sequences side by side
   do not push each other down.
+
+## Routing follows what it serves
+
+Junctions and link nodes are the user's routing, and the layout does not place
+them. But a routing point the user put between two boxes belongs to the flow it
+leads into: when a node added to the box above pushes the one below down, a
+junction left where it was ends up inside the grown box, and a `link in` beside
+the lower box is left behind.
+
+So routing outside a box **travels with what it serves**
+(`routingAnchors`): a junction or a `link in` with the nodes it leads to, a
+`link out` with the nodes feeding it, followed through further routing. A
+junction with nothing downstream follows what feeds it.
+
+- After the node passes, each routing node that was already on the canvas goes
+  back to where it was, **shifted by as much as what it serves moved**. When
+  those moved by different amounts there is no one place it belongs, and it
+  stays where it was.
+- `settleCollisions` and the box alignment move routing along with the box or
+  chain it serves, when everything it serves is moving. In a collision it counts
+  as part of that thing, so it is never pushed apart from it on its own.
+- A junction is still never moved on its own account, and routing inside a box
+  moves with the box as a member.
 
 ## Comment placement
 
@@ -383,9 +380,7 @@ in the `nodes` map.
 3. **Rows** — first column: sequential rows from `globalRowOffset`.
    Later columns: target row = mean of parents' rows; conflicts are
    resolved by incrementing until an unused row is found.
-4. **Wrap** — chains with `col >= maxColumns` fold into
-   `(rowsPerFold + 1)` row strips.
-5. **Stack** — components are packed back-to-back via `globalRowOffset`;
+4. **Stack** — components are packed back-to-back via `globalRowOffset`;
    pixel offsets are added later by `computeComponentYOffsets`.
 
 ### `reflowCanvasNodes` — full layout
@@ -439,12 +434,11 @@ Flow B's top (295) is exactly `componentGap = 80` px.
 | 3 | Iteratively place each new node next to its positioned neighbours: both → `x = max(rightEdge(pred)) + edgeGap + width(N)/2`, `y = mid(avg(pred.y), avg(succ.y))`. Only preds → above, right of preds. Only succs → above, left of succs. |
 | 3.4 | For each `(new node N, existing succ S)` pair, if `rightEdge(N) + edgeGap > leftEdge(S)`, BFS forward through `outgoing` from S and shift every reachable node's x by `needed`. Max shift wins on converging paths. IDs touched here are recorded as "shifted" and feed into Step 3.5b. |
 | 3.5a | **Within-component nudge** — push any newly placed node down by one row pitch (`nodeHeight + spacingY`) if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of a **same-component** positioned node AND their Y centres are within `nodeHeight`. Re-runs until stable. Cross-component collisions are deliberately ignored here (handled by 3.5b). |
-| 3.6 | **Insertion reflow** — for every component containing a node from `newlyPlaced` (i.e. a NEW node that `tryPlace` successfully wired to a positioned neighbour), call `reflowComponentInPlace`: `reflowCanvasNodes` pinned to the component's current top-left, with `maxColumns: Infinity` to avoid surprise column folding. The pre-existing user-placed nodes in that component move too, which is the only way to give the inserted node a uniform width-aware cadence. Orphan-band new nodes (no positioned neighbour) are excluded — they get a fresh layout from Step 4 and have no chain to honour. The "always reflow on connection" trigger is the user-specified contract; the cheaper directional pushes in 3.4 / 3.5a still run first so 3.6 always operates on a sane starting point. |
+| 3.6 | **Insertion reflow** — for every component containing a node from `newlyPlaced` (i.e. a NEW node that `tryPlace` successfully wired to a positioned neighbour), call `reflowComponentInPlace`: `reflowCanvasNodes` pinned to the component's current top-left. The pre-existing user-placed nodes in that component move too, which is the only way to give the inserted node a uniform width-aware cadence. Orphan-band new nodes (no positioned neighbour) are excluded — they get a fresh layout from Step 4 and have no chain to honour. The "always reflow on connection" trigger is the user-specified contract; the cheaper directional pushes in 3.4 / 3.5a still run first so 3.6 always operates on a sane starting point. |
 | 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)` (bboxes use edges, so `bandGap` is delivered exactly edge-to-edge) and shift every collected `O` by that same `dy`. **Comments are never moved by this pass** — they ride along with their target via the comment-anchor mechanism, or stay put if they are standalone. Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
 | 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes. The first orphan row's centre is `maxBottomEdge + bandGap + nodeHeight/2`, so there is exactly `bandGap` of edge-to-edge clearance between the previous flow's bottom and the orphan's top — matching the formula Step 3.5b uses. Horizontally, orphan column 0 starts at the **leftmost left edge** of the positioned set (not the leftmost centre). **Comments are always excluded** from the orphan band — captions keep whatever x/y they came in with, or are placed onto their schema-named target by the final comment pass. |
-| 5 | `resolveOverlaps` (safety net): scan all canvas-node pairs and push the lower one further down whenever their boxes overlap. **Component-rigid** — it is given the connected-component map, so a residual overlap between two flows is cleared by translating the WHOLE lower component down; it never shears individual nodes out of a flow the user did not edit, and same-component pairs are left alone. Comments are skipped here too. |
-| 6 | `applyCommentAnchors`: re-glue each comment that was *directly touching* a canvas node (or another comment in such a stack) to that node's new position, preserving the original offset. Standalone comments — anything beyond `stackStep + gridSize` below the nearest target, or outside its rendered bbox + one grid square — are NOT anchored and stay where the user put them. |
-| 7 | Final `repositionCommentsByLlmOrder`: position newly-added schema comments above their resolved target (now that all targets, including orphan-band ones, have final coordinates). |
+| 5 | `applyCommentAnchors`: re-glue each comment that was *directly touching* a canvas node (or another comment in such a stack) to that node's new position, preserving the original offset. Standalone comments — anything beyond `stackStep + gridSize` below the nearest target, or outside its rendered bbox + one grid square — are NOT anchored and stay where the user put them. |
+| 6 | Final `repositionCommentsByLlmOrder`: position every new schema comment, and every existing one the reply gave an `above`, over its resolved target (now that all targets, including orphan-band ones, have final coordinates). |
 
 #### Guarantee: unmodified flows translate only
 
@@ -452,21 +446,9 @@ A connected component that contains **no** added node (and no Step 3.4
 horizontally-shifted node) is never reflowed and never sheared — it can only
 be **translated as a rigid whole**. Only the edited component is reflowed
 (Step 3.6); every other flow is moved down as a unit by the cross-component
-push (Step 3.5b) or, for any residual overlap, by the component-rigid safety
-net (Step 5). This keeps a user's carefully arranged flow intact when an edit
+push (Step 3.5b) or, for any residual overlap, by `settleCollisions` at the
+end of the import, which also moves a chain whole. This keeps a user's carefully arranged flow intact when an edit
 to a neighbouring flow happens to overlap it — the neighbour just slides down.
-
-#### `maxColumns` in incremental layout
-
-`placeAddedNodesNearNeighbors` accepts a `maxColumns` option, but in
-incremental mode the caller typically passes `Infinity` so the existing
-flow shape is preserved — newly inserted chains extend rightward
-without being folded into new rows. Only the orphan-band sub-layout in
-Step 4 honours `maxColumns`, because orphans form their own fresh
-graph. The LLM importer (`src/importer.js`) follows this convention:
-fresh flows go through `reflowCanvasNodes` with the default
-`maxColumns: 5`; edits go through `placeAddedNodesNearNeighbors` with
-`maxColumns: Infinity`.
 
 #### Worked examples
 

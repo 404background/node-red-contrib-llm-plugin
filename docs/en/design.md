@@ -25,7 +25,7 @@ decisions and priorities**.
 | **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser (both sidebar and Agent node). |
 | **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
 | **The snapshot must be the "complete flow"** | The snapshot is both the merge base and the rollback state, and the fallback apply still clears the target workspace, so any canvas entity missing from it can still disappear. → junctions / groups must be included (§7). |
-| **Keep what the reply does not name** | One rule behind several mechanisms: anything a reply does not mention stays as it is, and removing something takes an explicit instruction. Wires are added, never cut by omission (§4.1). Properties that are not mentioned keep their values (§4.2). Config nodes are never created or deleted (§5). Junctions and groups are kept in the snapshot (§7). Group membership is additive, and a box is removed only by `null`, never because it became empty (§15). An untouched flow is translated as a whole, never reflowed, and an untouched box is not realigned ([layout.md](./layout.md)). A new mechanism starts from this default. |
+| **Keep what the reply does not name** | One rule behind several mechanisms: anything a reply does not mention stays as it is, and removing something takes an explicit instruction. Wires are added, never cut by omission (§4.1). Properties that are not mentioned keep their values (§4.2). Config nodes are never created or deleted (§5). Junctions and groups are kept in the snapshot (§7). A group box is the user's: a reply cannot create, edit or delete one, and it is never removed because it became empty (§15). **Position is the exception**: the layout tidies the whole canvas, whoever placed things. Every box is fitted and aligned, and every overlap is resolved. Only a flow's shape is kept, since an untouched flow is translated, never reflowed ([layout.md](./layout.md)). A new mechanism starts from this default. |
 
 ### The metadata boundary (`_`-prefixed properties)
 
@@ -57,9 +57,9 @@ User input
    ▼
 vibe_ui.js  ──POST /llm-plugin/generate──►  server.js ─► llm_core.js ─► Ollama / OpenAI / Custom
    │                                                          │
-   │   ┌── LLM context: getCurrentFlow(targets, {includeGroups}) → toIntermediate(Vibe Schema)
-   │   │   (junctions NOT included; groups come as their own map, so the alias
-   │   │    numbering the model sees is unchanged either way — §15)
+   │   ┌── LLM context: getCurrentFlow(targets, {includeCanvasExtras}) → toIntermediate(Vibe Schema)
+   │   │   (a wire through a junction reads as a connection to where it leads;
+   │   │    groups are dropped; alias numbering is unchanged either way — §7, §15)
    ▼   ▼
 Response text (explanation + optionally a ```json``` Vibe Schema block)
    │
@@ -148,7 +148,7 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
   - Vibe Schema path → `_llmSpecKeys` (recorded at conversion time)
   - raw JSON path → keys whose value is not `undefined`
 - All other keys are restored from the existing node (`preserveUnmentionedProperties`).
-- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0, the metadata boundary) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — the group pass writes only the members a schema named (§15), so every other node's membership has to survive the merge (§12, "Where it declines").
+- `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0, the metadata boundary) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — the group pass writes only the nodes this edit placed in a box (§15), so every other node's membership has to survive the merge (§12, "Where it declines").
 - **Reason**: Even when a normaliser fills in a default value (e.g. debug's `complete`), it must not overwrite a value the user set earlier. Guarantees "settings you didn't touch are preserved."
 
 ### 4.3 Node matching: exact-alias only, no fuzzy
@@ -195,17 +195,14 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 
 ### Design (opt-in inclusion)
 - Added **`opts.includeCanvasExtras`** to `getFlowsByIds(flowIds, opts)` / `getCurrentFlow(flowIds, opts)`. Only when enabled, junctions / groups are included in the snapshot (`createExportableNodeSet` emits junctions correctly, with their wires).
-- **Only the two callers that rebuild the flow opt in**:
-  - `importer.safeGetCurrentFlow` (the rebuild base for apply)
-  - `chat_manager.snapshotCurrentFlow` (checkpoint save)
-- **The LLM-context path (`vibe_ui.js`) and the annotation path (`ui_core.js`) do NOT opt in.**
-  - **Reason**: These share `toIntermediate`'s alias numbering. Mixing junctions/groups in would change the order of aliases the model sees, altering generation behavior. Using the complete flow only on the apply side while keeping the generation side unchanged isolates the bug fix from generation quality.
+- The rebuild base (`importer.safeGetCurrentFlow`), the checkpoint save (`chat_manager.snapshotCurrentFlow`) and the LLM context (`vibe_ui.js`) opt in.
+- **Routing is the user's, and the model is not offered it.** Junctions and `link in` / `link out` nodes (`isRoutingNode`) get no alias in `toIntermediate`, and a wire through them reads as a connection to where it leads: `A → junction → B`, and `A → link out ⇢ link in → B`, both show as `A → B`. The model understands where messages go, and the alias numbering is the same with or without routing. A reply that restates such a connection would add a direct wire beside the routing, and the node would get every message twice: `dropWiresBesideRouting` drops a wire the reply added when the same port already reaches that node through routing. A reply that removes the connection finds no direct wire to cut. Routing is only ever changed by hand. (`link call` is not routing: it is a step that returns, and stays an ordinary node.)
 
 ### Excluding groups from layout
-- A junction has x/y/wires, so `isCanvasNode` is true. It is a real routing point and may stay in the layout adjacency graph (its position is preserved from `basePositions` on the incremental path).
+- A junction has x/y/wires, so `isCanvasNode` is true. It is a real routing point and stays in the layout adjacency graph, so a chain is laid out through it; then it goes back where it was. **The layout never places a junction** itself: it moves only with what it serves. A junction or link node outside a box follows the nodes it leads to (a `link out`, the nodes feeding it) by as much as they moved, so one between two boxes goes with the lower box when a node added above pushes it down ([layout.md](./layout.md#routing-follows-what-it-serves)). It is measured at its real 10×10, and `settleCollisions` moves whatever lands on one (a junction on a box edge is an ordinary route and is left alone).
 - A group also has x/y, so `isCanvasNode` is true too, but **a group's bounding box encloses its own members**. Feeding it to the collision-resolution passes makes it "collide with its own contents" and break.
 - → Added `isLayoutNode()` (= `isCanvasNode && type!=='group'`), applied to all layout calls. **Groups are excluded from layout** (their positions are kept as-is).
-- Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive.
+- Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive; that no edit moves a junction whose targets stayed put, rewires it or lands on it; that routing between two boxes follows the box it feeds when that box is pushed down; that the context reads through junctions and a restated connection adds no wire; and that a link node's hover-only virtual link does not join two sequences.
 
 ### The rollback snapshot is subject to the same rule
 - Both appliers take their own backup before touching the workspace, so a failing `RED.nodes.import` can put the flow back. That backup used to hold **regular nodes only** — so the error path, the one case that is supposed to change nothing, deleted the workspace's junctions and groups for good.
@@ -216,8 +213,8 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 
 ## 8. Layout priorities (details in layout.md)
 
-- **When an existing flow is present, incremental** (`placeAddedNodesNearNeighbors`): restore existing node coordinates from `basePositions` and place only the new nodes to the right/left of neighbors. maxColumns disabled (preserve the existing shape).
-- **Only for a brand-new flow, reflow** (`reflowCanvasNodes`): fold long chains via maxColumns.
+- **When an existing flow is present, incremental** (`placeAddedNodesNearNeighbors`): restore existing node coordinates from `basePositions` and place only the new nodes to the right/left of neighbors, so the existing shape is preserved.
+- **Only for a brand-new flow, reflow** (`reflowCanvasNodes`). Long chains are **not wrapped**: a box already makes a sequence readable, and a wrap that moved one or two nodes to a row of their own read worse than a long row.
 - **Gaps are "edge-to-edge clearance"** (visible whitespace), not center-to-center distance. Node width uses the editor's measured value (`RED.nodes.node(id).w`) when possible, falling back to an estimate on rename.
 - The `reposition` directive relayouts only the named subset and translates it back to its previous top-left so nothing else moves (re-arrange without changing IDs; avoids delete→recreate which changes IDs).
 
@@ -249,11 +246,10 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 Main points to discuss on top of this document:
 
 1. **Group type classification**: In `isConfigNode`'s structural fallback, a group is treated as config before export and as canvas after export (with x/y). Currently reconciled by "excluding it from layout only" — should `type==='group'`/`'junction'` be made explicit in the type check?
-2. **Whether to show junctions to the LLM context**: Currently not shown (§7 reason). Are there future cases where "the LLM should be aware of junction routing"? If shown, how to keep alias numbering consistent?
-3. **Misfire risk of implicit flow tagging**: When the same alias exists on multiple tabs, inference adopts the first tab hit. Should ambiguous cases be handled more strictly?
-4. **Fuzzy matching scope**: Node matching is exact-only, while prose annotation and hint resolution use fuzzy (minLen 8). Is this boundary (how much approximate matching to allow) appropriate?
-5. **adminAuth support**: Should authenticated environments be brought into the supported scope?
-6. **Raw IDs still left inside props**: `toIntermediate`'s ID→alias substitution only inspects **top-level string values** of props. IDs nested in arrays or objects (e.g. a link in/out node's `links: [id, …]`) pass through to the model verbatim, which breaks the §0 premise that the LLM never sees IDs. Substituting recursively would require making `toNodeRed`'s alias→ID restoration symmetric to the same depth — miss that and the links break.
+2. **Misfire risk of implicit flow tagging**: When the same alias exists on multiple tabs, inference adopts the first tab hit. Should ambiguous cases be handled more strictly?
+3. **Fuzzy matching scope**: Node matching is exact-only, while prose annotation and hint resolution use fuzzy (minLen 8). Is this boundary (how much approximate matching to allow) appropriate?
+4. **adminAuth support**: Should authenticated environments be brought into the supported scope?
+5. **Raw IDs still left inside props**: `toIntermediate`'s ID→alias substitution only inspects **top-level string values** of props. IDs nested in arrays or objects pass through to the model verbatim, which breaks the §0 premise that the LLM never sees IDs. Substituting recursively would require making `toNodeRed`'s alias→ID restoration symmetric to the same depth — miss that and the links break.
 
 ### Reference: alias resolution priority (`buildFlowLookup().resolve`)
 ```
@@ -624,107 +620,82 @@ ambiguity lands in the one place it does damage — "make me three flows in here
 was read as three tabs, or as one chain with three branches, when what was asked
 for was three independent sequences side by side.
 
-So the schema takes a side. `flow` on a node is **always the tab label**; a
-sequence is a **group** — the box the editor draws around a set of nodes. A tab
-holds any number of unconnected sequences, and the layout already gives each its
-own band, so nothing had to change about the canvas: what was missing was a way
-to *say* which nodes belong to the same sequence, and an instruction not to wire
-separate sequences into one chain just because they were asked for together.
+So the schema takes a side: `flow` on a node is **always the tab label**. A
+tab holds any number of unconnected sequences, and the layout already gives each
+its own band, so nothing had to change about the canvas. What was missing was an
+instruction not to wire separate sequences into one chain just because they were
+asked for together. **The prompt** now states the distinction, and tells the
+model to build that many independent sequences, each with its own trigger and
+its own end, when asked for several flows / sequences / pipelines. Without this
+the model reached for the shape it knows best: one chain from one trigger.
 
-Both halves are needed, and they fix different failures:
+### Group boxes are the user's
 
-- **The prompt** now states the distinction, and tells the model to build that
-  many independent sequences when asked for several flows / sequences /
-  pipelines, and to box a sequence when it has more than five nodes or when the
-  user asks for a group. A box around two or three nodes only adds clutter; the
-  layout already gives each sequence its own band. Without this the model
-  reached for the shape it knows best: one chain from one trigger.
-- **The schema** grew `groups: { alias: { name, nodes: [aliases] } }`
-  ([vibe-schema.md](./vibe-schema.md#groups--a-flow-in-the-sequence-sense)).
-  A group is addressed by alias like a node, so a later turn edits the box it was
-  shown rather than adding a second one beside it.
+A group, the box the editor draws around a set of nodes, is **not part of the
+schema**. An earlier version let the model declare, extend, nest and delete
+boxes (`groups: { alias: { name, nodes } }`). That was withdrawn. A box is
+something the user drew, and a reply that could redraw it breaks the rule that
+what the reply does not name stays as it is (§0). Now:
 
-### Why membership is additive, and the box is ours
+- The context shows no box. `toIntermediate` drops groups, so node aliases are
+  identical with or without them, and the numbering the importer reproduces
+  (§6) cannot move.
+- A `groups` key in a reply is ignored, and a groups-only reply is not a schema
+  (`isVibeSchema`). No box is created, edited or deleted.
+- The prompt says nothing about boxes. What happens to them is the code's
+  business (§2).
 
-Two decisions inside that are worth stating.
-
-**Membership is additive**, like wires (§4.1). The aliases a schema lists join
-the box; the members already in it stay. A partial re-declaration is the normal
-case — the model names the node it just added, not the six that were already
-there — and under replace semantics that would silently empty the group. Taking
-a node *out* of a box therefore needs the box deleted (`groups: { alias: null }`,
-which keeps the nodes) or a hand edit, which is the same trade the wire rule
-makes: additive by default, removal only when asked for explicitly.
-
-**The box is computed here, not by the editor.** Node-RED stores `x`/`y`/`w`/`h`
-on the group and recomputes them only when the user drags a member, so a group
-imported with an empty box is one the user sees empty. `CanvasLayout.fitGroups`
-fits it after the layout passes, with the editor's own 25px padding
-([layout.md](./layout.md#group-boxes)). The same pass is what keeps an existing
-box around members a layout pass moved — and it deliberately leaves a box the
-user made larger alone.
-
-A **caption joins the box it heads.** The padding is one row, so a comment
-anchored to the first member lands exactly on the top edge and reads as a stray
-label rather than a heading. Only a comment *this schema added* is pulled in,
-into the box that holds the node it heads. Pulling in an existing comment would
-register as a membership change nobody asked for.
-
-Membership is also two-sided in the editor: `g` on the member, the id in the
-group's `nodes` list. Only the members a schema named get their `g` written — an
-existing group's own bookkeeping is not an unrelated edit's business, and
-"repairing" it would register as a change and send the whole apply down the
-rebuild path. A `g` naming a group that is no longer there is cleared, because
-that is what a deleted box leaves behind.
+The context export still carries groups (`includeCanvasExtras`), because it
+carries junctions, and the converter drops the boxes.
 
 ### One box, one sequence
 
-A box holds exactly **one connected sequence**, meaning one component of the
-wire graph. Captions and nested boxes don't count as sequences. This one rule
-settles the operations a user asks for once boxes exist:
+A box is assumed to hold exactly **one connected sequence**, meaning one
+component of the wire graph. A wire through a junction counts. A link node's
+virtual link, which the editor draws only on hover, does not, even though the
+context shows it as a connection. Captions and nested boxes are not sequences.
+An edit keeps a box that way (`keepBoxesAroundTheirSequences`):
 
+- **A new node wired into a boxed sequence joins that box**, as long as every
+  box among its neighbours is the same one. Left outside, the node was
+  separated from the box it belongs to by the alignment pass.
+- **A caption joins the box it heads.** The padding is one row, so a comment
+  anchored to the first member lands exactly on the top edge and reads as a
+  stray label rather than a heading. **Where a comment sits is the model's
+  decision.** The context gives every comment the `above` it currently has, and
+  any comment the reply gives an `above` (new or existing) is placed over that
+  node and follows it: into the node's box, or out of its old box when the node
+  has none. A comment the reply does not mention keeps its box.
 - **Wiring two boxes together** is a change to the wires only. Both boxes stay
   where they are, with the members they had. The sequence now runs through two
   boxes, and each box still holds one part of it.
-- **Gathering boxes** means nesting: a new group whose members are group
-  aliases. Each inner box keeps its own sequence, and `fitGroups` fits the inner
-  boxes first. **Merging** two sequences into one box works only once they are
-  wired together. After that, listing one box's members in the other moves them.
-  The emptied box stays until the reply maps it to `null`.
-- **A member from a different sequence is not added.** The box would have to
-  stretch across whatever lies between the two chains, and they would read as
-  one. The node stays where it was, and the user gets a warning naming it.
-  Earlier, such a node was stacked below the box. That pass is gone: every node
-  that joins a box is now already part of its sequence.
-- **A new node wired into a boxed sequence joins that box**, as long as every
-  box among its neighbours is the same one. The model often leaves the box out
-  when it extends a sequence. Left outside, the node was separated from the box
-  it belongs to by the alignment pass.
+- **A box is never removed implicitly.** When all of its members are deleted,
+  or the user drew it empty, the box stays, as it does in the editor. A deleted
+  member is taken out of its group's `nodes` list, because `RED.nodes.remove`
+  does no group bookkeeping (§12).
 
-A box is never removed implicitly. When all of its members are deleted, or the
-user drew it empty, the box stays, as it does in the editor, which also keeps a
-group whose members were deleted. The one exception is a box *this reply
-declared* whose members all failed to resolve, which would only be an empty
-frame nobody asked for.
+Membership is two-sided in the editor: `g` on the member, the id in the group's
+`nodes` list. Only a node this edit placed in a box gets its `g` written. An
+existing group's own bookkeeping is not an unrelated edit's business, and
+"repairing" it would register as a change and send the whole apply down the
+rebuild path.
 
-### What the model sees
+### The box is computed here
 
-The LLM context now carries groups (`includeGroups`), and `toIntermediate` emits
-them as their own map rather than as entries in `nodes`. That ordering matters:
-node aliases are then identical whether or not the context has boxes in it, so
-including groups cannot move the numbering the importer has to reproduce (§6).
-Junctions stay out of the context for exactly the reason groups no longer need
-to: they would have to appear among the nodes.
+Node-RED stores `x`/`y`/`w`/`h` on the group and recomputes them only when the
+user drags a member, so a box whose members a layout pass moved would be left
+where it was. `CanvasLayout.fitGroups` fits every box after the layout passes,
+with the editor's own 25px padding ([layout.md](./layout.md#group-boxes)).
+Every box is fitted tightly, including one the user made larger: a box bigger
+than its contents cannot be lined up or spaced by what is in it.
 
-- Regression tests: `test/group_schema.test.js` — a declared group becomes a box
-  around its members with both halves of membership set; a groups-only schema
-  boxes nodes that are already there; re-declaring a group adds to it instead of
-  emptying it, and keeps its name; deleting the box keeps the nodes and clears
-  their `g`; two sequences get two boxes that do not overlap; a new caption is
-  drawn inside the box it heads; a node from another sequence stays out of a box,
-  with a warning; an existing box survives losing all its members; wiring two
-  boxes together moves nothing; a new node wired into a boxed sequence joins it;
-  two boxes gather into a nested one; and the context presents a group as a group
-  while leaving every node alias where it was. `test/json_repair.test.js` also
-  pins the array rule above, because a group's member list is exactly the kind
-  of array a broken expression elsewhere in the reply used to take down.
+- Regression tests: `test/group_schema.test.js`: a reply cannot create, edit or
+  delete a box; the context shows no box and leaves node aliases alone; a node
+  added to a box pushes the next sequence down, whole; rearranging a boxed
+  sequence refits the box, and its caption follows the node it heads; a box
+  stays when its members are deleted, and so does an empty one; a wire between
+  two boxes keeps both where they are; a new node wired into a boxed sequence
+  joins that box; a branch added inside a box lands clear of the others, in
+  port order; a comment moves to the node the reply names, and into its box;
+  and a new comment over a boxed node is drawn inside the box.
+  `test/junction_preserve.test.js` covers the junction and link-node side.

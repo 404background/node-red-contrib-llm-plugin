@@ -411,24 +411,16 @@
                 if (!c || !c.remove || typeof c.remove !== 'object') return;
                 let r = c.remove;
                 if (typeof r.from !== 'string' || typeof r.to !== 'string') return;
+                // No port named means the wire, whichever port it leaves from.
                 directives.removeConnections.push({
                     from: r.from, to: r.to,
-                    fromPort: (typeof r.fromPort === 'number' && r.fromPort >= 0) ? r.fromPort : 0
+                    fromPort: (typeof r.fromPort === 'number' && r.fromPort >= 0) ? r.fromPort : null
                 });
             });
         }
         Object.keys(parsed.nodes || {}).forEach(function(alias) {
             if (parsed.nodes[alias] === null) directives.removeTokens.push(alias);
         });
-        // `groups: { alias: null }` removes the BOX. Its members are nodes in
-        // their own right and stay on the canvas; the importer clears the `g`
-        // they were left pointing at.
-        let groups = parsed.groups;
-        if (groups && typeof groups === 'object' && !Array.isArray(groups)) {
-            Object.keys(groups).forEach(function(alias) {
-                if (groups[alias] === null) directives.removeTokens.push(alias);
-            });
-        }
         // `reposition` accepts either a flat alias array
         //   "reposition": ["a", "b"]
         // or grouped sequences (e.g. when the LLM wants to make the
@@ -587,8 +579,7 @@
             };
             // Preserve directive fields the merger doesn't otherwise touch
             // so a reposition-only agent message survives the merge.
-            ['reposition', 'relayout', 'reflow', 'remove', 'delete', 'removeNodes', 'deleted',
-             'groups'].forEach(function(k) {
+            ['reposition', 'relayout', 'reflow', 'remove', 'delete', 'removeNodes', 'deleted'].forEach(function(k) {
                 if (schema[k] !== undefined) merged[k] = schema[k];
             });
 
@@ -689,21 +680,6 @@
                 fromPort: (typeof c.fromPort === 'number' && c.fromPort >= 0) ? c.fromPort : 0
             });
         });
-
-        // Groups carry through as declared: the converter reads the member
-        // ALIASES and the importer resolves them. A `null` entry is a deletion
-        // directive and is left for extractFlowDirectives.
-        let groups = schema && schema.groups;
-        if (groups && typeof groups === 'object' && !Array.isArray(groups)) {
-            let outGroups = {};
-            Object.keys(groups).forEach(function(alias) {
-                let spec = groups[alias];
-                if (spec === null) return;
-                if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return;
-                outGroups[alias] = JSON.parse(JSON.stringify(spec));
-            });
-            if (Object.keys(outGroups).length > 0) out.groups = outGroups;
-        }
         return out;
     }
 
@@ -724,9 +700,7 @@
                 }
 
                 let conversionSchema = normalizeSchemaForConversion(sourceSchema, options, cfg);
-                // A groups-only schema is still work: a box around nodes that
-                // are already on the canvas names no node of its own.
-                if (Object.keys(conversionSchema.nodes).length === 0 && !conversionSchema.groups) return [];
+                if (Object.keys(conversionSchema.nodes).length === 0) return [];
 
                 // preserveAlias is always on: the importer matches a comment's
                 // `above: <alias>` against `_llmAlias` to find its target, and

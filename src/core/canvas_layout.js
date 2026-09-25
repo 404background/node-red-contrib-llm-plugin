@@ -24,7 +24,6 @@
         minNodeWidth: 100,
         nodeHeight:    30,    // Node-RED's standard rendered node height
         gridSize:      20,
-        maxColumns:     5,
         topMargin:     20,    // min clearance between canvas top (y=0) and the topmost node edge
         leftMargin:    20,    // the same on the left edge (x=0)
         groupPadding:  25,    // the editor's own clearance between a group's box and its members
@@ -41,8 +40,7 @@
     }
 
     // --- Pure topological layout (docs/{en,jp}/layout.md §1) ---
-    function layoutNodes(aliases, outgoing, incoming, maxColumns) {
-        if (!maxColumns || maxColumns < 2) maxColumns = 5;
+    function layoutNodes(aliases, outgoing, incoming) {
         let positions = {};
         let visited = {};
 
@@ -150,25 +148,6 @@
                     });
                 }
             });
-
-            // --- Wrap long chains ---
-            let compMaxCol = 0;
-            comp.forEach(function(a) { if (colMap[a] > compMaxCol) compMaxCol = colMap[a]; });
-
-            if (compMaxCol >= maxColumns) {
-                let rowSet = {};
-                comp.forEach(function(a) { rowSet[rowMap[a]] = true; });
-                let rowsPerFold = Object.keys(rowSet).length;
-                if (rowsPerFold < 1) rowsPerFold = 1;
-
-                comp.forEach(function(a) {
-                    let fold = Math.floor(colMap[a] / maxColumns);
-                    if (fold > 0) {
-                        colMap[a] = colMap[a] % maxColumns;
-                        rowMap[a] = rowMap[a] + fold * (rowsPerFold + 1);
-                    }
-                });
-            }
 
             let maxRow = globalRowOffset - 1;
             comp.forEach(function(a) {
@@ -339,7 +318,73 @@
         return Math.ceil(w / grid) * grid;
     }
 
+    // A junction is a 10×10 routing point, not a node with a label.
+    let JUNCTION_SIZE = 10;
+
+    function isRouting(n) {
+        return !!n && (n.type === 'junction' || n.type === 'link in' || n.type === 'link out');
+    }
+
+    // Routing outside a box travels with what it serves: a junction or a
+    // `link in` with the nodes it leads to, a `link out` with the nodes
+    // feeding it. Followed through further routing. Returns
+    // { routingId: [anchor nodes] } for every unboxed routing node that has
+    // any. See docs/{en,jp}/layout.md — Routing follows what it serves.
+    function routingAnchors(nodes) {
+        let byId = {}, feeders = {};
+        (nodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
+        (nodes || []).forEach(function(n) {
+            if (!n || !Array.isArray(n.wires)) return;
+            n.wires.forEach(function(port) {
+                (Array.isArray(port) ? port : []).forEach(function(to) {
+                    (feeders[to] = feeders[to] || []).push(n.id);
+                });
+            });
+        });
+        function targets(r) {
+            let out = [];
+            (Array.isArray(r.wires) ? r.wires : []).forEach(function(port) {
+                out = out.concat(Array.isArray(port) ? port : []);
+            });
+            if (r.type === 'link out' && Array.isArray(r.links)) out = out.concat(r.links);
+            return out;
+        }
+        function walk(r, downstream, seen, out) {
+            if (seen[r.id]) return;
+            seen[r.id] = true;
+            (downstream ? targets(r) : (feeders[r.id] || [])).forEach(function(id) {
+                let n = byId[id];
+                if (!n) return;
+                if (isRouting(n)) walk(n, downstream, seen, out);
+                else if (out.indexOf(n) === -1) out.push(n);
+            });
+        }
+        let result = {};
+        (nodes || []).forEach(function(r) {
+            if (!isRouting(r) || (r.g && byId[r.g])) return;
+            let out = [];
+            let downstream = r.type !== 'link out' && targets(r).length > 0;
+            walk(r, downstream, {}, out);
+            if (out.length > 0) result[r.id] = out;
+        });
+        return result;
+    }
+
+    // The routing that follows a moving set: every unboxed routing node whose
+    // anchors all move with it.
+    function routingAlong(unit, routing, byId) {
+        let inUnit = {};
+        unit.forEach(function(n) { inUnit[n.id] = true; });
+        let extra = [];
+        Object.keys(routing).forEach(function(id) {
+            if (inUnit[id] || !byId[id]) return;
+            if (routing[id].every(function(a) { return inUnit[a.id]; })) extra.push(byId[id]);
+        });
+        return extra;
+    }
+
     function getNodeWidth(node, opts) {
+        if (node && node.type === 'junction') return JUNCTION_SIZE;
         if (opts && typeof opts.getNodeWidth === 'function') {
             let w = opts.getNodeWidth(node);
             if (typeof w === 'number' && w > 0) return w;
@@ -349,12 +394,6 @@
 
     function nodeRightEdge(node, opts) { return (node.x || 0) + getNodeWidth(node, opts) / 2; }
     function nodeLeftEdge (node, opts) { return (node.x || 0) - getNodeWidth(node, opts) / 2; }
-
-    // Width-aware centre-to-centre distance (docs/{en,jp}/layout.md §"Width-aware…").
-    function pairSpacing(a, b, opts) {
-        let gap = pickOption(opts, 'edgeGap', LAYOUT_DEFAULTS.edgeGap);
-        return (getNodeWidth(a, opts) + getNodeWidth(b, opts)) / 2 + gap;
-    }
 
     // Place each comment directly above the canvas node it heads, stacking
     // upward when several share a target and landing on top of any comments
@@ -482,6 +521,9 @@
             for (let i = 0; i < positioned.length; i++) {
                 let n = positioned[i];
                 if (visited[n.id]) continue;
+                // A box is drawn around things; it is not something a caption
+                // heads, and its x / y is a corner, not a centre.
+                if (n.type === 'group') continue;
                 // A caption in a box heads something IN that box. Letting the
                 // search cross the boundary anchored a caption sitting near
                 // the bottom of one group to the top of the next, which then
@@ -627,64 +669,6 @@
         });
     }
 
-    // A standalone annotation is left where the user put it — right up until
-    // a reposition lays a sequence over the top of it. It has no place in the
-    // layout, so it is the thing that moves: up by a row at a time until it
-    // is clear, or down if up would take it off the canvas. Captions with an
-    // anchor are not touched; those belong to a node and were just placed.
-    function nudgeFreeCaptions(canvasNodes, anchors, options) {
-        let opts = options || {};
-        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
-        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
-        let topMargin  = pickOption(opts, 'topMargin',  LAYOUT_DEFAULTS.topMargin);
-        let stackStep  = (gridSize > 0) ? Math.ceil(nodeHeight / gridSize) * gridSize : nodeHeight;
-
-        let all = (canvasNodes || []).filter(function(n) {
-            return n && typeof n.x === 'number' && typeof n.y === 'number';
-        });
-        let free = all.filter(function(n) {
-            return n.type === 'comment' && !(anchors && anchors[n.id]);
-        });
-        if (free.length === 0) return canvasNodes;
-        // Everything already placed counts, captions included: two notes on
-        // the same spot are as unreadable as a note under a node.
-        let taken = all.filter(function(n) {
-            return n.type !== 'group' && free.indexOf(n) === -1;
-        });
-        if (taken.length === 0) return canvasNodes;
-
-        function hits(c) {
-            let e = memberEdges(c, opts, nodeHeight);
-            if (!e) return false;
-            return taken.some(function(n) {
-                if (n === c) return false;
-                let o = memberEdges(n, opts, nodeHeight);
-                return o && e.minX < o.maxX && o.minX < e.maxX &&
-                            e.minY < o.maxY && o.minY < e.maxY;
-            });
-        }
-
-        // Top-down, so each one settles against the ones already settled.
-        free.sort(function(a, b) { return (a.y - b.y) || (a.x - b.x); });
-        free.forEach(function(c) {
-            taken.push(c);
-            if (!hits(c)) return;
-            let startY = c.y;
-            for (let i = 1; i <= 40; i++) {
-                c.y = startY - stackStep * i;
-                if (c.y - nodeHeight / 2 < topMargin) break;
-                if (!hits(c)) return;
-            }
-            c.y = startY;
-            for (let i = 1; i <= 40; i++) {
-                c.y = startY + stackStep * i;
-                if (!hits(c)) return;
-            }
-            c.y = startY;
-        });
-        return canvasNodes;
-    }
-
     // A node's `x` is its CENTRE, so a rename moves BOTH its edges: the node
     // slid out of the column it was aligned to, and took the caption above it
     // and its group's box with it — a long enough name pushed the left edge
@@ -709,98 +693,6 @@
         return changed;
     }
 
-    // Last resort for overlaps the directional pushes could not reach. With
-    // `compOf` each component moves as a RIGID BODY, so a flow the user did
-    // not edit keeps its shape. See docs/{en,jp}/layout.md — Pass details.
-    function resolveOverlaps(canvasNodes, opts, compOf) {
-        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
-        let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
-        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
-
-        let nodes = (canvasNodes || []).filter(function(n) {
-            return n && n.type !== 'comment' && typeof n.x === 'number' && typeof n.y === 'number';
-        });
-        if (nodes.length < 2) return;
-
-        // Group non-comment nodes by component so a push can move the whole
-        // body at once (rigid). Only built when compOf is provided.
-        let members = null;
-        if (compOf) {
-            members = {};
-            nodes.forEach(function(n) {
-                let c = compOf[n.id];
-                if (c === undefined) return;
-                (members[c] = members[c] || []).push(n);
-            });
-        }
-
-        // spacingY is edge-to-edge; the actual row pitch (centre delta) is
-        // nodeHeight + spacingY. Floor stepY at a single grid square so
-        // tightly-packed nodes always advance at least one snap unit.
-        let stepY = nodeHeight + Math.max(spacingY, gridSize);
-        let maxPasses = nodes.length * 2 + 5;
-        let changed = true;
-        while (changed && maxPasses-- > 0) {
-            changed = false;
-            nodes.sort(function(a, b) {
-                return (a.y - b.y) || (a.x - b.x);
-            });
-            for (let i = 0; i < nodes.length; i++) {
-                let a = nodes[i];
-                let aw = getNodeWidth(a, opts);
-                for (let j = i + 1; j < nodes.length; j++) {
-                    let b = nodes[j];
-                    let bw = getNodeWidth(b, opts);
-                    if (Math.abs(a.x - b.x) < (aw + bw) / 2 && (b.y - a.y) < nodeHeight) {
-                        let ca = compOf ? compOf[a.id] : undefined;
-                        let cb = compOf ? compOf[b.id] : undefined;
-                        // Leave a component's own internal layout alone.
-                        if (compOf && ca !== undefined && ca === cb) continue;
-                        // Push by exact `stepY` (= nodeHeight + max(spacingY,
-                        // gridSize)); snapping would break the consistent
-                        // per-row pitch that the rest of the layout enforces.
-                        let delta = (a.y + stepY) - b.y;
-                        if (delta <= 0) continue;
-                        if (members && cb !== undefined) {
-                            // Rigid: translate b's whole flow down together.
-                            members[cb].forEach(function(n) { n.y = n.y + delta; });
-                        } else {
-                            b.y = a.y + stepY;
-                        }
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    // Comment stacks grow upward, so a caption above a node near the top of
-    // the canvas can land at y <= 0. Slide every node down by one shared
-    // delta, preserving relative geometry. Pinned component reflows opt out
-    // (`skipTopMargin`) — their caller guards the canvas as a whole.
-    function ensureTopMargin(canvasNodes, opts) {
-        if (opts && opts.skipTopMargin) return;
-        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
-        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
-        let topMargin  = pickOption(opts, 'topMargin',  LAYOUT_DEFAULTS.topMargin);
-
-        let minTop = Infinity;
-        (canvasNodes || []).forEach(function(n) {
-            if (!n || typeof n.y !== 'number') return;
-            let top = n.y - nodeHeight / 2;
-            if (top < minTop) minTop = top;
-        });
-        if (!isFinite(minTop) || minTop >= topMargin) return;
-
-        let dy = topMargin - minTop;
-        if (gridSize > 0) dy = Math.ceil(dy / gridSize) * gridSize;
-        canvasNodes.forEach(function(n) {
-            if (n && typeof n.y === 'number') n.y += dy;
-        });
-    }
-
-    // --- Canvas-level layout (docs/{en,jp}/layout.md §§ 2 and 3) ---
-
     function reflowCanvasNodes(nodes, options) {
         let opts = options || {};
         let isCanvas    = resolveCanvasFilter(opts);
@@ -810,8 +702,6 @@
         let componentGap = pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
         let edgeGap      = pickOption(opts, 'edgeGap',      LAYOUT_DEFAULTS.edgeGap);
         let nodeHeight   = pickOption(opts, 'nodeHeight',   LAYOUT_DEFAULTS.nodeHeight);
-        let rawMaxCols   = pickOption(opts, 'maxColumns',   LAYOUT_DEFAULTS.maxColumns);
-        let maxColumns   = (rawMaxCols >= 2) ? Math.floor(rawMaxCols) : LAYOUT_DEFAULTS.maxColumns;
         let rowPitch     = nodeHeight + spacingY;
 
         let canvasNodes = (nodes || []).filter(isCanvas);
@@ -832,7 +722,7 @@
         if (ids.length === 0) return nodes;
 
         let adj = buildWireAdjacency(canvasNodes.filter(function(n) { return n.type !== 'comment'; }), byId);
-        let positions = layoutNodes(ids, adj.outgoing, adj.incoming, maxColumns);
+        let positions = layoutNodes(ids, adj.outgoing, adj.incoming);
         let incoming = adj.incoming;
 
         let leftEdgeById = computeLeftEdges(ids, positions, incoming, function(id) {
@@ -853,10 +743,8 @@
             node.y = pos.row * rowPitch + (compOffsets[ci] || 0);
         });
 
-        resolveOverlaps(canvasNodes, opts);
         applyCommentAnchors(canvasNodes, commentAnchors, opts);
         repositionCommentsByLlmOrder(canvasNodes, opts);
-        ensureTopMargin(canvasNodes, opts);
         return nodes;
     }
 
@@ -881,14 +769,10 @@
         if (!isFinite(minLeft)) minLeft = pickOption(opts, 'startX', LAYOUT_DEFAULTS.startX);
         if (!isFinite(minTop))  minTop  = pickOption(opts, 'startY', LAYOUT_DEFAULTS.startY);
 
-        // Pin the reflow to the component's existing top-left. Disable
-        // column folding — a mid-chain insertion should never trigger a
-        // hard line break the user didn't ask for.
+        // Pin the reflow to the component's existing top-left.
         let pinnedOpts = Object.assign({}, opts || {}, {
             startX: minLeft,
-            startY: minTop,
-            maxColumns: Infinity,
-            skipTopMargin: true
+            startY: minTop
         });
         reflowCanvasNodes(componentNodes, pinnedOpts);
     }
@@ -902,11 +786,6 @@
         let bandGap = (typeof opts.bandGap === 'number')
             ? opts.bandGap
             : pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
-        let rawMaxCols = pickOption(opts, 'maxColumns', LAYOUT_DEFAULTS.maxColumns);
-        // Floored like reflowCanvasNodes: a fractional fold width would put
-        // `colMap[a] % maxColumns` on a non-integer boundary. Math.floor
-        // leaves the Infinity that callers pass to disable folding intact.
-        let maxColumns = (rawMaxCols >= 2) ? Math.floor(rawMaxCols) : LAYOUT_DEFAULTS.maxColumns;
         let rowPitch = nodeHeight + spacingY;
 
         existingIdMap = existingIdMap || {};
@@ -1265,7 +1144,7 @@
                     }
                 });
             });
-            let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn, maxColumns);
+            let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn);
             let orphanOffsets = computeComponentYOffsets(
                 orphanIds, orphanPositions, orphanStartY, spacingY, bandGap, nodeHeight
             );
@@ -1319,30 +1198,19 @@
             });
         }
 
-        // Safety net: resolve any residual node-on-node overlap that the
-        // directional pushes above couldn't reach. Must run before the
-        // final comment pass so comments re-align to targets at their
-        // final Y. Passing `compOf` makes it component-rigid: an untouched
-        // flow can only be translated as a whole here, never sheared.
-        resolveOverlaps(canvasNodes, opts, compOf);
-
         // Carry existing comments along with their (possibly moved)
         // anchor target. Runs before the new-comment pass so that pass
         // can stack new comments above the re-aligned existing ones.
         applyCommentAnchors(canvasNodes, commentAnchors, opts);
 
-        // Place new schema comments above their resolved target. Runs
-        // here, after every canvas target (including orphan-band ones)
-        // has its final coordinates, so the comment lands on the right
-        // spot in one go.
+        // Place schema comments above their resolved target: every new one,
+        // and an existing one the reply named a target for — where a comment
+        // goes is the model's decision. Runs here, after every canvas target
+        // (including orphan-band ones) has its final coordinates, so the
+        // comment lands on the right spot in one go.
         repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
-            return !existingIdMap[c.id];
+            return !existingIdMap[c.id] || typeof c._llmAboveId === 'string';
         });
-
-        // Top-edge guard: a new caption stacked above a target near the
-        // canvas top must slide the whole flow down, not sit at y <= 0.
-        ensureTopMargin(canvasNodes, opts);
-
         return nodes;
     }
 
@@ -1365,7 +1233,8 @@
             return { minX: member.x, minY: member.y, maxX: member.x + w, maxY: member.y + h };
         }
         let w = getNodeWidth(member, opts);
-        let h = (typeof member.h === 'number' && member.h > 0) ? member.h : nodeHeight;
+        let h = member.type === 'junction' ? JUNCTION_SIZE
+            : (typeof member.h === 'number' && member.h > 0) ? member.h : nodeHeight;
         return {
             minX: member.x - w / 2, minY: member.y - h / 2,
             maxX: member.x + w / 2, maxY: member.y + h / 2
@@ -1399,22 +1268,13 @@
         return depth;
     }
 
-    // Refit every group box that no longer holds its members — a new group has
-    // no box at all, and a layout pass moves members out of the box they had.
-    // A box the user made LARGER than it needs to be is left alone: it still
-    // contains everything, and its size is their decision.
+    // Fit every group box to what it holds, `groupPadding` all round. Every
+    // box, whoever drew it: a box larger than its contents is one the layout
+    // cannot line up or space by what is in it.
     function fitGroups(nodes, options) {
         let opts = options || {};
         let pad = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
-        // Boxes whose members THIS edit moved: refitted even when the old box
-        // still contains them. "Larger than it needs to be" is the user's
-        // decision only until the layout rearranges what is inside it — after
-        // a reposition the stale box is what leaves the boxes out of line.
-        let refit = {};
-        (Array.isArray(opts.refitIds) ? opts.refitIds : []).forEach(function(id) {
-            if (id) refit[id] = true;
-        });
 
         let byId = {};
         let groups = [];
@@ -1429,12 +1289,6 @@
         groups.forEach(function(g) {
             let box = membersBBox(g, byId, opts, nodeHeight);
             if (!box) return;
-            let fitted = typeof g.x === 'number' && typeof g.y === 'number' &&
-                         typeof g.w === 'number' && g.w > 0 &&
-                         typeof g.h === 'number' && g.h > 0;
-            if (!refit[g.id] && fitted &&
-                g.x <= box.minX && g.y <= box.minY &&
-                g.x + g.w >= box.maxX && g.y + g.h >= box.maxY) return;
             g.x = box.minX - pad;
             g.y = box.minY - pad;
             g.w = (box.maxX - box.minX) + pad * 2;
@@ -1446,7 +1300,7 @@
     // What has to move together: nodes joined by a wire, both halves of group
     // membership, and a caption with the node it heads. A block moves whole,
     // so separating two sequences can never shear either one.
-    function collectBlocks(all, byId, anchors, opts, nodeHeight) {
+    function collectBlocks(all, byId, anchors) {
         let parent = {};
         function find(id) {
             while (parent[id] !== undefined && parent[id] !== id) id = parent[id];
@@ -1482,31 +1336,7 @@
             let root = find(n.id);
             (byRoot[root] = byRoot[root] || { nodes: [] }).nodes.push(n);
         });
-        return Object.keys(byRoot)
-            .map(function(k) { return measureBlock(byRoot[k], opts, nodeHeight); })
-            .sort(function(a, b) { return (a.top - b.top) || (a.left - b.left); });
-    }
-
-    // One reading of a block's extent, used by both passes below and redone
-    // after each of them moves something.
-    function measureBlock(block, opts, nodeHeight) {
-        block.hasGroup = false;
-        block.boxLeft = Infinity;
-        block.top = Infinity; block.bottom = -Infinity;
-        block.left = Infinity; block.right = -Infinity;
-        block.nodes.forEach(function(n) {
-            if (n.type === 'group') {
-                block.hasGroup = true;
-                if (n.x < block.boxLeft) block.boxLeft = n.x;
-            }
-            let e = memberEdges(n, opts, nodeHeight);
-            if (!e) return;
-            if (e.minY < block.top) block.top = e.minY;
-            if (e.maxY > block.bottom) block.bottom = e.maxY;
-            if (e.minX < block.left) block.left = e.minX;
-            if (e.maxX > block.right) block.right = e.maxX;
-        });
-        return block;
+        return Object.keys(byRoot).map(function(k) { return byRoot[k]; });
     }
 
     // Stacked sequences read as a column, so their boxes share a left edge
@@ -1516,32 +1346,23 @@
     //
     // A box is not moved when its block holds a node in no box at all — the
     // chain feeding it, or a node hanging off it — since only the box would
-    // move and the wire between them would shear. Boxes never block each other.
-    //
-    // With `touchedIds` (an edit to an existing canvas) only boxes holding
-    // something this edit placed move, and they line up with the untouched
-    // ones: the user's column is the reference, not the canvas origin.
-    function alignBoxesLeft(blocks, groups, byId, anchors, opts) {
+    // move and the wire between them would shear. Routing that serves only the
+    // box is not such a node: it moves with it. Boxes never block each other.
+    function alignBoxesLeft(blocks, groups, byId, anchors, routing, opts) {
         let blockOf = {};
         blocks.forEach(function(b, i) { b.nodes.forEach(function(n) { blockOf[n.id] = i; }); });
-        let touched = null;
-        if (Array.isArray(opts.touchedIds)) {
-            touched = {};
-            opts.touchedIds.forEach(function(id) { touched[id] = true; });
-        }
 
         // What lines up is the SEQUENCE, read from its members' own left
-        // edges rather than the box drawn around them: a box the user made
-        // larger than it needs to be still holds its members at their column,
-        // and aligning the border would push that column out of line.
+        // edges.
         let movable = [];
         groups.forEach(function(g) {
             if (g.g) return;                             // a nested box follows its parent
             let bi = blockOf[g.id];
             if (bi === undefined) return;
             let contents = boxContents(g, byId, anchors);
+            let along = routingAlong(contents, routing, byId);
             let inBox = {};
-            contents.forEach(function(n) { inBox[n.id] = true; });
+            contents.concat(along).forEach(function(n) { inBox[n.id] = true; });
             let loose = blocks[bi].nodes.some(function(n) {
                 return !inBox[n.id] && n.type !== 'group' && !n.g;
             });
@@ -1552,8 +1373,7 @@
                 let l = n.x - getNodeWidth(n, opts) / 2;
                 if (l < left) left = l;
             });
-            let edited = !touched || contents.some(function(n) { return touched[n.id]; });
-            if (isFinite(left)) movable.push({ group: g, contents: contents, left: left, edited: edited });
+            if (isFinite(left)) movable.push({ contents: contents.concat(along), group: g, left: left });
         });
         // Alignment is for sequences STACKED one above another. Two boxes
         // whose rows overlap are side by side, or interlocked because a node
@@ -1568,17 +1388,10 @@
         });
         if (movable.length < 2) return;
 
-        // The leftmost column wins, but never further left than the canvas
-        // origin: a sequence that has drifted towards the edge would otherwise
-        // drag every other one out there with it, and "aligned" would come to
-        // mean "flush against the side of the screen".
-        let startX = pickOption(opts, 'startX', LAYOUT_DEFAULTS.startX);
-        let reference = movable.filter(function(m) { return !m.edited; });
-        let target = (reference.length > 0 ? reference : movable)
-            .reduce(function(min, m) { return Math.min(min, m.left); }, Infinity);
-        if (reference.length === 0 && target < startX) target = startX;
+        // The leftmost column wins; the canvas margin is ensureCanvasMargins'
+        // business, afterwards.
+        let target = movable.reduce(function(min, m) { return Math.min(min, m.left); }, Infinity);
         movable.forEach(function(m) {
-            if (!m.edited) return;
             let dx = target - m.left;
             if (!dx) return;
             m.contents.forEach(function(n) { n.x = n.x + dx; });
@@ -1615,43 +1428,17 @@
         return unit;
     }
 
-    // Top-down, downward-only: each block is separated from the ones already
-    // placed above it, so one sweep settles the stack and a canvas that
-    // already clears does not drift.
-    function pushBlocksApart(blocks, gap) {
-        for (let j = 1; j < blocks.length; j++) {
-            let cur = blocks[j];
-            let delta = 0;
-            for (let i = 0; i < j; i++) {
-                let above = blocks[i];
-                // Only a box needs this clearance; two plain flows are the
-                // node layout's business, and it already spaced them.
-                if (!above.hasGroup && !cur.hasGroup) continue;
-                if (above.right <= cur.left || cur.right <= above.left) continue;
-                let needed = (above.bottom + gap) - (cur.top + delta);
-                if (needed > 0) delta += needed;
-            }
-            if (delta <= 0) continue;
-            cur.nodes.forEach(function(n) { n.y = n.y + delta; });
-            cur.top += delta;
-            cur.bottom += delta;
-        }
-    }
-
     // A box is drawn `groupPadding` outside its members, so the clearance the
     // node layout left between two sequences is that clearance MINUS both
     // paddings — and a caption that joined a group grows its box further into
     // it. Stacked sequences that read as separate therefore come out with
     // boxes that touch, or overlap outright.
     //
-    // So: line the boxes up, then keep every one of them `groupGap` clear of
-    // whatever is outside it. Both work on blocks, and the bounds are re-read
-    // between the two, so the spacing is measured on the aligned positions.
+    // So: line the boxes up, then settle every collision, which keeps each
+    // box `groupGap` clear of whatever is outside it.
     // See docs/{en,jp}/layout.md — Order of the passes.
     function separateGroups(nodes, options) {
         let opts = options || {};
-        let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
-        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
         let all = (nodes || []).filter(function(n) {
             return n && n.id && typeof n.x === 'number' && typeof n.y === 'number';
@@ -1665,47 +1452,225 @@
         // saying where it belongs when it is not a group member.
         let anchors = captureCommentAnchors(all, opts);
 
-        let blocks = collectBlocks(all, byId, anchors, opts, nodeHeight);
-        alignBoxesLeft(blocks, groups, byId, anchors, opts);
-        blocks.forEach(function(b) { measureBlock(b, opts, nodeHeight); });
-        pushBlocksApart(blocks, gap);
-        // Boxes last, and box by box: two that are interlocked — a member of
-        // one wired to a member of the other — are a single block, so the
-        // pass above cannot separate them and the user is left looking at two
-        // borders crossing. A box moves with everything it holds.
-        stackBoxes(groups, byId, anchors, gap);
+        alignBoxesLeft(collectBlocks(all, byId, anchors), groups, byId, anchors, routingAnchors(all), opts);
+        settleCollisions(nodes, opts);
         return nodes;
     }
 
-    // Every box clears every other box it shares a column with, by `gap`.
-    // Top-down and downward-only, like the block pass, so a canvas that
-    // already clears settles with nothing moved.
-    function stackBoxes(groups, byId, anchors, gap) {
-        let top = groups.filter(function(g) {
-            // A nested box travels inside its parent; separating it from the
-            // parent is not something a caller can have asked for.
-            return !g.g && (g.w > 0) && (g.h > 0);
-        }).sort(function(a, b) { return (a.y - b.y) || (a.x - b.x); });
+    // The invariant every other pass works towards, checked on the finished
+    // canvas: nothing sits on anything — node, caption or box — and no node is
+    // inside a box it is not a member of. Siblings are compared level by level
+    // (the canvas, then each box's own members), so a member is never in the
+    // way of its own box. Everything on the canvas counts, whoever placed it.
+    //
+    // The lower party goes under the upper one, rigidly: a box with everything
+    // in it, a wired chain with its captions. Inside one chain, moving it
+    // whole cannot separate its own nodes, so the lower node steps off alone
+    // (a caption travels with the node it heads). Boxes are refitted after
+    // every move. Returns the ids it moved.
+    // See docs/{en,jp}/layout.md — Order of the passes.
+    function settleCollisions(nodes, options) {
+        let opts = options || {};
+        let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
+        let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let isCanvasNode = resolveCanvasFilter(opts);
 
-        let placed = [];
-        top.forEach(function(g) {
-            let need = 0;
-            placed.forEach(function(p) {
-                if (p.x + p.w <= g.x || g.x + g.w <= p.x) return;   // no shared column
-                let required = p.y + p.h + gap;
-                if (g.y + need < required) need = required - g.y;
-            });
-            if (need > 0) {
-                boxContents(g, byId, anchors).forEach(function(n) { n.y = n.y + need; });
-            }
-            placed.push(g);
+        let all = (nodes || []).filter(function(n) {
+            return n && n.id && typeof n.x === 'number' && typeof n.y === 'number';
         });
+        let byId = {};
+        all.forEach(function(n) { byId[n.id] = n; });
+        function container(n) { return (n.g && byId[n.g]) ? n.g : ''; }
+        let anchors = captureCommentAnchors(all, opts);
+        let captionOf = {};
+        Object.keys(anchors).forEach(function(id) {
+            (captionOf[anchors[id].targetId] = captionOf[anchors[id].targetId] || []).push(byId[id]);
+        });
+        let routing = routingAnchors(all);
+
+        function solid(n) {
+            if (n.type === 'group') return n.w > 0 && n.h > 0;
+            return isCanvasNode(n);
+        }
+        function rect(n) {
+            let e = memberEdges(n, opts, nodeHeight);
+            return { top: e.minY, bottom: e.maxY, left: e.minX, right: e.maxX };
+        }
+        // What a caption travels with, at its own level: the node it heads,
+        // or — for a caption outside a box heading a member — that box.
+        // Routing travels with what it serves, when that is one thing.
+        function levelOf(t, n) {
+            let hops = 32;
+            while (t && container(t) !== container(n) && hops-- > 0) t = byId[container(t)];
+            return t;
+        }
+        function ownerOf(n) {
+            if (routing[n.id]) {
+                let owners = routing[n.id].map(function(a) { return levelOf(a, n); });
+                let o = owners[0];
+                let one = o && o !== n && owners.every(function(x) { return x === o; });
+                return one ? o : n;
+            }
+            let a = n.type === 'comment' ? anchors[n.id] : null;
+            let t = (a && byId[a.targetId]) ? byId[a.targetId] : null;
+            return levelOf(t, n) || n;
+        }
+        function unitOf(n) {
+            if (n.type === 'group') return boxContents(n, byId, anchors);
+            return [n].concat(captionOf[n.id] || []);
+        }
+        // The wired chain a node belongs to among its own siblings. It stops
+        // at a junction: that stays where the user put it, so a chain moved
+        // on one side of it does not drag it along.
+        function chainOf(n) {
+            if (n.type === 'comment' || n.type === 'group' || n.type === 'junction') return [n];
+            let seen = {}, queue = [n], out = [];
+            seen[n.id] = true;
+            while (queue.length > 0) {
+                let cur = queue.shift();
+                out.push(cur);
+                all.forEach(function(o) {
+                    if (seen[o.id] || o.type === 'group' || o.type === 'comment' || o.type === 'junction' ||
+                        container(o) !== container(n)) return;
+                    let linked = (cur.wires || []).some(function(p) { return (p || []).indexOf(o.id) !== -1; }) ||
+                                 (o.wires || []).some(function(p) { return (p || []).indexOf(cur.id) !== -1; });
+                    if (linked) { seen[o.id] = true; queue.push(o); }
+                });
+            }
+            return out;
+        }
+        // Always includes `n` itself, so a move can never leave the thing
+        // that collided behind.
+        function rigidUnit(n) {
+            let o = ownerOf(n);
+            let unit = (o.type === 'group') ? unitOf(o)
+                : chainOf(o).reduce(function(acc, m) { return acc.concat(unitOf(m)); }, []);
+            if (unit.indexOf(n) === -1) unit.push(n);
+            return unit;
+        }
+        function extent(unit) {
+            let e = { top: Infinity, bottom: -Infinity };
+            unit.forEach(function(n) {
+                if (!solid(n)) return;
+                let r = rect(n);
+                if (r.top < e.top) e.top = r.top;
+                if (r.bottom > e.bottom) e.bottom = r.bottom;
+            });
+            return e;
+        }
+
+        function findCollision() {
+            let levels = {};
+            all.forEach(function(n) {
+                if (solid(n)) (levels[container(n)] = levels[container(n)] || []).push(n);
+            });
+            let keys = Object.keys(levels);
+            for (let k = 0; k < keys.length; k++) {
+                let list = levels[keys[k]];
+                for (let i = 0; i < list.length; i++) {
+                    for (let j = i + 1; j < list.length; j++) {
+                        let a = list[i], b = list[j];
+                        // A caption and what it heads, or two captions over the
+                        // same node, are one stack: placing those is the
+                        // comment pass's job, and moving one moves the other.
+                        // Routing on what it serves still hides it, though.
+                        if (ownerOf(a) === ownerOf(b) && !routing[a.id] && !routing[b.id]) continue;
+                        let boxed = a.type === 'group' || b.type === 'group';
+                        let junction = a.type === 'junction' || b.type === 'junction';
+                        // A wire routed through a junction along a box edge
+                        // is ordinary; only something ON a junction hides it.
+                        if (junction && boxed) continue;
+                        if (a.type === 'junction' && b.type === 'junction') continue;
+                        let ra = rect(a), rb = rect(b);
+                        let clear = boxed ? gap : 0;
+                        if (ra.right <= rb.left || rb.right <= ra.left) continue;
+                        if (ra.bottom + clear <= rb.top || rb.bottom + clear <= ra.top) continue;
+                        return { a: a, b: b, boxed: boxed };
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Each round puts one thing under another; stacking n things can take
+        // on the order of n² of them when every one overlaps every other.
+        // A caption outside a box that heads one of its members from on top
+        // of the frame is that sequence's heading, and no move can clear it
+        // (it travels with the box): it joins the member's box instead. One
+        // sitting clear above the frame stays where it is.
+        Object.keys(anchors).forEach(function(id) {
+            let c = byId[id], t = byId[anchors[id].targetId];
+            if (!c || !t || !t.g || !byId[t.g] || container(c) === container(t)) return;
+            let owner = ownerOf(c);
+            if (owner.type !== 'group' || rect(c).bottom <= owner.y) return;
+            let was = container(c) ? byId[container(c)] : null;
+            if (was) was.nodes = (was.nodes || []).filter(function(m) { return m !== c.id; });
+            c.g = t.g;
+            byId[t.g].nodes = (byId[t.g].nodes || []).concat([c.id]);
+        });
+        fitGroups(all, opts);
+
+        let moved = {};
+        let rounds = all.length * all.length + 20;
+        while (rounds-- > 0) {
+            let hit = findCollision();
+            if (!hit) break;
+            let a = hit.a, b = hit.b;
+            let clear = hit.boxed ? gap
+                : (a.type === 'comment' || b.type === 'comment') ? 0 : spacingY;
+            let mover, delta;
+            let oa = ownerOf(a), ob = ownerOf(b);
+            if (a.type === 'junction' || b.type === 'junction') {
+                // A junction does not move; what landed on it steps off below.
+                let j = a.type === 'junction' ? a : b;
+                let other = j === a ? b : a;
+                mover = (oa === ob && routing[other.id]) ? [other] : rigidUnit(other);
+                delta = rect(j).bottom + clear - rect(other).top;
+            } else if (oa === ob) {
+                // A link node on what it serves steps off alone: moving the
+                // two together would never part them.
+                let r = routing[a.id] ? a : b;
+                let other = r === a ? b : a;
+                mover = [r];
+                delta = rect(other).bottom + clear - rect(r).top;
+            } else if (oa.type !== 'group' && ob.type !== 'group' && chainOf(oa).indexOf(ob) !== -1) {
+                // One chain: moving it whole cannot separate its own nodes, so
+                // the lower node steps off alone — with its captions, and
+                // under the other's captions too, or it leapfrogs between them.
+                let ua = unitOf(oa), ub = unitOf(ob);
+                let ea = extent(ua), eb = extent(ub);
+                let aIsUpper = ea.top <= eb.top;
+                mover = aIsUpper ? ub : ua;
+                delta = (aIsUpper ? ea : eb).bottom + clear - (aIsUpper ? eb : ea).top;
+            } else {
+                // Two separate things: the lower one, whole, goes under the
+                // upper one, whole. Clearing only the two parts that touched
+                // lets two interleaved chains catch on each other forever.
+                let ua = rigidUnit(a), ub = rigidUnit(b);
+                let ea = extent(ua), eb = extent(ub);
+                let aIsUpper = ea.top <= eb.top;
+                // A comment that heads nothing has no place in the layout, so
+                // it is the one that moves, whichever is higher.
+                let freeA = oa === a && a.type === 'comment';
+                let freeB = ob === b && b.type === 'comment';
+                if (freeA !== freeB) aIsUpper = freeB;
+                mover = aIsUpper ? ub : ua;
+                delta = (aIsUpper ? ea : eb).bottom + clear - (aIsUpper ? eb : ea).top;
+            }
+            if (delta <= 0) delta = nodeHeight + spacingY;
+            let stays = mover.indexOf(a) === -1 ? a : b;
+            mover = mover.concat(routingAlong(mover, routing, byId).filter(function(r) { return r !== stays; }));
+            mover.forEach(function(n) { n.y = n.y + delta; moved[n.id] = true; });
+            fitGroups(all, opts);
+        }
+        return Object.keys(moved);
     }
 
-    // The final guard, on both edges at once and counting BOXES as well as
-    // nodes. `ensureTopMargin` runs mid-pipeline and can only see the nodes,
-    // so a box — drawn `groupPadding` outside its members — ends up nearer the
-    // top than the left, or off the canvas entirely. Measuring both edges the
+    // The only margin guard, on both edges at once and counting BOXES as well
+    // as nodes: a box is drawn `groupPadding` outside its members, so
+    // measuring nodes alone leaves it nearer the edge, or off the canvas
+    // entirely. Measuring both edges the
     // same way is what makes the gap above a flow equal the gap beside it.
     // Everything slides by one shared delta, so relative geometry is untouched.
     function ensureCanvasMargins(nodes, options) {
@@ -1751,7 +1716,8 @@
         placeAddedNodesNearNeighbors: placeAddedNodesNearNeighbors,
         captureCommentAnchors:        captureCommentAnchors,
         applyCommentAnchors:          applyCommentAnchors,
-        nudgeFreeCaptions:            nudgeFreeCaptions,
+        settleCollisions:             settleCollisions,
+        routingAnchors:               routingAnchors,
         wiredComponents:              wiredComponents,
         fitGroups:                    fitGroups,
         separateGroups:               separateGroups,

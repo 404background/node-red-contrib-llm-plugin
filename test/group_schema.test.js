@@ -1,18 +1,14 @@
-// Groups: the "flow" a user means when they say one connected sequence.
-//
-// Node-RED calls two different things a flow — a tab, and a chain of wired
-// nodes — so "make me three flows" is ambiguous in the one place it matters.
-// The schema settles it: a tab is `flow`, a sequence is a GROUP, and a group is
-// a box drawn around members. See docs/{en,jp}/vibe-schema.md — Groups.
+// Group boxes are the user's: the model neither sees nor declares one, and a
+// box holds one wired sequence. See docs/{en,jp}/design.md §15.
 //
 // What has to hold:
+//  - a reply cannot create, edit or delete a box, and the context shows none;
+//  - an edit keeps a box around its sequence: a new node wired into it, and a
+//    comment placed over one of its nodes, join it;
 //  - membership is two-sided (`g` on the member, the id in the group's list),
 //    because the editor draws from both and repairs neither for us;
-//  - the BOX is ours to compute. Node-RED stores x/y/w/h on the group and only
-//    recomputes them when a user drags a member, so a box we leave at 0×0 is a
-//    box the user sees at 0×0;
-//  - a group edit is a merge like everything else: re-declaring one does not
-//    empty it, and deleting the box does not delete the nodes inside it.
+//  - the BOX is ours to fit. Node-RED stores x/y/w/h on the group and only
+//    recomputes them when a user drags a member.
 const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
 const TABS = [{ id: 'tab1', type: 'tab', label: 'Flow 1' }];
@@ -32,9 +28,6 @@ function byName(snapshot, name) {
   return snapshot.find((n) => n && n.name === name) || null;
 }
 
-// The editor's own clearance between a group's box and the members inside it.
-const PAD = 25;
-
 function boxHolds(group, members) {
   return members.every((m) => {
     const w = (typeof m.w === 'number' && m.w > 0) ? m.w : 100;
@@ -44,170 +37,10 @@ function boxHolds(group, members) {
   });
 }
 
-async function scenarioGroupIsBuiltAroundItsMembers() {
-  console.log('A declared group becomes a box around its members');
-  const msg = 'Two sequences.\n' + fence({
-    nodes: {
-      inject_tick: { type: 'inject', name: 'tick' },
-      debug_out: { type: 'debug', name: 'out' },
-    },
-    connections: [{ from: 'inject_tick', to: 'debug_out' }],
-    groups: { group_collector: { name: 'Collector', nodes: ['inject_tick', 'debug_out'] } },
-  });
 
-  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: [], activeId: 'tab1' });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const flow = snapshot('tab1');
-  const groups = groupsIn(flow);
 
-  ok(res && res.ok, 'the import applied');
-  ok(groups.length === 1, 'one group was created (' + groups.length + ')');
-  const g = groups[0];
-  ok(!!g && g.name === 'Collector', 'with the name the schema gave it (' + (g && g.name) + ')');
 
-  const members = (g.nodes || []).map((id) => nodeById(flow, id)).filter(Boolean);
-  ok(members.length === 2, 'both nodes are listed as members (' + (g.nodes || []).join(',') + ')');
-  ok(members.every((m) => m.g === g.id),
-    'and each member points back at the group, which is the half the editor draws from');
 
-  ok(g.w > 0 && g.h > 0, 'the box has a size (' + g.w + 'x' + g.h + ')');
-  ok(boxHolds(g, members),
-    'and it contains every member — a box we leave empty is one the user sees empty');
-  const tick = byName(flow, 'tick');
-  ok(Math.abs((g.x + PAD) - (tick.x - 100 / 2)) < 1,
-    "the padding is the editor's own 25px (left edge " + g.x + ' vs member ' + tick.x + ')');
-}
-
-async function scenarioGroupAroundExistingNodesOnly() {
-  console.log('\nA group can be drawn around nodes that are already there');
-  const nodes = [
-    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 100, y: 100, wires: [['n2']] },
-    { id: 'n2', type: 'debug', z: 'tab1', name: 'out', x: 300, y: 100, wires: [] },
-  ];
-  // No `nodes` key at all: the whole edit is the box.
-  const msg = fence({ groups: { group_pair: { name: 'Pair', nodes: ['inject_tick', 'debug_out'] } } });
-
-  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: clone(nodes), activeId: 'tab1' });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const flow = snapshot('tab1');
-  const groups = groupsIn(flow);
-
-  ok(res && res.ok, 'the import applied (' + (res && res.error) + ')');
-  ok(groups.length === 1, 'the box was created (' + groups.length + ')');
-  const g = groups[0] || { nodes: [] };
-  ok((g.nodes || []).indexOf('n1') !== -1 && (g.nodes || []).indexOf('n2') !== -1,
-    'around the existing nodes, resolved by alias (' + (g.nodes || []).join(',') + ')');
-  ok(nodeById(flow, 'n1').g === g.id && nodeById(flow, 'n2').g === g.id,
-    'and both now say which group they are in');
-  ok(nodeById(flow, 'n1').x === 100, 'the nodes themselves were not moved');
-}
-
-async function scenarioMembershipIsAdditive() {
-  console.log('\nAdding a member does not empty the group');
-  const nodes = [
-    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 100, y: 100, wires: [['n2']] },
-    { id: 'n2', type: 'debug', z: 'tab1', name: 'out', x: 300, y: 100, wires: [] },
-  ];
-  const groups = [{
-    id: 'grp', type: 'group', z: 'tab1', name: 'Pair', style: { label: true },
-    nodes: ['n1', 'n2'], x: 50, y: 50, w: 320, h: 100,
-  }];
-  // The existing group, re-declared with only the NEW node in its list.
-  const msg = fence({
-    nodes: { change_tag: { type: 'change', name: 'tag' } },
-    connections: [{ from: 'debug_out', to: 'change_tag' }],
-    groups: { group_pair: { nodes: ['change_tag'] } },
-  });
-
-  const { LLMPlugin, snapshot } = loadSandbox({
-    tabs: TABS, nodes: clone(nodes), groups: clone(groups), activeId: 'tab1',
-  });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const flow = snapshot('tab1');
-  const g = groupsIn(flow)[0];
-
-  ok(res && res.ok, 'the import applied');
-  ok(groupsIn(flow).length === 1, 'the existing group was edited, not duplicated');
-  ok(!!g && (g.nodes || []).indexOf('n1') !== -1 && (g.nodes || []).indexOf('n2') !== -1,
-    'the members it already had are still in it (' + (g && (g.nodes || []).join(',')) + ')');
-  const added = byName(flow, 'tag');
-  ok(!!added && (g.nodes || []).indexOf(added.id) !== -1, 'and the new node joined them');
-  ok(!!added && added.g === g.id, 'with its own half of the membership set');
-  ok(!!g && g.name === 'Pair', 'the name it had is kept when the schema omits it');
-  ok(boxHolds(g, (g.nodes || []).map((id) => nodeById(flow, id)).filter(Boolean)),
-    'and the box grew to hold the new member (' + [g.x, g.y, g.w, g.h].join(',') + ')');
-}
-
-async function scenarioDeletingTheBoxKeepsTheNodes() {
-  console.log('\nDeleting a group deletes the box, not the nodes in it');
-  const nodes = [
-    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 100, y: 100, wires: [['n2']], g: 'grp' },
-    { id: 'n2', type: 'debug', z: 'tab1', name: 'out', x: 300, y: 100, wires: [], g: 'grp' },
-  ];
-  const groups = [{
-    id: 'grp', type: 'group', z: 'tab1', name: 'Pair', style: { label: true },
-    nodes: ['n1', 'n2'], x: 50, y: 50, w: 320, h: 100,
-  }];
-  const msg = fence({ groups: { group_pair: null } });
-
-  const { LLMPlugin, snapshot } = loadSandbox({
-    tabs: TABS, nodes: clone(nodes), groups: clone(groups), activeId: 'tab1',
-  });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const flow = snapshot('tab1');
-
-  ok(res && res.ok, 'the import applied (' + (res && res.error) + ')');
-  ok(groupsIn(flow).length === 0, 'the box is gone');
-  ok(!!nodeById(flow, 'n1') && !!nodeById(flow, 'n2'), 'both nodes are still on the canvas');
-  ok(!nodeById(flow, 'n1').g && !nodeById(flow, 'n2').g,
-    'and neither still points at a group that no longer exists');
-}
-
-async function scenarioTwoSequencesTwoBoxes() {
-  console.log('\nTwo independent sequences get a box each, and the boxes do not overlap');
-  const msg = 'Two independent sequences.\n' + fence({
-    nodes: {
-      inject_a: { type: 'inject', name: 'a in' },
-      debug_a: { type: 'debug', name: 'a out' },
-      inject_b: { type: 'inject', name: 'b in' },
-      debug_b: { type: 'debug', name: 'b out' },
-    },
-    connections: [
-      { from: 'inject_a', to: 'debug_a' },
-      { from: 'inject_b', to: 'debug_b' },
-    ],
-    groups: {
-      group_a: { name: 'Sequence A', nodes: ['inject_a', 'debug_a'] },
-      group_b: { name: 'Sequence B', nodes: ['inject_b', 'debug_b'] },
-    },
-  });
-
-  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: [], activeId: 'tab1' });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const flow = snapshot('tab1');
-  const groups = groupsIn(flow);
-
-  ok(res && res.ok, 'the import applied');
-  ok(groups.length === 2, 'two boxes (' + groups.length + ')');
-  const [g1, g2] = groups;
-  const overlap = g1.x < g2.x + g2.w && g2.x < g1.x + g1.w &&
-    g1.y < g2.y + g2.h && g2.y < g1.y + g1.h;
-  ok(!overlap, 'they do not overlap (' + [g1.x, g1.y, g1.w, g1.h].join(',') + ' vs ' +
-    [g2.x, g2.y, g2.w, g2.h].join(',') + ')');
-  ok(groups.every((g) => (g.nodes || []).length === 2), 'each holds its own two nodes');
-  ok(groups.every((g) => boxHolds(g, (g.nodes || []).map((id) => nodeById(flow, id)).filter(Boolean))),
-    'and holds them inside its box');
-}
 
 // The clearance itself is canvas_layout's (`separateGroups`); what this pair
 // asserts is that the shape an LLM actually proposes comes out of the
@@ -224,34 +57,6 @@ function boxGaps(groups) {
   return gaps;
 }
 
-async function scenarioCaptionedBoxesStayApart() {
-  console.log('\nThree captioned sequences: every box keeps two grid squares from the next');
-  const nodes = {}, connections = [], groups = {};
-  ['a', 'b', 'c'].forEach((l) => {
-    nodes['inject_' + l] = { type: 'inject', name: l };
-    nodes['debug_d' + l] = { type: 'debug', name: 'd' + l };
-    nodes['comment_head_' + l] = {
-      type: 'comment', name: 'Sequence ' + l.toUpperCase(), above: 'inject_' + l,
-    };
-    connections.push({ from: 'inject_' + l, to: 'debug_d' + l });
-    groups['group_' + l] = {
-      name: 'Seq' + l.toUpperCase(),
-      nodes: ['inject_' + l, 'debug_d' + l, 'comment_head_' + l],
-    };
-  });
-
-  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: [], activeId: 'tab1' });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({ nodes, connections, groups }), {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const boxes = groupsIn(snapshot('tab1'));
-  const gaps = boxGaps(boxes);
-
-  ok(res && res.ok, 'the import applied');
-  ok(boxes.length === 3, 'three boxes (' + boxes.length + ')');
-  ok(gaps.every((g) => g >= GROUP_GAP),
-    'each box clears the one above it by at least two grid squares (' + gaps.join(', ') + ')');
-}
 
 async function scenarioBoxGrowsWithoutCrowdingTheNext() {
   console.log('\nA node added to a group later pushes the next sequence down, whole');
@@ -270,7 +75,6 @@ async function scenarioBoxGrowsWithoutCrowdingTheNext() {
   const msg = fence({
     nodes: { function_fa: { type: 'function', name: 'fa', props: { func: 'return msg;' } } },
     connections: [{ from: 'inject_a', to: 'function_fa' }],
-    groups: { group_seqa: { name: 'SeqA', nodes: ['function_fa'] } },
   });
 
   const { LLMPlugin, snapshot } = loadSandbox({
@@ -293,12 +97,10 @@ async function scenarioBoxGrowsWithoutCrowdingTheNext() {
     'which moved down as a whole, not reflowed (b1 ' + b1.y + ', b2 ' + b2.y + ')');
 }
 
-// A box has no position of its own — it is fitted around wherever its members
-// end up — so naming one in `reposition` can only mean the sequence inside it.
-// Silently ignoring the alias left the user's "tidy this group up" doing
-// nothing at all.
+// A box has no position of its own: it is fitted around wherever its members
+// end up, so rearranging the sequence inside it refits it.
 async function scenarioRepositioningABoxMovesItsMembers() {
-  console.log('\nNaming a box in a reposition rearranges the sequence inside it');
+  console.log('\nRearranging a boxed sequence refits the box around it');
   const liveNodes = [
     // Deliberately strewn about: same chain, wrong cadence.
     { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 110, y: 100, g: 'grp', wires: [['n2']] },
@@ -315,7 +117,7 @@ async function scenarioRepositioningABoxMovesItsMembers() {
     tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
   });
   const res = await LLMPlugin.Importer.importFlowFromMessage(
-    fence({ reposition: ['group_pair'] }),
+    fence({ reposition: ['inject_tick', 'function_shape', 'debug_out'] }),
     { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
   );
   const flow = snapshot('tab1');
@@ -353,7 +155,7 @@ async function scenarioRepositionTakesTheCaptionAlong() {
     tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
   });
   const res = await LLMPlugin.Importer.importFlowFromMessage(
-    fence({ reposition: ['group_pair'] }),
+    fence({ reposition: ['inject_tick', 'debug_out'] }),
     { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
   );
   const flow = snapshot('tab1');
@@ -373,86 +175,15 @@ async function scenarioRepositionTakesTheCaptionAlong() {
       [box.x, box.y, box.w, box.h].join(',') + ')');
 }
 
-// "Put this node in that box" is a membership move, and membership is
-// two-sided: the box it left has to stop listing it. While both lists named
-// it, the old box stayed stretched across the canvas to reach a node it no
-// longer held — and which half of the membership won came down to the order
-// the groups happened to be written in.
-async function scenarioAMemberMovedLeavesTheBoxItCameFrom() {
-  console.log('\nA member moved to another box leaves the one it came from');
-  // One sequence split over two boxes: a -> da -> db.
-  const liveNodes = [
-    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
-    { id: 'a2', type: 'function', z: 'tab1', name: 'da', x: 410, y: 215, g: 'gA', wires: [['b1']] },
-    { id: 'b1', type: 'debug', z: 'tab1', name: 'db', x: 570, y: 365, g: 'gB', wires: [] },
-  ];
-  const liveGroups = [
-    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 310, h: 80 },
-    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 495, y: 325, w: 150, h: 80 },
-  ];
 
-  const { LLMPlugin, snapshot } = loadSandbox({
-    tabs: TABS, nodes: clone(liveNodes.slice().reverse()), groups: clone(liveGroups), activeId: 'tab1',
-  });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(
-    fence({ groups: { group_b: { name: 'B', nodes: ['function_da'] } } }),
-    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
-  );
-  const flow = snapshot('tab1');
-  const boxA = flow.find((n) => n.id === 'gA'), boxB = flow.find((n) => n.id === 'gB');
-  const moved = flow.find((n) => n.id === 'a2');
-
-  ok(res && res.ok, 'the import applied');
-  ok(moved.g === 'gB', 'the node says which box it is in now (' + moved.g + ')');
-  ok((boxB.nodes || []).indexOf('a2') !== -1, 'the new box lists it');
-  ok((boxA.nodes || []).indexOf('a2') === -1,
-    'and the old one does not (' + (boxA.nodes || []).join(',') + ')');
-  ok(boxHolds(boxB, [moved]), 'the box it joined was fitted around it');
-  ok(boxA.y + boxA.h <= boxB.y || boxB.y + boxB.h <= boxA.y ||
-     boxA.x + boxA.w <= boxB.x || boxB.x + boxB.w <= boxA.x,
-    'and the two boxes do not overlap');
-  ok(JSON.stringify(moved.wires) === JSON.stringify([['b1']]), 'its wire is untouched');
-}
-
-// One box holds one wired sequence (docs/{en,jp}/design.md §15). A node from a
-// different sequence is not pulled in: the box would have to stretch across
-// whatever lies between, and the two chains would read as one.
-async function scenarioAnotherSequenceStaysOutOfTheBox() {
-  console.log('\nA node from another sequence is not put into the box');
-  const liveNodes = [
-    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
-    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 450, y: 215, g: 'gA', wires: [] },
-    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 250, y: 365, g: 'gB', wires: [] },
-  ];
-  const liveGroups = [
-    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 175, w: 360, h: 80 },
-    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1'], x: 175, y: 325, w: 260, h: 80 },
-  ];
-  const { LLMPlugin, snapshot, RED } = loadSandbox({
-    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
-  });
-  const notes = [];
-  RED.notify = (m) => { notes.push(String(m)); };
-  const res = await LLMPlugin.Importer.importFlowFromMessage(
-    fence({ groups: { group_b: { nodes: ['debug_da'] } } }),
-    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
-  );
-  const flow = snapshot('tab1');
-  ok(res && res.ok, 'the import applied');
-  ok(nodeById(flow, 'a2').g === 'gA', 'the node stays in its own box (' + nodeById(flow, 'a2').g + ')');
-  ok((nodeById(flow, 'gB').nodes || []).join(',') === 'b1', 'the other box is unchanged');
-  ok(nodes2d(flow).every((n) => n.x === liveNodes.find((l) => l.id === n.id).x),
-    'nothing moved');
-  ok(notes.some((m) => /debug_da/.test(m)), 'and the user is told why (' + notes.join(' | ') + ')');
-}
 
 function nodes2d(flow) { return flow.filter((n) => n && n.type !== 'group' && n.type !== 'tab'); }
 
-// A box is removed only when a reply maps its alias to null. Emptied by
-// deleting its members, or drawn empty by the user, it stays — the same as the
-// editor, which keeps a group whose members were deleted.
+// A box is the user's. Emptied by deleting its members, or drawn empty, it
+// stays — the same as the editor, which keeps a group whose members were
+// deleted.
 async function scenarioAnExistingBoxIsNeverRemovedImplicitly() {
-  console.log('\nAn existing box stays unless the reply deletes it by name');
+  console.log('\nA box stays when its members are deleted, and so does an empty one');
   const liveNodes = [
     { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 215, g: 'gA', wires: [['a2']] },
     { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 450, y: 215, g: 'gA', wires: [] },
@@ -544,78 +275,149 @@ async function scenarioANewNodeJoinsTheBoxItIsWiredInto() {
   ok(!clash, 'no two nodes overlap (' + members.map((n) => n.id.slice(0, 4) + '@' + n.x + ',' + n.y).join(' ') + ')');
 }
 
-// "Put these groups together" nests them: a new box whose members are boxes.
-// Each inner box still holds its one sequence.
-async function scenarioGroupsNestInANewGroup() {
-  console.log('\nTwo boxes gathered into a new one are nested, not merged');
+
+
+
+// A branch added in the middle of a switch's fan-out, inside a box, with a
+// reposition that names the new branch but not every old one. The unnamed
+// branch used to keep its row while the named ones were laid over it, and a
+// wire removal without a port only looked at port 0, so the moved branches
+// stayed wired to two ports. See docs/{en,jp}/vibe-schema.md — Layout fix.
+async function scenarioABranchAddedInsideABoxLandsClear() {
+  console.log('\nA branch added inside a box lands clear of the others, in port order');
+  const nodes = [
+    { id: 'u1', type: 'inject', z: 'tab1', name: 'Users Trigger', x: 160, y: 120, wires: [['u2']], g: 'gu' },
+    { id: 'u2', type: 'switch', z: 'tab1', name: 'Check Role', x: 380, y: 120, outputs: 3, wires: [['u3'], ['u4'], ['u5']], g: 'gu' },
+    { id: 'u3', type: 'change', z: 'tab1', name: 'Set Admin Route', x: 600, y: 80, wires: [['u6']], g: 'gu' },
+    { id: 'u4', type: 'change', z: 'tab1', name: 'Set User Route', x: 600, y: 120, wires: [['u7']], g: 'gu' },
+    { id: 'u5', type: 'change', z: 'tab1', name: 'Set Guest Route', x: 600, y: 160, wires: [['u8']], g: 'gu' },
+    { id: 'u6', type: 'debug', z: 'tab1', name: 'Admin Route', x: 820, y: 80, wires: [], g: 'gu' },
+    { id: 'u7', type: 'debug', z: 'tab1', name: 'User Route', x: 820, y: 120, wires: [], g: 'gu' },
+    { id: 'u8', type: 'debug', z: 'tab1', name: 'Guest Route', x: 820, y: 160, wires: [], g: 'gu' },
+    { id: 'l1', type: 'inject', z: 'tab1', name: 'Log Trigger', x: 160, y: 280, wires: [['l2']], g: 'gl' },
+    { id: 'l2', type: 'debug', z: 'tab1', name: 'Log Out', x: 380, y: 280, wires: [], g: 'gl' },
+  ];
+  const groups = [
+    { id: 'gu', type: 'group', z: 'tab1', name: 'Users', style: { label: true },
+      nodes: ['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7', 'u8'], x: 85, y: 45, w: 820, h: 150 },
+    { id: 'gl', type: 'group', z: 'tab1', name: 'Log', style: { label: true },
+      nodes: ['l1', 'l2'], x: 85, y: 245, w: 380, h: 70 },
+  ];
+  const msg = fence({
+    nodes: {
+      switch_check_role: { type: 'switch', name: 'Check Role', props: { outputs: 4 } },
+      change_set_manager_route: { type: 'change', name: 'Set Manager Route' },
+      debug_manager_route: { type: 'debug', name: 'Manager Route' },
+    },
+    connections: [
+      { remove: { from: 'switch_check_role', to: 'change_set_user_route' } },
+      { remove: { from: 'switch_check_role', to: 'change_set_guest_route' } },
+      { from: 'switch_check_role', to: 'change_set_manager_route', fromPort: 1 },
+      { from: 'switch_check_role', to: 'change_set_user_route', fromPort: 2 },
+      { from: 'switch_check_role', to: 'change_set_guest_route', fromPort: 3 },
+      { from: 'change_set_manager_route', to: 'debug_manager_route' },
+    ],
+    reposition: ['switch_check_role', 'change_set_manager_route', 'debug_manager_route',
+      'change_set_user_route', 'debug_user_route', 'change_set_guest_route', 'debug_guest_route'],
+  });
+
+  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: clone(nodes), groups: clone(groups), activeId: 'tab1' });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, { mode: 'agent', allowedWorkspaceIds: ['tab1'] });
+  const flow = snapshot('tab1');
+  ok(res && res.ok, 'the import applied (' + (res && res.error) + ')');
+
+  const sw = byName(flow, 'Check Role');
+  const manager = byName(flow, 'Set Manager Route');
+  ok(JSON.stringify(sw.wires) === JSON.stringify([['u3'], [manager.id], ['u4'], ['u5']]),
+    'a removal without a port takes the wire off whichever port it was on (' + JSON.stringify(sw.wires) + ')');
+
+  const rows = ['Set Admin Route', 'Set Manager Route', 'Set User Route', 'Set Guest Route'].map((n) => byName(flow, n).y);
+  ok(rows.every((y, i) => i === 0 || y > rows[i - 1]), 'the branches run in port order (' + rows.join(',') + ')');
+
+  const solid = flow.filter((n) => n.type !== 'tab' && n.type !== 'group' && n.type !== 'comment');
+  const clash = [];
+  solid.forEach((a, i) => solid.slice(i + 1).forEach((b) => {
+    if (Math.abs(a.x - b.x) < 100 && Math.abs(a.y - b.y) < 30) clash.push(a.name + '/' + b.name);
+  }));
+  ok(clash.length === 0, 'no node sits on another (' + clash.join(', ') + ')');
+
+  const users = nodeById(flow, 'gu');
+  const log = nodeById(flow, 'gl');
+  ok(boxHolds(users, users.nodes.map((id) => nodeById(flow, id)).filter(Boolean)), 'the box grew around the new branch');
+  ok(log.y >= users.y + users.h, 'and the box below was pushed clear of it (' + (users.y + users.h) + ' / ' + log.y + ')');
+}
+
+// Where a comment sits is the model's decision: the context says which node
+// each comment heads, and naming another one moves it there — into that
+// node's box, out of the one it was in.
+async function scenarioTheModelMovesACommentByNamingItsNode() {
+  console.log('\nA comment moves to the node the reply names, and into its box');
+  const nodes = [
+    { id: 'a1', type: 'inject', z: 'tab1', name: 'A in', x: 160, y: 120, wires: [['a2']], g: 'gA' },
+    { id: 'a2', type: 'debug', z: 'tab1', name: 'A out', x: 380, y: 120, wires: [], g: 'gA' },
+    { id: 'cm', type: 'comment', z: 'tab1', name: 'Heading', x: 160, y: 80, wires: [], g: 'gA' },
+    { id: 'b1', type: 'inject', z: 'tab1', name: 'B in', x: 160, y: 300, wires: [['b2']], g: 'gB' },
+    { id: 'b2', type: 'debug', z: 'tab1', name: 'B out', x: 380, y: 300, wires: [], g: 'gB' },
+  ];
+  const groups = [
+    { id: 'gA', type: 'group', z: 'tab1', name: 'A', style: { label: true }, nodes: ['a1', 'a2', 'cm'], x: 85, y: 45, w: 400, h: 100 },
+    { id: 'gB', type: 'group', z: 'tab1', name: 'B', style: { label: true }, nodes: ['b1', 'b2'], x: 85, y: 265, w: 400, h: 60 },
+  ];
+
+  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: clone(nodes), groups: clone(groups), activeId: 'tab1' });
+  const Converter = LLMPlugin.FlowConverterCore;
+  const ctx = Converter.toIntermediate(clone(nodes.concat(groups)));
+  ok(ctx.nodes.comment_heading && ctx.nodes.comment_heading.above === 'inject_a_in',
+    'the context says which node the comment heads (' + JSON.stringify(ctx.nodes.comment_heading) + ')');
+
+  const msg = fence({ nodes: { comment_heading: { type: 'comment', name: 'Heading', above: 'inject_b_in' } } });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, { mode: 'agent', allowedWorkspaceIds: ['tab1'] });
+  const flow = snapshot('tab1');
+  ok(res && res.ok, 'the import applied (' + (res && res.error) + ')');
+
+  const cm = nodeById(flow, 'cm'), b1 = nodeById(flow, 'b1');
+  ok(cm.y < b1.y && b1.y - cm.y <= 60, 'the comment now sits directly above B in (' + cm.y + ' / ' + b1.y + ')');
+  const W = (n) => LLMPlugin.CanvasLayout.getNodeWidth(n, {});
+  ok(Math.abs((cm.x - W(cm) / 2) - (b1.x - W(b1) / 2)) < 1, 'sharing its left edge (' + cm.x + ' / ' + b1.x + ')');
+  ok(cm.g === 'gB', 'it moved into B\'s box (' + cm.g + ')');
+  ok(nodeById(flow, 'gA').nodes.indexOf('cm') === -1 && nodeById(flow, 'gB').nodes.indexOf('cm') !== -1,
+    'and left A\'s list for B\'s');
+}
+
+// A reply that mentions groups anyway changes no box: none is created,
+// none is edited, none is deleted.
+async function scenarioAReplyCannotTouchABox() {
+  console.log('\nA reply cannot create, edit or delete a box');
   const liveNodes = [
-    { id: 'a1', type: 'inject', z: 'tab1', name: 'a', x: 250, y: 100, g: 'gA', wires: [['a2']] },
-    { id: 'a2', type: 'debug', z: 'tab1', name: 'da', x: 410, y: 100, g: 'gA', wires: [] },
-    { id: 'b1', type: 'inject', z: 'tab1', name: 'b', x: 250, y: 260, g: 'gB', wires: [['b2']] },
-    { id: 'b2', type: 'debug', z: 'tab1', name: 'db', x: 410, y: 260, g: 'gB', wires: [] },
+    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 150, y: 100, g: 'grp', wires: [['n2']] },
+    { id: 'n2', type: 'debug', z: 'tab1', name: 'out', x: 350, y: 100, g: 'grp', wires: [] },
+    { id: 'n3', type: 'inject', z: 'tab1', name: 'other', x: 150, y: 300, wires: [] },
   ];
-  const liveGroups = [
-    { id: 'gA', type: 'group', z: 'tab1', name: 'A', nodes: ['a1', 'a2'], x: 175, y: 55, w: 310, h: 90 },
-    { id: 'gB', type: 'group', z: 'tab1', name: 'B', nodes: ['b1', 'b2'], x: 175, y: 215, w: 310, h: 90 },
-  ];
+  const liveGroups = [{ id: 'grp', type: 'group', z: 'tab1', name: 'Pair', nodes: ['n1', 'n2'],
+    x: 75, y: 75, w: 350, h: 50 }];
   const { LLMPlugin, snapshot } = loadSandbox({
     tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
   });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(
-    fence({ groups: { group_all: { name: 'All', nodes: ['group_a', 'group_b'] } } }),
-    { mode: 'agent', allowedWorkspaceIds: ['tab1'] }
-  );
+  const Converter = LLMPlugin.FlowConverterCore;
+  ok(!Converter.isVibeSchema({ groups: { group_new: { nodes: ['inject_other'] } } }),
+    'a groups-only reply is not a schema');
+  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({
+    nodes: { inject_other: { type: 'inject', name: 'other', props: { topic: 't' } } },
+    groups: { group_pair: null, group_new: { name: 'New', nodes: ['inject_other'] } },
+  }), { mode: 'agent', allowedWorkspaceIds: ['tab1'] });
   const flow = snapshot('tab1');
-  const outer = groupsIn(flow).find((g) => g.name === 'All');
-  ok(res && res.ok, 'the import applied');
-  ok(!!outer && outer.nodes.join(',') === 'gA,gB', 'the new box holds the two boxes');
-  ok(nodeById(flow, 'gA').g === outer.id && nodeById(flow, 'gB').g === outer.id,
-    'and each says which box it is in');
-  ok(nodeById(flow, 'gA').nodes.join(',') === 'a1,a2' && nodeById(flow, 'gB').nodes.join(',') === 'b1,b2',
-    'the inner boxes keep their sequences');
-  ok(['gA', 'gB'].every((id) => {
-    const g = nodeById(flow, id);
-    return outer.x < g.x && outer.y < g.y && outer.x + outer.w > g.x + g.w && outer.y + outer.h > g.y + g.h;
-  }), 'and the outer box is drawn around both');
+  const boxes = groupsIn(flow);
+  ok(res && res.ok, 'the node edit still applied');
+  ok(boxes.length === 1 && boxes[0].id === 'grp', 'no box was created, and none deleted (' +
+    boxes.map((g) => g.name).join(',') + ')');
+  ok(boxes[0].nodes.join(',') === 'n1,n2' && !nodeById(flow, 'n3').g, 'and none edited');
 }
 
-async function scenarioCaptionJoinsTheBoxItHeads() {
-  console.log('\nA new comment heading a member is drawn inside the box');
-  const msg = fence({
-    nodes: {
-      inject_tick: { type: 'inject', name: 'tick' },
-      debug_out: { type: 'debug', name: 'out' },
-      comment_overview: {
-        type: 'comment', name: 'Overview', above: 'inject_tick',
-        props: { info: 'What this sequence does.' },
-      },
-    },
-    connections: [{ from: 'inject_tick', to: 'debug_out' }],
-    groups: { group_seq: { name: 'Sequence', nodes: ['inject_tick', 'debug_out'] } },
-  });
-
-  const { LLMPlugin, snapshot } = loadSandbox({ tabs: TABS, nodes: [], activeId: 'tab1' });
-  const res = await LLMPlugin.Importer.importFlowFromMessage(msg, {
-    mode: 'agent', allowedWorkspaceIds: ['tab1'],
-  });
-  const flow = snapshot('tab1');
-  const g = groupsIn(flow)[0];
-  const comment = flow.find((n) => n && n.type === 'comment');
-
-  ok(res && res.ok, 'the import applied');
-  // The padding is one row, so a caption left out of the box lands exactly on
-  // its top edge and reads as a stray label rather than a heading.
-  ok(!!g && !!comment && (g.nodes || []).indexOf(comment.id) !== -1,
-    'the caption is a member of the group it heads');
-  ok(!!comment && comment.g === g.id, 'and says so itself');
-  ok(!!g && g.y < comment.y - 15,
-    'so the box starts above it (' + (g && g.y) + ' vs ' + (comment && comment.y) + ')');
-}
-
-// The context the model reads back has to name groups the same way it names
-// nodes, or the next turn cannot edit the box it was just shown.
-function scenarioContextRoundTrip() {
-  console.log('\nThe context presents a group as a group, and leaves node aliases alone');
+// The context shows no box, and the node aliases are what they would be
+// without one: a box is the user's, and the numbering the importer reproduces
+// must not move because one exists.
+function scenarioTheContextShowsNoBox() {
+  console.log('\nThe context shows no box, and leaves node aliases alone');
   const { LLMPlugin } = loadSandbox({ tabs: TABS, nodes: [], activeId: 'tab1' });
   const Converter = LLMPlugin.FlowConverterCore;
   const exported = [
@@ -626,42 +428,51 @@ function scenarioContextRoundTrip() {
     id: 'grp', type: 'group', z: 'tab1', name: 'Pair', style: { label: true },
     nodes: ['n1', 'n2'], x: 50, y: 50, w: 320, h: 100,
   }]);
-
   const plain = Converter.toIntermediate(clone(exported));
   const withG = Converter.toIntermediate(clone(withGroup));
-
-  ok(!withG.nodes.group_pair, 'the group is NOT one of the nodes');
-  ok(!!withG.groups && !!withG.groups.group_pair,
-    'it is in the groups map, under a {type}_{name} alias (' +
-      Object.keys(withG.groups || {}).join(',') + ')');
-  ok(!!withG.groups && withG.groups.group_pair.nodes.join(',') === 'inject_tick,debug_out',
-    'with its members named by THEIR aliases (' +
-      (withG.groups && withG.groups.group_pair.nodes.join(',')) + ')');
+  ok(!withG.groups && !Object.keys(withG.nodes).some((k) => /group/.test(k)),
+    'no group appears (' + Object.keys(withG.nodes).join(',') + ')');
   ok(Object.keys(plain.nodes).join(',') === Object.keys(withG.nodes).join(','),
-    'and every node alias is what it was without the group — the numbering the ' +
-      'importer reproduces cannot move because a box exists');
-  ok(Converter.isVibeSchema({ groups: { group_pair: { nodes: ['inject_tick'] } } }),
-    'a groups-only reply is a schema in its own right');
+    'and every node alias is what it was without the box');
+}
+
+// A comment placed over a node in a box is that sequence's heading, so it goes
+// in the box: left out, it would sit exactly on the top edge.
+async function scenarioACaptionJoinsTheBoxOfTheNodeItHeads() {
+  console.log('\nA new comment over a boxed node is drawn inside the box');
+  const liveNodes = [
+    { id: 'n1', type: 'inject', z: 'tab1', name: 'tick', x: 150, y: 100, g: 'grp', wires: [['n2']] },
+    { id: 'n2', type: 'debug', z: 'tab1', name: 'out', x: 350, y: 100, g: 'grp', wires: [] },
+  ];
+  const liveGroups = [{ id: 'grp', type: 'group', z: 'tab1', name: 'Pair', nodes: ['n1', 'n2'],
+    x: 75, y: 75, w: 350, h: 50 }];
+  const { LLMPlugin, snapshot } = loadSandbox({
+    tabs: TABS, nodes: clone(liveNodes), groups: clone(liveGroups), activeId: 'tab1',
+  });
+  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({
+    nodes: { comment_overview: { type: 'comment', name: 'Overview', above: 'inject_tick' } },
+  }), { mode: 'agent', allowedWorkspaceIds: ['tab1'] });
+  const flow = snapshot('tab1');
+  const g = nodeById(flow, 'grp');
+  const comment = flow.find((n) => n && n.type === 'comment');
+  ok(res && res.ok, 'the import applied');
+  ok(!!comment && comment.g === 'grp' && g.nodes.indexOf(comment.id) !== -1,
+    'the caption is a member of the box it heads');
+  ok(g.y < comment.y - 15, 'so the box starts above it (' + g.y + ' vs ' + comment.y + ')');
 }
 
 async function run() {
-  await scenarioGroupIsBuiltAroundItsMembers();
-  await scenarioGroupAroundExistingNodesOnly();
-  await scenarioMembershipIsAdditive();
-  await scenarioDeletingTheBoxKeepsTheNodes();
-  await scenarioTwoSequencesTwoBoxes();
-  await scenarioCaptionedBoxesStayApart();
+  await scenarioAReplyCannotTouchABox();
+  scenarioTheContextShowsNoBox();
   await scenarioBoxGrowsWithoutCrowdingTheNext();
   await scenarioRepositioningABoxMovesItsMembers();
   await scenarioRepositionTakesTheCaptionAlong();
-  await scenarioAMemberMovedLeavesTheBoxItCameFrom();
-  await scenarioAnotherSequenceStaysOutOfTheBox();
   await scenarioAnExistingBoxIsNeverRemovedImplicitly();
   await scenarioWiringAcrossBoxesMovesNothing();
   await scenarioANewNodeJoinsTheBoxItIsWiredInto();
-  await scenarioGroupsNestInANewGroup();
-  await scenarioCaptionJoinsTheBoxItHeads();
-  scenarioContextRoundTrip();
+  await scenarioACaptionJoinsTheBoxOfTheNodeItHeads();
+  await scenarioABranchAddedInsideABoxLandsClear();
+  await scenarioTheModelMovesACommentByNamingItsNode();
   summary();
 }
 

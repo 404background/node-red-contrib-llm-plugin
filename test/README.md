@@ -28,11 +28,11 @@ ones that did.
 
 | Suite | Guards |
 |-------|--------|
-| `canvas_layout` | The layout engine: one uniform `dy` for cross-component push, insertion reflow anchored in place, and a component the edit did not touch translated as a whole rather than sheared. |
+| `canvas_layout` | The layout engine: one uniform `dy` for cross-component push, insertion reflow anchored in place, a component the edit did not touch translated as a whole rather than sheared, every box fitted and aligned, and `settleCollisions` leaving no node, caption or box on another (a stray note is the one that moves). |
 | `flow_converter_core` | Auto-stub creation — a config node's own value props (an `mqtt-broker`'s `broker: "localhost"`) are not dangling config references — and that the single-line `func` pretty-printer only ever changes whitespace. |
 | `llm_core` | The credential key is the plugin's own and survives the user setting `credentialSecret`; older blobs still decrypt; a failed settings write reaches the caller; a configured API key escapes through none of its exits; the system prompt ships in the package. |
 | `schema_conventions` | Both directions of the Vibe Schema boundary: `_`-prefixed metadata reaches neither the LLM nor the canvas, and the editor flags (`disabled` / `showLabel`) map to `d` / `l` only when set. |
-| `junction_preserve` | The two entities an apply loses first: a junction survives an edit **with its wires** (it sits mid-chain, so losing it breaks the path silently), group membership survives, a deleted member is pruned from the group's `nodes`, and a locked workspace falls back rather than half-detaching. |
+| `junction_preserve` | The two entities an apply loses first: a junction survives an edit **with its wires** (it sits mid-chain, so losing it breaks the path silently), group membership survives, a deleted member is pruned from the group's `nodes`, and a locked workspace falls back rather than half-detaching. Junctions are the user's: an edit that leaves its targets in place does not move one, and none rewires it or lands on it; routing between two boxes follows the box it feeds when that box is pushed down; the context reads a wire through a junction or a link out → link in pair as a connection to where it leads, and restating or removing that connection changes no wire; a link node's hover-only virtual link does not join two sequences. |
 | `cross_flow_isolation` | The flow selection is the boundary in both directions: an edit may only write to the flows that were sent, and only those flows' config nodes leave the machine. |
 | `import_safety` | Deletions reach the flow that owns them and no other; a failed import rolls back completely, junctions, groups and already-rewritten config nodes included; flow context follows config references transitively and through arrays. |
 | `node_secret_exit` | The `llm-request` node's error exit is a secret exit — an endpoint that echoes the Authorization header into its error body must not put the stored key on a Catch node's `msg.error`. |
@@ -47,7 +47,7 @@ ones that did.
 | `apply_queue` | Ordering between everything that writes to the same flow: an applied-but-undeployed flow is held, others targeting it wait in arrival order, and different flows never wait for each other. |
 | `apply_queue_client` | The browser half of that protocol — no apply before its turn, no second apply on a re-pushed grant, and completion always reported. |
 | `restore_queue` | Restore (including the Retry button, which rewinds before re-asking) takes its turn too: the importer requests it as an `undo` scoped to the snapshot's own flows, and restores nothing until the turn is granted. |
-| `group_schema` | Groups — the "flow" a user means when they say one connected sequence. Both halves of membership are written, the box is fitted around the members with the editor's own padding, re-declaring a group adds to it rather than emptying it, deleting the box keeps the nodes, and the context presents a group as a group without moving any node alias. |
+| `group_schema` | Group boxes are the user's: a reply cannot create, edit or delete one, and the context shows none without moving any node alias. An edit keeps a box around its one sequence: a new node wired into it joins the box, a comment follows the node its `above` names into (or out of) a box, a box stays when emptied, and every box is refitted around where its members end up, clear of the next sequence. A branch added inside a box lands clear of the others in port order. |
 
 `helpers.js` holds the assertion counter and `loadPluginSandbox(RED, opts)`, which
 runs the real client modules in a vm context in the same order `client.js` uses —
@@ -141,11 +141,11 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 
 | スイート | 守っているもの |
 |------|------|
-| `canvas_layout` | レイアウトエンジン。コンポーネント間の押し下げが単一の `dy` であること、挿入時の再配置が元の位置を基準に行われること、編集していないコンポーネントは形を変えずに平行移動だけすること。 |
+| `canvas_layout` | レイアウトエンジン。コンポーネント間の押し下げが単一の `dy` であること、挿入時の再配置が元の位置を基準に行われること、編集していないコンポーネントは形を変えずに平行移動だけすること、すべての枠を合わせて揃えること、`settleCollisions` のあとにノード・キャプション・枠が互いに重ならないこと(どこにも紐づかない注釈はそちらが動く)。 |
 | `flow_converter_core` | config ノードの自動補完 — config ノード自身の値(`mqtt-broker` の `broker: "localhost"`)を参照と誤認しないこと — と、1行 `func` の整形が空白しか変えないこと。 |
 | `llm_core` | 暗号鍵がプラグイン自身のものであり、ユーザーが `credentialSecret` を設定しても保存済みキーが読めること。旧データも復号できること。設定の書き込み失敗が呼び出し元に届くこと。API キーがどの出口からも漏れないこと。システムプロンプトが同梱されていること。 |
 | `schema_conventions` | Vibe Schema の境界の両方向。アンダースコア始まりのメタデータが LLM にもキャンバスにも届かないこと、エディタのフラグ(`disabled` / `showLabel`)が設定時のみ `d` / `l` になること。 |
-| `junction_preserve` | 適用で最初に失われる 2 つの要素。junction が**ワイヤごと**残ること(経路の途中にあるので、消えると無言で経路が切れる)。group のメンバーシップが維持され、削除されたノードが `nodes` から取り除かれること。ロックされたワークスペースでは中途半端に外さずフォールバックすること。 |
+| `junction_preserve` | 適用で最初に失われる 2 つの要素。junction が**ワイヤごと**残ること(経路の途中にあるので、消えると無言で経路が切れる)。group のメンバーシップが維持され、削除されたノードが `nodes` から取り除かれること。ロックされたワークスペースでは中途半端に外さずフォールバックすること。 junction はユーザーのもので、つなぐ先が動かない編集では動かず、どの編集でも配線が変わらず、何も上に載らないこと。2つの枠の間の中継が、押し下げられた枠に付いていくこと。コンテキストは junction や link out → link in を通るワイヤをその先への接続として読み、接続を書き直しても削除してもワイヤが変わらないこと。link ノードのホバー時だけ見える仮想リンクで2本のシーケンスが1本にならないこと。 |
 | `cross_flow_isolation` | フローの選択が両方向の境界であること。編集は送ったフローにしか書き込めず、外に出る config ノードもそのフローが参照するものだけ。 |
 | `import_safety` | 削除指示が所有するフローだけに届くこと。インポート失敗時に junction・group・書き換え済みの config ノードまで含めて完全に巻き戻ること。フローコンテキストが config の参照を推移的に、配列も辿ること。 |
 | `node_secret_exit` | `llm-request` ノードのエラー出口は秘密の出口である。Authorization ヘッダをエラー本文に echo するエンドポイントがあっても、保存済みキーが Catch ノードの `msg.error` に乗らないこと。 |
@@ -160,7 +160,7 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 | `apply_queue` | 同じフローに書き込むもの同士の順序。適用済みで未デプロイのフローは保持され、同じフローを狙う他の要求は到着順に待ち、別のフロー同士は待たない。 |
 | `apply_queue_client` | そのプロトコルのブラウザ側。順番が来る前に適用しないこと、再送された許可で二重に適用しないこと、完了を必ず報告すること。 |
 | `restore_queue` | 復元(巻き戻してから再送するやり直しも含む)も順番を取ること。スナップショット自身のフローを範囲として `undo` で要求し、順番が付与されるまで何も復元しないこと。 |
-| `group_schema` | グループ ——「一連のフロー」と言われたときのフロー。所属を両面とも書くこと、エディタと同じパディングでメンバーを囲む枠に合わせること、グループの再宣言が空にせず加算になること、枠の削除でノードが残ること、コンテキストがグループをグループとして提示しノードのエイリアスを動かさないこと。 |
+| `group_schema` | グループの枠はユーザーのもの。応答は枠を作れず、編集も削除もできず、コンテキストは枠を見せずにノードのエイリアスも動かさないこと。編集は枠を1本のシーケンスに沿わせたまま保つこと。つながれた新しいノードは枠に入り、コメントは `above` で指定したノードに従って枠に出入りし、空になった枠も残り、すべての枠はメンバーの最終位置に合わせ直されて次の並びと重ならないこと。枠内に追加した分岐が他と重ならずポート順に並ぶこと。 |
 
 `helpers.js` には、アサーションの集計と `loadPluginSandbox(RED, opts)` を置いている。
 後者はクライアントの各モジュールを実際に vm 上で読み込むもので、読み込み順は

@@ -31,7 +31,7 @@ layout backbone:
 | Module | Owns | Reference |
 |--------|------|-----------|
 | `flow_converter_core.js` | Vibe Schema ↔ Node-RED JSON + type detection helpers | [docs/en/vibe-schema.md](./vibe-schema.md) |
-| `canvas_layout.js` | Topological layout, width-aware spacing, comment placement | [docs/en/layout.md](./layout.md) |
+| `canvas_layout.js` | Topological layout, width-aware spacing, comment placement, group boxes, collision settling | [docs/en/layout.md](./layout.md) |
 | `llm_json_parser.js` | JSON repair, fuzzy alias matching, schema extraction | (inline JSDoc) |
 
 Everything else is plugin-specific glue — see the file map below, then
@@ -349,18 +349,14 @@ Full import workflow with these guarantees:
    reflows just the named canvas-node subset while keeping IDs, props,
    and wires. The subset is anchored to its previous top-left so the
    rest of the canvas doesn't visibly shift.
-12. **Group membership and boxes** — a `groups` entry arrives as a
-   `type: 'group'` node carrying `_llmMembers` (member ALIASES). After the
-   merge, each alias is resolved against both the nodes this schema adds and
-   the ones already on the canvas; membership is **additive**, a member on
-   another tab or a config node is dropped, and a `g` naming a group that is
-   gone is cleared. A box holds one wired sequence: a member from another one
-   is refused with a warning, and a new node wired into a boxed sequence joins
-   that box. Only a box this schema declared whose members all failed to
-   resolve is discarded; an existing box stays even when empty. A comment this schema added that
-   heads a member joins the box, since the padding is one row and it would
-   otherwise sit on the top edge. `CanvasLayout.fitGroups` then
-   fits the box around the members' final positions. See
+12. **Keeping boxes around their sequences** (`keepBoxesAroundTheirSequences`)
+   — group boxes are the user's: a reply cannot create, edit or delete one,
+   and a box stays even when empty. After the merge, a new node wired into a
+   boxed sequence joins that box when every box among its neighbours is the
+   same one, and a comment the reply gives an `above` follows that node into
+   its box (or out of its old one), since the padding is one row and it would
+   otherwise sit on the top edge. `CanvasLayout.fitGroups` then fits every box
+   around its members' final positions. See
    [docs/en/design.md](./design.md#15-a-flow-a-tab-and-a-group).
 13. **Metadata sweep** — every `_`-prefixed property the converter added
    is stripped before the nodes reach the canvas: once right after the
@@ -394,7 +390,7 @@ See [docs/en/design.md](./design.md#a-restore-is-an-apply-and-it-is-the-way-out-
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
 | `showPostImportActions(message, checkpointId, content, messageMeta)` | The two halves of one choice, each placed where it acts. **Restore Checkpoint** goes above the PROMPT (`placeRestoreAboveThePrompt` → `promptAbove`, the first user message above the reply; a retry has no prompt between two replies, so the walk stops at the previous reply), because everything below it is what a rewind undoes — it is inserted among the message's neighbours, which is why `appendFlowActions` runs after the message joins the chat. **Apply Again** goes on the schema block's own header (`placeReapplyOnTheSchema` → `.json-collapsible[data-vibe-schema] > summary`, marked as the fold builds it), so the control that applies a proposal sits with the proposal; its click stops propagation, or it would just toggle the block. Switching between the two is how the versions get compared, and in Agent mode (where the Import button is hidden) Apply Again is the only way back to a rewound proposal. Both are removed before being re-added, so repeated applies do not stack. |
 | `queueImport(message, content, messageMeta, label)` | The one path every sidebar import takes, Import and Apply Again alike: read the chat id now (the turn may run after the user has moved chats), then enqueue behind any undeployed edit on the same flows ([§13](./design.md#13-ordering-two-producers-against-one-canvas)). Each run takes its own checkpoint, so Restore always undoes the most recent apply. |
-| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions **and** groups — for the rebuild/checkpoint callers. `opts.includeGroups` appends groups only: that is the LLM-context path, which has to see the boxes it may extend. Either way the alias numbering the model sees is unchanged, because the converter gives groups a map of their own ([§15](./design.md#15-a-flow-a-tab-and-a-group)); junctions would have to appear among the nodes, so they stay out. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
+| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions **and** groups — for the rebuild, the checkpoint and the LLM context. The alias numbering the model sees is unchanged: the converter drops groups ([§15](./design.md#15-a-flow-a-tab-and-a-group)) and reads a wire through a junction or a `link out` → `link in` pair as a connection to where it leads. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 

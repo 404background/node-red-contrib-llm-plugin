@@ -151,17 +151,16 @@ async function rewiringOnlyMovesLinks() {
 }
 
 // Groups used to be the one thing the diff refused outright, so every edit
-// that put a node in a box rebuilt the whole tab — and the schema now asks the
-// model for boxes, which made that the common case rather than the rare one.
-// The diff expresses them now; the fallback's fingerprint is that it removes
-// the group, so that is what this asserts it does not do.
+// that put a node in a box rebuilt the whole tab. A new node wired into a
+// boxed sequence joins that box, so extending one is the common case. The
+// diff expresses it; the fallback's fingerprint is that it removes the group,
+// so that is what this asserts it does not do.
 async function joiningAGroupIsStillADiff() {
   console.log('\nA node joining an existing group does not rebuild the tab');
   const { res, byId, captured, importedIds } = await apply(
     'Tag it.\n' + fence({
       nodes: { change_tag: { type: 'change', name: 'tag' } },
-      connections: [{ from: 'debug_out', to: 'change_tag' }],
-      groups: { group_box: { name: 'Box', nodes: ['change_tag'] } },
+      connections: [{ from: 'inject_tick', to: 'change_tag' }],
     })
   );
 

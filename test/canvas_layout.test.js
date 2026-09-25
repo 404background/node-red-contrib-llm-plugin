@@ -22,13 +22,13 @@ const NODE_HEIGHT = 30;
 // component gaps under test are unambiguous.
 const WIDE = {
     startX: 200, startY: 200, spacingY: 80, edgeGap: 80,
-    componentGap: 80, bandGap: 80, maxColumns: Infinity
+    componentGap: 80, bandGap: 80
 };
 // Default-ish spacing — used by the insertion cases, which are about
 // horizontal cadence rather than vertical banding.
 const TIGHT = {
     startX: 100, startY: 100, spacingY: 40, edgeGap: 40,
-    componentGap: 80, bandGap: 80, maxColumns: Infinity
+    componentGap: 80, bandGap: 80
 };
 
 // --- Geometry helpers -------------------------------------------------
@@ -339,7 +339,7 @@ describe('An untouched flow stays rigid during an incremental edit', function() 
         const before = {};
         watched.forEach((n) => { before[n.id] = { x: n.x, y: n.y }; });
         Layout.placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, {
-            startX: 100, startY: 100, maxColumns: Infinity, isCanvasNode,
+            startX: 100, startY: 100, isCanvasNode,
         });
         return watched.map((n) => ({ id: n.id, dx: n.x - before[n.id].x, dy: n.y - before[n.id].y }));
     }
@@ -511,7 +511,7 @@ describe('A width change keeps the left edge', function() {
 // box is fitted to the members it now holds, and only then are the boxes
 // aligned and spaced against each other. A box left at its old size is a box
 // the alignment would line up INSTEAD of the sequence inside it.
-describe('A box whose members were rearranged is refitted first', function() {
+describe('Every box is fitted to its members', function() {
     const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
     const PAD = 25;
 
@@ -526,15 +526,9 @@ describe('A box whose members were rearranged is refitted first', function() {
     }
     const box = (flow) => flow.find((n) => n.id === 'g1');
 
-    it('a box the edit did not touch keeps the size the user gave it', function() {
+    it('every box is fitted to what it holds, whoever drew it', function() {
         const flow = oversized();
         Layout.fitGroups(flow, OPTS);
-        assert(box(flow).w === 800, 'width is ' + box(flow).w);
-    });
-
-    it('but one whose members moved is fitted back around them', function() {
-        const flow = oversized();
-        Layout.fitGroups(flow, Object.assign({ refitIds: ['g1'] }, OPTS));
         const left = 110 - Layout.estimateNodeWidth(flow[0], OPTS) / 2;
         assert(box(flow).x === left - PAD, 'left edge ' + box(flow).x + ', member at ' + left);
         assert(box(flow).w < 800, 'and it is no longer 800 wide (' + box(flow).w + ')');
@@ -729,14 +723,15 @@ describe('Group boxes share a left edge', function() {
         assert(a.y === b.y, 'and neither was stacked below the other (' + a.y + ' / ' + b.y + ')');
     });
 
-    // The column is set by the leftmost box, so a box already hanging off the
-    // canvas would otherwise drag every other sequence out there with it.
-    it('alignment never pulls the canvas off its left edge', function() {
+    // The column is set by the leftmost box; the canvas margin is restored
+    // afterwards, for everything at once.
+    it('alignment never leaves the canvas off its left edge', function() {
         const flow = twoSequencesAndATail();
         const gA = byId(flow, 'gA');
         const shift = -100;
         [gA, byId(flow, 'a1'), byId(flow, 'a2')].forEach((n) => { n.x += shift; });
         Layout.separateGroups(flow, OPTS);
+        Layout.ensureCanvasMargins(flow, OPTS);
         const margin = Layout.LAYOUT_DEFAULTS.leftMargin;
         assert(byId(flow, 'gA').x >= margin && byId(flow, 'gB').x >= margin,
             'boxes at ' + byId(flow, 'gA').x + ' / ' + byId(flow, 'gB').x);
@@ -814,18 +809,18 @@ describe('A caption never lands on the node it heads', function() {
 });
 
 // An annotation belongs to nobody, so the layout leaves it alone — right up
-// until a pass lays a sequence over the top of it.
+// until a pass lays a sequence over the top of it. Then it is the one to move.
 describe('An annotation buried by the layout is moved clear', function() {
     const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
 
-    it('a note under a node is moved off it', function() {
+    it('a note under a node is moved off it, and the node stays', function() {
         const flow = [
             { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300, wires: [[]] },
             { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 250, y: 305 },
         ];
-        Layout.nudgeFreeCaptions(flow, {}, OPTS);
-        assert(Math.abs(flow[1].y - flow[0].y) >= 30,
-            'note at ' + flow[1].y + ', node at ' + flow[0].y);
+        Layout.settleCollisions(flow, OPTS);
+        assert(flow[0].y === 300, 'node moved to ' + flow[0].y);
+        assert(Math.abs(flow[1].y - flow[0].y) >= 30, 'note at ' + flow[1].y);
     });
 
     it('a note that is in nobody\'s way stays where it is', function() {
@@ -833,17 +828,17 @@ describe('An annotation buried by the layout is moved clear', function() {
             { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300, wires: [[]] },
             { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 900, y: 700 },
         ];
-        Layout.nudgeFreeCaptions(flow, {}, OPTS);
+        Layout.settleCollisions(flow, OPTS);
         assert(flow[1].y === 700 && flow[1].x === 900, 'moved to ' + flow[1].x + ',' + flow[1].y);
     });
 
-    it('a caption with an anchor is left to the anchor', function() {
+    it('a caption over the node it heads is left to the comment pass', function() {
         const flow = [
             { id: 'n1', type: 'inject', z: 'z', name: 'tick', x: 250, y: 300, wires: [[]] },
-            { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 250, y: 305 },
+            { id: 'c1', type: 'comment', z: 'z', name: 'A note', x: 250, y: 290 },
         ];
-        Layout.nudgeFreeCaptions(flow, { c1: { targetId: 'n1', dx: 0, dy: -40 } }, OPTS);
-        assert(flow[1].y === 305, 'moved to ' + flow[1].y);
+        Layout.settleCollisions(flow, OPTS);
+        assert(flow[1].y === 290 && flow[0].y === 300, 'moved to ' + flow[1].y + ' / ' + flow[0].y);
     });
 });
 
@@ -894,6 +889,151 @@ describe('Nothing is left hanging off the canvas', function() {
         const flow = [{ id: 'n1', type: 'inject', z: 'z', name: 'a', x: 110, y: 100, wires: [[]] }];
         Layout.ensureCanvasMargins(flow, OPTS);
         assert(flow[0].x === 110, 'x is ' + flow[0].x);
+    });
+});
+
+describe('settleCollisions: nothing this edit placed sits on anything', function() {
+    const box = (id, nodes, x, y, w, h, extra) => Object.assign(
+        { id, type: 'group', z: 'z', name: id, nodes, x, y, w, h }, extra || {});
+    const node = (id, x, y, extra) => Object.assign(
+        { id, type: 'change', z: 'z', name: id, x, y, wires: [[]] }, extra || {});
+    const rectOf = (n) => n.type === 'group'
+        ? { t: n.y, b: n.y + n.h, l: n.x, r: n.x + n.w }
+        : { t: n.y - 15, b: n.y + 15, l: n.x - 50, r: n.x + 50 };
+    const hits = (a, b) => { const p = rectOf(a), q = rectOf(b);
+        return p.l < q.r && q.l < p.r && p.t < q.b && q.t < p.b; };
+
+    it('in one chain, the lower of two overlapping nodes steps off alone', function() {
+        const flow = [node('old', 300, 100, { wires: [['new']] }), node('new', 300, 100)];
+        Layout.settleCollisions(flow, {});
+        assert(flow[0].y === 100, 'existing node kept its row (' + flow[0].y + ')');
+        assert(!hits(flow[0], flow[1]), 'and the placed one is clear of it (' + flow[1].y + ')');
+    });
+
+    it('two boxes that overlap end up groupGap apart, the lower one moved with its members', function() {
+        const flow = [
+            box('A', ['a'], 0, 0, 200, 80), node('a', 100, 40, { g: 'A' }),
+            box('B', ['b'], 0, 60, 200, 80), node('b', 100, 100, { g: 'B' }),
+        ];
+        Layout.settleCollisions(flow, {});
+        const A = flow[0], B = flow[2];
+        assert(A.y === 0, 'the upper box stayed (' + A.y + ')');
+        assert(B.y >= A.y + A.h + 40, 'the lower one is below it by the gap (' + B.y + ')');
+        assert(flow[3].y === 160, 'and took its member along (' + flow[3].y + ')');
+    });
+
+    it('a push that lands on a third box pushes that one too', function() {
+        const flow = [
+            box('A', ['a'], 0, 0, 200, 100), node('a', 100, 50, { g: 'A' }),
+            box('B', ['b'], 0, 90, 200, 80), node('b', 100, 130, { g: 'B' }),
+            box('C', ['c'], 0, 190, 200, 80), node('c', 100, 230, { g: 'C' }),
+        ];
+        Layout.settleCollisions(flow, {});
+        const [A, , B, , C] = flow;
+        assert(B.y >= A.y + A.h + 40 && C.y >= B.y + B.h + 40,
+            'every box clears the one above (' + [A.y, B.y, C.y].join(',') + ')');
+    });
+
+    it('a loose node inside a box it is not in is moved out, below it', function() {
+        const flow = [box('A', ['a'], 0, 0, 300, 120), node('a', 100, 40, { g: 'A' }), node('x', 200, 80)];
+        Layout.settleCollisions(flow, {});
+        assert(rectOf(flow[2]).t >= flow[0].y + flow[0].h + 40, 'x is clear of the box (' + flow[2].y + ')');
+        assert(flow[1].y === 40, 'and the member did not move');
+    });
+
+    it('a member pushed down grows its box, which then clears the next box', function() {
+        const flow = [
+            box('A', ['a1', 'a2'], 0, 0, 200, 80), node('a1', 100, 40, { g: 'A', wires: [['a2']] }),
+            node('a2', 100, 40, { g: 'A' }),
+            box('B', ['b'], 0, 120, 200, 80), node('b', 100, 160, { g: 'B' }),
+        ];
+        Layout.settleCollisions(flow, {});
+        const [A, a1, a2, B] = flow;
+        assert(!hits(a1, a2), 'the members no longer overlap');
+        assert(A.y + A.h >= rectOf(a2).b, 'the box grew around the one that moved');
+        assert(B.y >= A.y + A.h + 40, 'and the box below was pushed clear (' + B.y + ')');
+    });
+
+    it('an overlap already on the canvas is resolved too', function() {
+        const flow = [node('p', 300, 100), node('q', 300, 100), node('n', 800, 100)];
+        Layout.settleCollisions(flow, {});
+        assert(!hits(flow[0], flow[1]), 'p and q no longer overlap (' + flow[0].y + ' / ' + flow[1].y + ')');
+        assert(flow[2].y === 100, 'and n, clear of both, did not move');
+    });
+
+    it('a caption travels with the node it heads, and is itself kept clear', function() {
+        const flow = [
+            node('a', 300, 100), node('b', 300, 150),
+            { id: 'c', type: 'comment', z: 'z', name: 'about b', x: 300, y: 110 },
+        ];
+        Layout.settleCollisions(flow, {});
+        const [a, b, c] = flow;
+        assert(!hits(a, b) && !hits(a, c), 'nothing overlaps a (' + [a.y, b.y, c.y].join(',') + ')');
+        assert(c.y < b.y, 'and the caption is still above b');
+    });
+
+    it('a node on a junction steps off it; the junction stays', function() {
+        const flow = [
+            { id: 'j', type: 'junction', z: 'z', x: 300, y: 100, wires: [['n']] },
+            node('n', 300, 100),
+        ];
+        Layout.settleCollisions(flow, {});
+        assert(flow[0].x === 300 && flow[0].y === 100, 'junction at ' + flow[0].x + ',' + flow[0].y);
+        assert(flow[1].y - 15 >= 105, 'node clear below it (' + flow[1].y + ')');
+    });
+
+    it('a box pushed down takes the routing that serves it along', function() {
+        const flow = [
+            box('A', ['a1', 'a2'], 0, 0, 200, 80), node('a1', 100, 40, { g: 'A', wires: [['a2', 'j']] }),
+            node('a2', 100, 40, { g: 'A', wires: [['lo']] }),
+            box('B', ['b'], 0, 120, 200, 80), node('b', 100, 160, { g: 'B' }),
+            { id: 'j', type: 'junction', z: 'z', x: 240, y: 100, wires: [['b']] },
+            { id: 'li', type: 'link in', z: 'z', x: 300, y: 160, links: ['lo'], wires: [['b']] },
+            { id: 'lo', type: 'link out', z: 'z', x: 300, y: 40, links: ['li'], wires: [] },
+        ];
+        Layout.settleCollisions(flow, {});
+        const [, a1, a2, , b, j, li, lo] = flow;
+        const dy = b.y - 160;
+        assert(dy > 0, 'the box below was pushed (' + dy + ')');
+        assert(j.x === 240 && j.y === 100 + dy, 'the junction feeding it moved with it (' + j.x + ',' + j.y + ')');
+        assert(li.x === 300 && li.y === 160 + dy, 'and so did the link in (' + li.y + ')');
+        assert(a1.y === 40 && lo.y === a2.y, 'a link out moves with the node feeding it (' + lo.y + ' / ' + a2.y + ')');
+    });
+
+    it('routing serving two things that moved apart stays where it was', function() {
+        const flow = [
+            node('p', 300, 100), node('q', 300, 100),
+            { id: 'j', type: 'junction', z: 'z', x: 500, y: 100, wires: [['p', 'q']] },
+        ];
+        Layout.settleCollisions(flow, {});
+        assert(flow[0].y !== flow[1].y, 'p and q were parted');
+        assert(flow[2].x === 500 && flow[2].y === 100, 'the junction did not move (' + flow[2].y + ')');
+    });
+
+    it('a junction on a box edge is left alone, and so is the box', function() {
+        const flow = [box('A', ['a'], 0, 0, 200, 80), node('a', 100, 40, { g: 'A' }),
+            { id: 'j', type: 'junction', z: 'z', x: 200, y: 40, wires: [] }];
+        Layout.settleCollisions(flow, {});
+        assert(flow[0].y === 0 && flow[2].x === 200 && flow[2].y === 40, 'nothing moved');
+    });
+
+    it('members are compared with each other, not with their own box', function() {
+        const flow = [box('A', ['a', 'b'], 0, 0, 400, 80), node('a', 100, 40, { g: 'A' }), node('b', 300, 40, { g: 'A' })];
+        assert(Layout.settleCollisions(flow, {}).length === 0, 'a tidy box is left alone');
+    });
+});
+
+// Long chains are not wrapped: a box already makes a sequence readable, and a
+// wrap that moved one or two nodes to a row of their own read worse than none.
+describe('A long chain stays on one row', function() {
+    it('ten nodes in a chain share row 0, one column each', function() {
+        const ids = Array.from({ length: 10 }, (_, i) => 'n' + i);
+        const outgoing = {}, incoming = {};
+        ids.forEach((id) => { outgoing[id] = []; incoming[id] = []; });
+        ids.slice(1).forEach((id, i) => { outgoing[ids[i]].push(id); incoming[id].push(ids[i]); });
+        const pos = Layout.layoutNodes(ids, outgoing, incoming);
+        assert(ids.every((id, i) => pos[id].row === 0 && pos[id].col === i),
+            'rows ' + ids.map((id) => pos[id].row).join(','));
     });
 });
 

@@ -740,10 +740,10 @@
             // dropdown so mid-flight switches obviously target only the next Send.
             if (modeSelect) modeSelect.disabled = true;
 
-            // includeGroups: the model has to see the boxes already on the
-            // canvas to extend or rename one instead of inventing a second.
+            // With the canvas extras, so the model sees where a wire through
+            // a junction leads.
             let currentFlow = (flowIdsToSend.length > 0)
-                ? LLMPlugin.UI.getCurrentFlow(flowIdsToSend, { includeGroups: true })
+                ? LLMPlugin.UI.getCurrentFlow(flowIdsToSend, { includeCanvasExtras: true })
                 : null;
 
             if (currentAbortController) currentAbortController.abort();

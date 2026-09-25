@@ -444,15 +444,12 @@ function createLLMCore(RED) {
         delete inter._meta;
 
         // Annotate each canvas node's intermediate entry with its flow label.
-        // Config nodes get no flow tag (shared/global scope). A group is not in
-        // `nodes` — it has a map of its own — but it lives on a tab like
-        // anything else, so it is tagged the same way.
+        // Config nodes get no flow tag (shared/global scope).
         for (const n of allCanvas) {
             const alias = idToAlias[n.id];
             if (!alias) continue;
             const label = tabLabelById[n.z] || n.z;
             if (inter.nodes[alias]) inter.nodes[alias].flow = label;
-            else if (inter.groups && inter.groups[alias]) inter.groups[alias].flow = label;
         }
 
         const flowNames = [];

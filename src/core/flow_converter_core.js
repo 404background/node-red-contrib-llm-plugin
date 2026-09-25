@@ -161,15 +161,50 @@
     // ------------------------------------------------------------------ //
 
     // Exported Node-RED nodes -> Vibe Schema { description, nodes, connections }.
+    // Routing the user draws, which the model is shown only through: see
+    // toIntermediate. `link call` is not routing — it is a step that returns.
+    function isRoutingNode(n) {
+        return n.type === 'junction' || n.type === 'link in' || n.type === 'link out';
+    }
+
     function toIntermediate(nodeRedJson, options) {
         let opts = options || {};
         if (!Array.isArray(nodeRedJson) || nodeRedJson.length === 0) {
             return { description: '', nodes: {}, connections: [] };
         }
 
-        // Filter out tab / subflow definition nodes
+        // Junctions and link in / link out nodes are the user's routing, not
+        // something the model edits: they get no alias, and a wire through
+        // one reads as a connection to wherever it leads — through a
+        // junction's wires, or from a link out to the nodes its link ins
+        // feed. See docs/{en,jp}/vibe-schema.md.
+        let routing = {};
+        nodeRedJson.forEach(function(n) {
+            if (n && n.id && isRoutingNode(n)) routing[n.id] = n;
+        });
+        function throughRouting(targetId, seen) {
+            let r = routing[targetId];
+            if (!r) return [targetId];
+            if (seen[targetId]) return [];
+            seen[targetId] = true;
+            let next = [];
+            if (r.type === 'link out') {
+                next = Array.isArray(r.links) ? r.links : [];
+            } else {
+                (r.wires || []).forEach(function(port) {
+                    next = next.concat(Array.isArray(port) ? port : []);
+                });
+            }
+            let out = [];
+            next.forEach(function(id) { out = out.concat(throughRouting(id, seen)); });
+            return out;
+        }
+
+        // Tabs, subflow definitions and groups are not nodes the model
+        // edits: a group box is the user's to draw.
         let nodes = nodeRedJson.filter(function(n) {
-            return n && n.type && n.type !== 'tab' && n.type.indexOf('subflow:') !== 0;
+            return n && n.type && n.type !== 'tab' && !routing[n.id] && !isGroupNode(n) &&
+                n.type.indexOf('subflow:') !== 0;
         });
 
         // --- Pass 1: assign aliases ---
@@ -185,13 +220,12 @@
         // --- Pass 2: build intermediate nodes & connections ---
         let intermediateNodes = {};
         let connections = [];
+        // Where each comment sits, as the node it heads: the model decides
+        // that, so it has to be able to read it. See vibe-schema.md.
+        let commentAnchors = CanvasLayout.captureCommentAnchors(nodes, {});
 
         nodes.forEach(function(node) {
             let alias = idToAlias[node.id];
-            // A group is a box around members, not a node with wires, so it
-            // goes in its own map (below) rather than into `nodes`. It keeps
-            // its alias from pass 1: the members name it, and it names them.
-            if (isGroupNode(node)) return;
 
             // Collect type-specific properties
             let props = {};
@@ -235,6 +269,10 @@
                 delete props[raw];
             });
             if (Object.keys(props).length > 0) entry.props = props;
+            if (node.type === 'comment' && commentAnchors[node.id]) {
+                let above = idToAlias[commentAnchors[node.id].targetId];
+                if (above) entry.above = above;
+            }
 
             intermediateNodes[alias] = entry;
 
@@ -242,12 +280,16 @@
             if (Array.isArray(node.wires)) {
                 node.wires.forEach(function(output, portIndex) {
                     if (!Array.isArray(output)) return;
-                    output.forEach(function(targetId) {
-                        let targetAlias = idToAlias[targetId];
-                        if (!targetAlias) return;
-                        let conn = { from: alias, to: targetAlias };
-                        if (portIndex > 0) conn.fromPort = portIndex;
-                        connections.push(conn);
+                    let seenTargets = {};
+                    output.forEach(function(wireTo) {
+                        throughRouting(wireTo, {}).forEach(function(targetId) {
+                            let targetAlias = idToAlias[targetId];
+                            if (!targetAlias || seenTargets[targetAlias]) return;
+                            seenTargets[targetAlias] = true;
+                            let conn = { from: alias, to: targetAlias };
+                            if (portIndex > 0) conn.fromPort = portIndex;
+                            connections.push(conn);
+                        });
                     });
                 });
             }
@@ -269,21 +311,6 @@
             connections: connections
         };
 
-        // Groups: `{ alias: { name?, nodes: [member aliases] } }`. A member the
-        // context does not carry is dropped rather than named by an id the LLM
-        // could not resolve.
-        let groups = {};
-        nodes.forEach(function(node) {
-            if (!isGroupNode(node)) return;
-            let entry = {};
-            if (node.name) entry.name = node.name;
-            entry.nodes = (Array.isArray(node.nodes) ? node.nodes : [])
-                .map(function(id) { return idToAlias[typeof id === 'string' ? id : (id && id.id)]; })
-                .filter(Boolean);
-            groups[idToAlias[node.id]] = entry;
-        });
-        if (Object.keys(groups).length > 0) result.groups = groups;
-
         if (opts.includeIdMap) {
             result._meta = { idToAlias: idToAlias };
         }
@@ -300,11 +327,9 @@
     // options fall back to LAYOUT_DEFAULTS.
     function toNodeRed(intermediate, options) {
         if (!intermediate) return [];
-        // A schema may carry groups alone — "put these nodes in a group" names
-        // no node of its own.
         let declaredNodes = (intermediate.nodes && typeof intermediate.nodes === 'object' &&
                              !Array.isArray(intermediate.nodes)) ? intermediate.nodes : null;
-        if (!declaredNodes && groupSpecsOf(intermediate).length === 0) return [];
+        if (!declaredNodes) return [];
 
         let opts = options || {};
         let workspace      = opts.workspace || '';
@@ -312,7 +337,6 @@
         let startY         = (typeof opts.startY     === 'number') ? opts.startY     : LAYOUT_DEFAULTS.startY;
         let spacingY       = (typeof opts.spacingY   === 'number') ? opts.spacingY   : LAYOUT_DEFAULTS.spacingY;
         let edgeGap        = (typeof opts.edgeGap    === 'number') ? opts.edgeGap    : LAYOUT_DEFAULTS.edgeGap;
-        let maxColumns     = (typeof opts.maxColumns === 'number') ? opts.maxColumns : LAYOUT_DEFAULTS.maxColumns;
         let preserveAlias  = !!opts.preserveAlias;
 
         // --- Work on a shallow copy so we never mutate the caller's object ---
@@ -406,9 +430,7 @@
         })();
 
         let aliases = Object.keys(nodeSpecs);
-        // Groups alone are still work to do; everything below tolerates
-        // there being no nodes.
-        if (aliases.length === 0 && groupSpecsOf(intermediate).length === 0) return [];
+        if (aliases.length === 0) return [];
 
         // --- Generate real IDs ---
         let aliasToId = {};
@@ -443,7 +465,7 @@
         });
 
         // --- Layout (canvas nodes only; config nodes have no coordinates) ---
-        let layout = layoutNodes(canvasAliases, outgoing, incoming, maxColumns);
+        let layout = layoutNodes(canvasAliases, outgoing, incoming);
 
         // --- Build wires map (guard against dangling aliases) ---
         let wiresMap = {};
@@ -892,53 +914,7 @@
             result.push(node);
         });
 
-        // --- Groups -----------------------------------------------------
-        // One box per declared group. The members are carried as the ALIAS
-        // list: an alias may name a node this schema adds or one already on
-        // the canvas, and only the importer knows the latter's id. The box
-        // (x / y / w / h) is fitted by CanvasLayout once the members have
-        // their final positions. See docs/{en,jp}/vibe-schema.md — Groups.
-        groupSpecsOf(intermediate).forEach(function(spec) {
-            let node = {
-                id: genId(),
-                type: 'group',
-                name: spec.name || '',
-                style: { label: true },
-                nodes: [],
-                x: 0, y: 0, w: 0, h: 0,
-                // A re-declared group keeps the name, membership and styling it
-                // already had; only what this schema states is the LLM's.
-                _llmSpecKeys: spec.named ? ['name'] : [],
-                _llmMembers: spec.members
-            };
-            if (workspace) node.z = workspace;
-            if (preserveAlias) node._llmAlias = spec.alias;
-            result.push(node);
-        });
-
         return result;
-    }
-
-    // `groups: { alias: { name?, nodes: [aliases] } }` → one spec per group,
-    // in declaration order. A `null` entry is a deletion directive, read by
-    // the parser's flow directives, not a group to build.
-    function groupSpecsOf(intermediate) {
-        let declared = intermediate && intermediate.groups;
-        if (!declared || typeof declared !== 'object' || Array.isArray(declared)) return [];
-        let out = [];
-        Object.keys(declared).forEach(function(alias) {
-            let spec = declared[alias];
-            if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return;
-            let members = Array.isArray(spec.nodes) ? spec.nodes
-                        : (Array.isArray(spec.members) ? spec.members : []);
-            out.push({
-                alias: alias,
-                name: (typeof spec.name === 'string') ? spec.name : '',
-                named: typeof spec.name === 'string',
-                members: members.filter(function(m) { return typeof m === 'string' && m.trim(); })
-            });
-        });
-        return out;
     }
 
     // ------------------------------------------------------------------ //
@@ -955,12 +931,7 @@
             obj.nodes !== null &&
             !Array.isArray(obj.nodes);
         let hasConnectionsArr = Array.isArray(obj.connections);
-        // Groups alone: "wrap these existing nodes in a group" names no node.
-        let hasGroupsObj =
-            typeof obj.groups === 'object' &&
-            obj.groups !== null &&
-            !Array.isArray(obj.groups);
-        if (hasNodesObj || hasConnectionsArr || hasGroupsObj) return true;
+        if (hasNodesObj || hasConnectionsArr) return true;
         let repo = obj.reposition || obj.relayout || obj.reflow;
         if (Array.isArray(repo)) return true;
         // A deletion-only reply. The prompt asks for the `nodes: {alias: null}`
@@ -988,6 +959,7 @@
         isConfigType:        isConfigType,
         isConfigNode:        isConfigNode,
         isCanvasNode:        isCanvasNode,
+        isRoutingNode:       isRoutingNode,
         isNoInputType:       isNoInputType,
         isNoOutputType:      isNoOutputType,
         setRuntimeGetType:   setRuntimeGetType

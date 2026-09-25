@@ -186,16 +186,13 @@ function scenarioArrayOfStringsSurvivesTheRepair() {
     '    "change_warn": { "type": "change", "props": { "rules": [{ "t": "set",',
     '      "p": "payload.s", "pt": "msg", "to": "WARN " & payload.line, "tot": "jsonata" }] } }',
     '  },',
-    '  "groups": { "group_seq": { "name": "Seq", "nodes": ["change_warn", "debug_out"] } },',
     '  "reposition": ["change_warn", "debug_out"]',
     '}',
   ].join('\n'));
 
   ok(!!s, 'the schema is recovered');
-  const members = s && s.groups && s.groups.group_seq && s.groups.group_seq.nodes;
-  ok(Array.isArray(members) && members.length === 2,
-    'the group still lists two members (' + JSON.stringify(members) + ')');
-  ok(Array.isArray(s && s.reposition) && s.reposition.length === 2,
+  ok(Array.isArray(s && s.reposition) && s.reposition.length === 2 &&
+     s.reposition[0] === 'change_warn' && s.reposition[1] === 'debug_out',
     'and reposition still lists two aliases (' + JSON.stringify(s && s.reposition) + ')');
 }
 

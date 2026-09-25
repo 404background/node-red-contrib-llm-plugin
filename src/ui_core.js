@@ -723,17 +723,13 @@
                 });
             });
 
-            // filterNodes returns neither, so a caller has to opt in.
-            // `includeCanvasExtras` (junctions AND groups) is for a caller that
-            // will REBUILD the flow; `includeGroups` is the LLM-context path,
-            // which needs to see the boxes it may extend but not junctions.
-            // Groups leave node aliases alone either way — the converter gives
-            // them a map of their own. See docs/{en,jp}/vibe-schema.md.
-            if (opts && (opts.includeCanvasExtras || opts.includeGroups)) {
-                let withJunctions = !!(opts && opts.includeCanvasExtras);
+            // filterNodes returns neither junctions nor groups, so a caller
+            // has to opt in. Neither shifts a node alias: the converter drops
+            // groups and reads a wire through a junction as a connection to
+            // where it leads. See docs/{en,jp}/vibe-schema.md.
+            if (opts && opts.includeCanvasExtras) {
                 ids.forEach(function(zid) {
-                    let extras = withJunctions ? (RED.nodes.junctions(zid) || []) : [];
-                    extras = extras.concat(RED.nodes.groups(zid) || []);
+                    let extras = (RED.nodes.junctions(zid) || []).concat(RED.nodes.groups(zid) || []);
                     extras.forEach(function(node) {
                         if (node && node.id && !seenIds[node.id]) {
                             seenIds[node.id] = true;
