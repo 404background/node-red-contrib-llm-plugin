@@ -113,6 +113,10 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 // flow now has fresh IDs, laid-out x / y, and proper wires arrays.
 ```
 
+## Shapes a small model writes instead
+
+Before a reply is checked with `isVibeSchema`, the parser (`llm_json_parser.js`) reads three unambiguous variants as the map form, because small models (gemma3:4b, gemma4:e2b in `test/llm_scenarios.test.js`) write them often: `nodes` as a list with each `alias` inside; the whole reply as one list of such nodes and `{ from, to }` connections; and one schema per sequence, listed. A connection that names a node this reply declares by its `name` instead of its alias means that node, when exactly one declared node has that name. A raw Node-RED array has no `alias` and is left alone.
+
 ## Public API
 
 | Function | Purpose |

@@ -1,7 +1,7 @@
 // The `npm test` runner: every `*.test.js` in this folder, in one child
 // process each, in name order.
 //
-// The live round-trip is excluded — it needs a real endpoint, and runs on its
+// The live suites are excluded — they need a real endpoint, and run on their
 // own through `npm run test:llm`.
 
 const fs = require('fs');
@@ -9,10 +9,10 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const DIR = __dirname;
-const LIVE = 'llm_roundtrip.test.js';
+const LIVE = ['llm_roundtrip.test.js', 'llm_scenarios.test.js'];
 
 const suites = fs.readdirSync(DIR)
-    .filter((f) => f.endsWith('.test.js') && f !== LIVE)
+    .filter((f) => f.endsWith('.test.js') && LIVE.indexOf(f) === -1)
     .sort();
 
 if (!suites.length) {

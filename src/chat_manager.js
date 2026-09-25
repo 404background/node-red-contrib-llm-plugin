@@ -161,14 +161,14 @@
 
         let chatList = el('div', 'chat-list');
 
-        // Several at once: tick them, or tick All, then Delete selected.
+        // Tick chats, or All, then Delete.
         let toolbar = el('div', 'chat-list-toolbar');
         let allLabel = el('label', 'chat-select-all');
         let allBox = el('input');
         allBox.type = 'checkbox';
         allLabel.appendChild(allBox);
         allLabel.appendChild(document.createTextNode(' All'));
-        let deleteSelectedBtn = el('button', 'delete-btn', 'Delete selected');
+        let deleteSelectedBtn = el('button', 'delete-btn', 'Delete');
         toolbar.appendChild(allLabel);
         toolbar.appendChild(deleteSelectedBtn);
 
@@ -181,7 +181,6 @@
             allBox.checked = boxes.length > 0 && n === boxes.length;
             allBox.indeterminate = n > 0 && n < boxes.length;
             deleteSelectedBtn.disabled = n === 0;
-            deleteSelectedBtn.textContent = n > 0 ? 'Delete selected (' + n + ')' : 'Delete selected';
         }
         allBox.addEventListener('change', function() {
             boxes.forEach(function(b) { b.checked = allBox.checked; });
@@ -220,16 +219,7 @@
                     ChatManager.loadChat(chat.id);
                     modal.remove();
                 });
-                let deleteBtn = el('button', 'delete-btn', 'Delete');
-                deleteBtn.addEventListener('click', function() {
-                    ChatManager.deleteChats([chat.id], function(success) {
-                        if (!success) return;
-                        modal.remove();
-                        ChatManager.showChatList();
-                    });
-                });
                 chatActions.appendChild(loadBtn);
-                chatActions.appendChild(deleteBtn);
 
                 chatItem.appendChild(chatInfo);
                 chatItem.appendChild(chatActions);

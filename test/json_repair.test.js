@@ -274,7 +274,64 @@ function scenarioParseJsonBlockReportsTheRepair() {
   ok(P.parseJsonBlock('not json at all') === null, 'and so does prose');
 }
 
+// Small models (gemma3:4b, gemma4:e2b in the live round-trip) write the nodes
+// as a list with the alias inside. The meaning is plain, so it is read as the
+// map form — and a raw Node-RED array, which has no alias, is not.
+function scenarioAnAliasListReadsAsTheMap() {
+  console.log('\nNodes written as a list with their aliases inside');
+  const listed = schema(JSON.stringify({
+    nodes: [{ alias: 'inject_tick', type: 'inject', name: 'tick' }, { alias: 'debug_out', type: 'debug' }],
+    connections: [{ from: 'inject_tick', to: 'debug_out' }],
+  }));
+  ok(listed && listed.nodes && listed.nodes.inject_tick && listed.nodes.inject_tick.type === 'inject' &&
+     !('alias' in listed.nodes.inject_tick) && listed.nodes.debug_out,
+    '`nodes: [{ alias, ... }]` reads as the alias map');
+
+  const flat = schema(JSON.stringify([
+    { alias: 'inject_tick', type: 'inject' }, { alias: 'debug_out', type: 'debug' },
+    { from: 'inject_tick', to: 'debug_out' },
+  ]));
+  ok(flat && flat.nodes && flat.nodes.debug_out && flat.connections.length === 1 &&
+     flat.connections[0].to === 'debug_out',
+    'and so does one list of aliased nodes and connections');
+
+  const nodes = P.extractFlowNodes(fence(JSON.stringify({
+    nodes: [{ alias: 'inject_tick', type: 'inject' }, { alias: 'debug_out', type: 'debug' }],
+    connections: [{ from: 'inject_tick', to: 'debug_out' }],
+  })), {}, CFG);
+  ok(Array.isArray(nodes) && nodes.length === 2, 'which converts to nodes (' + (nodes && nodes.length) + ')');
+
+  const perSequence = schema(JSON.stringify([
+    { nodes: [{ alias: 'inject_temp', type: 'inject' }, { alias: 'debug_temp', type: 'debug' }],
+      connections: [{ from: 'inject_temp', to: 'debug_temp' }] },
+    { nodes: { inject_hum: { type: 'inject' }, debug_hum: { type: 'debug' } },
+      connections: [{ from: 'inject_hum', to: 'debug_hum' }] },
+  ]));
+  ok(perSequence && Object.keys(perSequence.nodes).length === 4 && perSequence.connections.length === 2,
+    'and one schema per sequence, listed, reads as one schema');
+
+  const byName = schema(JSON.stringify({
+    nodes: { switch_check: { type: 'switch', name: 'payload_check' }, debug_high: { type: 'debug', name: 'high' } },
+    connections: [{ from: 'payload_check', to: 'high' }, { from: 'inject_tick', to: 'switch_check' }],
+  }));
+  ok(byName && byName.connections[0].from === 'switch_check' && byName.connections[0].to === 'debug_high' &&
+     byName.connections[1].from === 'inject_tick',
+    'a connection naming a declared node by its name means that node; an alias it does not declare is kept');
+
+  const topRemove = schema(JSON.stringify({ remove: { from: 'inject_tick', to: 'debug_a' } }));
+  ok(topRemove && topRemove.connections && topRemove.connections[0].remove &&
+     topRemove.connections[0].remove.to === 'debug_a' && !('remove' in topRemove),
+    'a connection delete written at the top level reads as one in connections');
+  const nodeRemove = schema(JSON.stringify({ nodes: { debug_a: null }, remove: ['debug_b'] }));
+  ok(nodeRemove && JSON.stringify(nodeRemove.remove) === '["debug_b"]',
+    'while a remove of aliases stays a node delete');
+
+  const raw = [{ id: 'a', type: 'inject', z: 't', wires: [['b']] }, { id: 'b', type: 'debug', z: 't', wires: [] }];
+  ok(schema(JSON.stringify(raw)) === null, 'a raw Node-RED array is not mistaken for one');
+}
+
 scenarioParseJsonBlockReportsTheRepair();
+scenarioAnAliasListReadsAsTheMap();
 scenarioUnterminatedStringBeforeComma();
 scenarioMultiLineStringIsEscaped();
 scenarioUnescapedQuotesStillRepaired();

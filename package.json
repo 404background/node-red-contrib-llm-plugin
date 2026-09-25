@@ -8,13 +8,11 @@
     "llm_plugin.html",
     "llm-plugin_styles.css",
     "src/",
-    "node/",
-    "examples/",
     "images/"
   ],
   "scripts": {
     "test": "node test/run_all.js",
-    "test:llm": "node test/llm_roundtrip.test.js"
+    "test:llm": "node test/llm_roundtrip.test.js && node test/llm_scenarios.test.js"
   },
   "node-red": {
     "version": ">=4.0.0",

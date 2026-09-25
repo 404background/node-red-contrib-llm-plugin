@@ -28,7 +28,7 @@ an English (`en/`) and a Japanese (`jp/`) version with identical content.
 | Architecture | [docs/en/architecture.md](./en/architecture.md) | [docs/jp/architecture.md](./jp/architecture.md) | Module-by-module implementation guide, HTTP endpoints and their permissions, security measures, the test suites / モジュール別の実装ガイド、HTTP エンドポイントと権限、セキュリティ対策、テストスイート |
 | Vibe Schema | [docs/en/vibe-schema.md](./en/vibe-schema.md) | [docs/jp/vibe-schema.md](./jp/vibe-schema.md) | The intermediate flow format (LLM ↔ Node-RED) / 中間フロー表現の仕様 |
 | Layout | [docs/en/layout.md](./en/layout.md) | [docs/jp/layout.md](./jp/layout.md) | Canvas layout engine, spacing rules, comment placement / レイアウトエンジンと配置ルール |
-| `llm-request` node | [docs/en/llm-request.md](./en/llm-request.md) | [docs/jp/llm-request.md](./jp/llm-request.md) | The node a flow calls an LLM from / フローから LLM を呼ぶノード |
+| `llm-request` node (planned) | [docs/en/llm-request.md](./en/llm-request.md) | [docs/jp/llm-request.md](./jp/llm-request.md) | The node a flow calls an LLM from / フローから LLM を呼ぶノード |
 
 ## Other references / その他の参照
 

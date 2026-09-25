@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/@background404/node-red-contrib-llm-plugin?style=flat-square)](https://www.npmjs.com/package/@background404/node-red-contrib-llm-plugin)
 [![npm downloads](https://img.shields.io/npm/dm/@background404/node-red-contrib-llm-plugin?style=flat-square)](https://www.npmjs.com/package/@background404/node-red-contrib-llm-plugin)
 
-LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/modifying flows, and importing results into the active tab. It also ships an **`llm-request` node** so flows can call an LLM (and, in Agent mode, add nodes to a flow) without the sidebar — see [`llm-request` node](#llm-request-node).
+LLM Plugin is a Node-RED sidebar extension for chatting with LLMs, generating/modifying flows, and importing results into the active tab.
 
 ## Demos
 
@@ -70,27 +70,11 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 - **Edits are merges**: what the reply lists is added or updated, what it maps to `null` is deleted, and the rest of your flow is left alone — so a partial answer never rewrites the whole tab.
 - **Several sequences**: ask for several flows in one tab and you get several independent sequences (`flow` in the schema always means the tab). Group boxes stay yours: a new node wired into a boxed sequence joins that box.
 
-## `llm-request` node
+## Planned: `llm-request` node
 
-The package also registers an `llm-request` node (palette category
-**llm-plugin**) so a flow can call an LLM without the sidebar.
-
-- **Ask** — returns the model's reply on `msg.payload`. The flows selected on the node are sent as context.
-- **Agent** — same, then applies the changes **live in the open editor**, like the sidebar; you review and Deploy.
-
-Provider, model and target flows are set on the `llm-request` node; API keys and
-URLs come from the sidebar Settings. Agent mode needs an open editor. A node's
-edit is not saved to chat history or a checkpoint; review it on the canvas before
-Deploy.
-
-Two examples ship with the package — import them via **Menu → Import →
-Examples**: `llm-nodes` (Ask and Agent side by side, deployed manually) and
-`llm-self-feedback` (a developer self-improvement loop using Auto deploy,
-hard-capped at 5 iterations).
-
-Field-by-field reference, how Agent mode reaches the canvas, and the Auto deploy
-caveats: **[docs/en/llm-request.md](docs/en/llm-request.md)**
-([日本語](docs/jp/llm-request.md)).
+An `llm-request` node, so a flow can call an LLM without the sidebar, is in
+development and **not part of this release**. Its design is in
+[docs/en/llm-request.md](docs/en/llm-request.md) ([日本語](docs/jp/llm-request.md)).
 
 ## Documentation
 
@@ -104,7 +88,7 @@ Japanese (`docs/jp/`) version of every page.
 | Architecture | Module-by-module guide, HTTP endpoints, security measures | [en](docs/en/architecture.md) | [jp](docs/jp/architecture.md) |
 | Vibe Schema | The intermediate flow format the LLM reads and writes | [en](docs/en/vibe-schema.md) | [jp](docs/jp/vibe-schema.md) |
 | Layout | Canvas layout engine, spacing rules, comment placement | [en](docs/en/layout.md) | [jp](docs/jp/layout.md) |
-| `llm-request` node | The node a flow calls an LLM from, in full | [en](docs/en/llm-request.md) | [jp](docs/jp/llm-request.md) |
+| `llm-request` node (planned) | The node a flow calls an LLM from, in full | [en](docs/en/llm-request.md) | [jp](docs/jp/llm-request.md) |
 
 Two more, kept next to what they describe:
 
@@ -121,13 +105,13 @@ Two more, kept next to what they describe:
 
 ### Agent mode executes what the model writes
 
-Agent mode applies the model's reply to your canvas **without a confirmation step**, and **Auto deploy** deploys it immediately. Generated flows can contain `function` nodes (arbitrary JavaScript in the Node-RED process) and `exec` nodes (arbitrary shell commands), and there is deliberately no node-type restriction — limiting what the model may build would defeat the feature.
+Agent mode applies the model's reply to your canvas **without a confirmation step**. Generated flows can contain `function` nodes (arbitrary JavaScript in the Node-RED process) and `exec` nodes (arbitrary shell commands), and there is deliberately no node-type restriction — limiting what the model may build would defeat the feature.
 
-So whoever controls the model's output controls the Node-RED host. Point Agent mode only at an LLM endpoint you trust, and **do not feed untrusted text into an Agent node** (an `http in` payload, an inbound MQTT message, scraped page content). With Auto deploy enabled that is a direct path from a remote string to code execution on your machine. Ask mode has no such property — it only returns text.
+So whoever controls the model's output controls what gets deployed. Point Agent mode only at an LLM endpoint you trust, and review the result on the canvas before you Deploy. Ask mode has no such property — it only returns text.
 
 ### Credentials and shared instances
 
-Everything the plugin keeps — settings, chat history, and API keys (encrypted) — is in one folder, `<userDir>/llm-plugin`; removing it resets the plugin. API keys are masked in the UI and redacted from logs, and a stored key is never carried over to a new endpoint behind your back. With `adminAuth` enabled the plugin's endpoints require an authenticated editor session — but Agent-mode results are broadcast to **every** open editor session, so on a shared instance one user's Agent node edits everyone's canvas.
+Everything the plugin keeps — settings, chat history, and API keys (encrypted) — is in one folder, `<userDir>/llm-plugin`; removing it resets the plugin. API keys are masked in the UI and redacted from logs, and a stored key is never carried over to a new endpoint behind your back. With `adminAuth` enabled the plugin's endpoints require an authenticated editor session. Several people applying Agent edits to the same Node-RED at once is not supported yet ([#8](https://github.com/404background/node-red-contrib-llm-plugin/issues/8)).
 
 When sharing your Node-RED user directory (Git, backups, environment exports), keep `llm-plugin/`, `flows_cred.json`, `.config.*.json` and `settings.js` out of the share.
 

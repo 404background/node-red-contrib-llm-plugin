@@ -110,6 +110,10 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 // flow now has fresh IDs, laid-out x / y, and proper wires arrays.
 ```
 
+## 小さなモデルが代わりに書く形
+
+応答を `isVibeSchema` で判定する前に、パーサ(`llm_json_parser.js`)は意味が一つに決まる3つの変形を本来の形として読む。小さなモデル(`test/llm_scenarios.test.js` の gemma3:4b、gemma4:e2b)がよく書くからである。`nodes` を各要素に `alias` を入れた配列で書く形、応答全体をそうしたノードと `{ from, to }` の接続を並べた1つの配列で書く形、シーケンスごとのスキーマを配列で並べる形である。また、この応答が宣言したノードをエイリアスではなく `name` で指す接続は、その名前を持つ宣言済みノードがちょうど1つならそのノードとして読む。素の Node-RED 配列は `alias` を持たないので対象外である。
+
 ## 公開 API
 
 | 関数 | 用途 |

@@ -345,9 +345,95 @@
     // ================================================================== //
 
     // A candidate JSON string, returned only if it is a Vibe Schema.
+    // Small models often write the nodes as a list with each alias inside —
+    // `nodes: [{ alias, type, ... }]`, or the whole reply as one list of such
+    // nodes and `{ from, to }` connections, or one schema per sequence in a
+    // list. The meaning is unambiguous, so each is read as the one map form.
+    // A raw Node-RED array has no `alias` and is left alone.
+    function normalizeAliasList(parsed) {
+        function isAliased(n) {
+            return !!n && typeof n === 'object' && !Array.isArray(n) &&
+                typeof n.alias === 'string' && !!n.alias.trim();
+        }
+        function isConnection(c) {
+            return !!c && typeof c === 'object' &&
+                ((typeof c.from === 'string' && typeof c.to === 'string') || (c.remove && typeof c.remove === 'object'));
+        }
+        function toMap(list) {
+            let map = {};
+            list.forEach(function(n) {
+                let copy = Object.assign({}, n);
+                let alias = copy.alias.trim();
+                delete copy.alias;
+                map[alias] = copy;
+            });
+            return map;
+        }
+        // One schema per sequence, listed: read as one schema.
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(function(x) {
+            return !!x && typeof x === 'object' && !Array.isArray(x) && (x.nodes || x.connections) && !x.id;
+        })) {
+            let merged = { nodes: {}, connections: [] };
+            parsed.forEach(function(part) {
+                let one = normalizeAliasList(part);
+                if (one.nodes && typeof one.nodes === 'object' && !Array.isArray(one.nodes)) Object.assign(merged.nodes, one.nodes);
+                if (Array.isArray(one.connections)) merged.connections = merged.connections.concat(one.connections);
+            });
+            return merged;
+        }
+        if (Array.isArray(parsed)) {
+            if (!parsed.some(isAliased) || !parsed.every(function(x) { return isAliased(x) || isConnection(x); })) return parsed;
+            return { nodes: toMap(parsed.filter(isAliased)), connections: parsed.filter(function(x) { return !isAliased(x); }) };
+        }
+        let out = parsed;
+        if (out && Array.isArray(out.nodes) && out.nodes.length > 0 && out.nodes.every(isAliased)) {
+            out = Object.assign({}, out);
+            out.nodes = toMap(out.nodes);
+        }
+        // A connection delete written at the top level (`remove: { from, to }`)
+        // instead of inside `connections`. A `remove` of alias strings is a
+        // node delete and stays where it is.
+        let rm = out && !Array.isArray(out) && typeof out === 'object' ? out.remove : null;
+        let rmList = Array.isArray(rm) ? rm : (rm ? [rm] : []);
+        if (rmList.length > 0 && rmList.every(function(r) { return isConnection(r) && !r.remove; })) {
+            out = Object.assign({}, out);
+            delete out.remove;
+            out.connections = (Array.isArray(out.connections) ? out.connections : [])
+                .concat(rmList.map(function(r) { return { remove: r }; }));
+        }
+        return out;
+    }
+
+    // A connection that names a node this reply declares by its `name`
+    // (`payload_check`) instead of its alias (`switch_payload_check`) means
+    // that node when exactly one declared node has that name and no alias is
+    // spelled that way.
+    function resolveEndpointsByName(schema) {
+        if (!schema || !schema.nodes || typeof schema.nodes !== 'object' || Array.isArray(schema.nodes) ||
+            !Array.isArray(schema.connections)) return schema;
+        let byName = {};
+        Object.keys(schema.nodes).forEach(function(alias) {
+            let spec = schema.nodes[alias];
+            let name = spec && typeof spec.name === 'string' ? spec.name.trim() : '';
+            if (!name) return;
+            byName[name] = (byName[name] === undefined) ? alias : null;
+        });
+        function fix(token) {
+            if (typeof token !== 'string' || schema.nodes[token] !== undefined) return token;
+            return byName[token.trim()] || token;
+        }
+        schema.connections.forEach(function(c) {
+            if (!c || typeof c !== 'object') return;
+            let target = (c.remove && typeof c.remove === 'object') ? c.remove : c;
+            target.from = fix(target.from);
+            target.to = fix(target.to);
+        });
+        return schema;
+    }
+
     function parseVibeSchemaCandidate(text, isVibeSchemaFn) {
         let parsed = null;
-        try { parsed = parseJsonRelaxed(stripJsonComments(text)); }
+        try { parsed = resolveEndpointsByName(normalizeAliasList(parseJsonRelaxed(stripJsonComments(text)))); }
         catch (e) { /* not JSON, or beyond repair */ }
         return (parsed && isVibeSchemaFn(parsed)) ? parsed : null;
     }
@@ -688,7 +774,7 @@
     function tryParseFlowNodes(text, options, cfg) {
         let cleaned = stripJsonComments(text).trim();
         let parsed;
-        try { parsed = parseJsonRelaxed(cleaned); }
+        try { parsed = resolveEndpointsByName(normalizeAliasList(parseJsonRelaxed(cleaned))); }
         catch (e) { /* not JSON, or beyond repair */ }
         if (!parsed) return null;
 
