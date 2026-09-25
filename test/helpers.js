@@ -140,6 +140,7 @@ function buildEditorMock(opts) {
   const captured = {
     imports: [], removed: [], removedJunctions: [], removedGroups: [],
     linksAdded: [], linksRemoved: [],
+    validated: [],
   };
 
   (opts.configs || []).forEach((c) => { configById[c.id] = clone(c); });
@@ -258,6 +259,8 @@ function buildEditorMock(opts) {
 
   const RED = {
     notify: function () {},
+    // The editor re-validates a node on import and when its dialog closes.
+    editor: { validateNode: function (n) { captured.validated.push(n.id); } },
     nodes: {
       filterNodes: (f) => Object.values(nodesById).filter((n) => !f || n.z === f.z),
       junctions: (z) => Object.values(junctionsById).filter((j) => j.z === z),
@@ -269,7 +272,7 @@ function buildEditorMock(opts) {
       eachNode: (cb) => Object.values(nodesById).forEach(cb),
       eachConfig: (cb) => Object.values(configById).forEach(cb),
       node: (id) => nodesById[id] || configById[id] || null,
-      getType: () => undefined,
+      getType: (t) => (opts.types || {})[t],
       createExportableNodeSet: (set) => (set || []).filter(Boolean).map(exportOne),
       getNodeLinks: (id, portType) =>
         links.filter((l) => (portType === 1 ? l.target.id === id : l.source.id === id)),

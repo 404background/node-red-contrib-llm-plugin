@@ -32,11 +32,11 @@ function flow() {
   };
 }
 
-async function apply(message) {
+async function apply(message, mockOpts) {
   const f = flow();
-  const mock = buildEditorMock({
+  const mock = buildEditorMock(Object.assign({
     tabs: TABS, nodes: f.nodes, junctions: f.junctions, groups: f.groups, activeId: 't1',
-  });
+  }, mockOpts || {}));
   const LLMPlugin = loadPluginSandbox(mock.RED);
   const res = await LLMPlugin.Importer.importFlowFromMessage(message, {
     mode: 'agent', allowedWorkspaceIds: ['t1'],
@@ -76,6 +76,9 @@ async function propertyEditTouchesNothingElse() {
     'import() was never called (' + (importedIds.join(',') || 'nothing') + ')');
   ok(captured.linksAdded.length === 0 && captured.linksRemoved.length === 0,
     'and no wire was disturbed');
+  // Validated as the edit dialog would, or a warning mark set before the
+  // edit stays until the user opens the node.
+  ok(captured.validated.indexOf('fn') !== -1, 'the edited node was re-validated');
   extrasSurvived(captured, 'property edit');
 }
 
@@ -102,6 +105,25 @@ async function addingANodeImportsOnlyThatNode() {
   ok(byId.fn.wires[0].indexOf('dbg') !== -1 && byId.fn.wires[0].indexOf(audit.id) !== -1,
     'the function now feeds both loggers');
   extrasSurvived(captured, 'add');
+}
+
+// A property the reply leaves out takes its type's default, as a node dropped
+// from the palette does. A split with no `property` fails validation and
+// shows the warning mark on the canvas.
+async function aNewNodeTakesItsTypeDefaults() {
+  console.log('\nA new node takes the defaults of its type for what the reply left out');
+  const types = { split: { category: 'sequence', defaults: {
+    name: { value: '' }, splt: { value: '\\n' }, spltType: { value: 'str' },
+    property: { value: 'payload', required: true },
+  } } };
+  const { res, byId } = await apply(fence({
+    nodes: { split_items: { type: 'split', name: 'Split Items', props: { spltType: 'len' } } },
+    connections: [{ from: 'function_shape', to: 'split_items' }],
+  }), { types });
+  const split = Object.values(byId).find((n) => n.type === 'split');
+  ok(res && res.ok && split && split.property === 'payload' && split.splt === '\\n',
+    'the missing properties came from the type (' + JSON.stringify(split && { property: split.property, splt: split.splt }) + ')');
+  ok(split && split.spltType === 'len', 'and what the reply set is kept');
 }
 
 async function deletingANodeRemovesOnlyThatNode() {
@@ -225,6 +247,7 @@ async function renamingKeepsTheColumn() {
 (async () => {
   await propertyEditTouchesNothingElse();
   await addingANodeImportsOnlyThatNode();
+  await aNewNodeTakesItsTypeDefaults();
   await deletingANodeRemovesOnlyThatNode();
   await rewiringOnlyMovesLinks();
   await joiningAGroupIsStillADiff();

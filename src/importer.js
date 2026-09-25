@@ -1330,6 +1330,7 @@
 
         try {
             // Bypass RED.history — rewind via the plugin's checkpoints instead.
+            importNodes.forEach(applyTypeDefaults);
             RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
             try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
             refreshCanvasView([workspaceId]);
@@ -1444,6 +1445,20 @@
         });
     }
 
+    // A property the reply left out gets its type's default, as a node dropped
+    // from the palette does, instead of failing validation (a split with no
+    // `property` shows the warning mark). Done here, not through an import
+    // option, so it does not depend on the editor version.
+    function applyTypeDefaults(n) {
+        let def = (n && n.type && typeof RED.nodes.getType === 'function') ? RED.nodes.getType(n.type) : null;
+        let defaults = def && def.defaults;
+        if (!defaults) return;
+        Object.keys(defaults).forEach(function(k) {
+            if (k === 'inputs' || k === 'outputs' || n[k] !== undefined) return;
+            if (defaults[k] && defaults[k].value !== undefined) n[k] = JSON.parse(JSON.stringify(defaults[k].value));
+        });
+    }
+
     // As the edit dialog does it: a repointed config reference is
     // de-registered against the OLD value first, or `users` drifts.
     function applyPropertyUpdate(liveNode, after, changedKeys) {
@@ -1463,6 +1478,12 @@
         });
         if (tracksConfig) {
             try { RED.nodes.updateConfigNodeUsers(liveNode, { action: 'add' }); } catch (e) { /* ignore */ }
+        }
+        // The editor validates on import and on closing the edit dialog, not
+        // on a property write, so without this the warning mark stays as it
+        // was until the user opens the node.
+        if (RED.editor && typeof RED.editor.validateNode === 'function') {
+            try { RED.editor.validateNode(liveNode); } catch (e) { /* ignore */ }
         }
         liveNode.changed = true;
         liveNode.dirty = true;
@@ -1810,6 +1831,7 @@
             let importSet = added.concat(configImports);
             if (importSet.length > 0) {
                 // Bypass RED.history - rewind via the plugin's checkpoints.
+                importSet.forEach(applyTypeDefaults);
                 RED.nodes.import(importSet, { generateIds: false, reimport: true, addFlow: false });
             }
 

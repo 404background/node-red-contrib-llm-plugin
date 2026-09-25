@@ -151,6 +151,7 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
 - All other keys are restored from the existing node (`preserveUnmentionedProperties`).
 - `MERGE_SKIP_KEYS` (id/type/z/x/y/wires/dirty/…) and `_`-prefixed metadata (§0, the metadata boundary) are excluded (identity, coordinates, editor state, and metadata are not carried over). Group membership (`g`) is deliberately **not** in that list — the group pass writes only the nodes this edit placed in a box (§15), so every other node's membership has to survive the merge (§12, "Where it declines").
 - **Reason**: Even when a normaliser fills in a default value (e.g. debug's `complete`), it must not overwrite a value the user set earlier. Guarantees "settings you didn't touch are preserved."
+- A **new** node takes its type's default for every property the reply left out (`applyTypeDefaults`), as a node dropped from the palette does. Without it a required property with no value (a `split` with no `property`) fails validation and the node shows the warning mark. An edited node is re-validated after the write (`RED.editor.validateNode`), since the editor only validates on import and when its dialog closes.
 
 ### 4.3 Node matching: exact-alias only, no fuzzy
 - When assigning a proposed node to an existing node, decide by **exact alias only** (`exactOnly: true`).
