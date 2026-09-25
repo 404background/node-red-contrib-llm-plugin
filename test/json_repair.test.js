@@ -326,6 +326,10 @@ function scenarioAnAliasListReadsAsTheMap() {
   ok(nodeRemove && JSON.stringify(nodeRemove.remove) === '["debug_b"]',
     'while a remove of aliases stays a node delete');
 
+  const aliasNull = schema(JSON.stringify({ nodes: { debug_extra: { alias: null }, debug_log: { type: 'debug' } } }));
+  ok(aliasNull && aliasNull.nodes.debug_extra === null && aliasNull.nodes.debug_log.type === 'debug',
+    '`"debug_extra": { "alias": null }` reads as a delete of debug_extra');
+
   const raw = [{ id: 'a', type: 'inject', z: 't', wires: [['b']] }, { id: 'b', type: 'debug', z: 't', wires: [] }];
   ok(schema(JSON.stringify(raw)) === null, 'a raw Node-RED array is not mistaken for one');
 }

@@ -390,6 +390,18 @@
             out = Object.assign({}, out);
             out.nodes = toMap(out.nodes);
         }
+        // `"debug_old": { "alias": null }` — the key already is the alias, so
+        // a null alias inside can only mean delete.
+        if (out && out.nodes && typeof out.nodes === 'object' && !Array.isArray(out.nodes)) {
+            Object.keys(out.nodes).forEach(function(k) {
+                let spec = out.nodes[k];
+                if (spec && typeof spec === 'object' && !Array.isArray(spec) &&
+                    Object.prototype.hasOwnProperty.call(spec, 'alias') && spec.alias === null) {
+                    out = (out === parsed) ? Object.assign({}, out, { nodes: Object.assign({}, out.nodes) }) : out;
+                    out.nodes[k] = null;
+                }
+            });
+        }
         // A connection delete written at the top level (`remove: { from, to }`)
         // instead of inside `connections`. A `remove` of alias strings is a
         // node delete and stays where it is.

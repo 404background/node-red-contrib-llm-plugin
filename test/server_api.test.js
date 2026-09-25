@@ -112,12 +112,28 @@ async function scenarioChatDeletedById() {
   ok(missing.status === 400, 'a delete without an id is refused');
 }
 
+// fetch hides ECONNREFUSED on a cause; the user still gets the readable line.
+async function scenarioRefusedConnectionIsNamed() {
+  console.log('\nA server that is not running is reported as such');
+  const net = require('net');
+  const port = await new Promise((resolve) => {
+    const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)); });
+  });
+  const saved = await call(RED.routes.post['/llm-plugin/settings'],
+    { body: { provider: 'ollama', ollamaUrl: 'http://127.0.0.1:' + port } });
+  ok(saved.status === 200, 'the settings are accepted (' + saved.status + ')');
+  const r = await call(RED.routes.post['/llm-plugin/generate'], { body: { model: 'm', prompt: 'hi' } });
+  ok(r.status === 500 && /Could not connect to Ollama/.test(r.body.error),
+    'the error says Ollama could not be reached (' + (r.body && r.body.error) + ')');
+}
+
 (async function run() {
   scenarioServesOnlyClientFiles();
   await scenarioAgentReplyClaimedOnce();
   await scenarioSettingsRejectUnknownProvider();
   await scenarioCheckpointMetaCounts();
   await scenarioChatDeletedById();
+  await scenarioRefusedConnectionIsNamed();
   fs.rmSync(WORK, { recursive: true, force: true });
   summary();
 })();

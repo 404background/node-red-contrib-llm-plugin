@@ -52,6 +52,15 @@ function createLLMPluginServer(RED) {
         return String((e && e.message) ? e.message : e);
     }
 
+    // fetch and the OpenAI SDK put the network code (ECONNREFUSED, ...) on a
+    // `cause`, one or two levels down, not on the error itself.
+    function networkCode(err) {
+        for (let e = err, depth = 0; e && depth < 5; e = e.cause, depth++) {
+            if (e.code) return e.code;
+        }
+        return undefined;
+    }
+
     function clip(text, max) {
         const s = String(text === undefined || text === null ? '' : text);
         return s.length > max ? s.substring(0, max) + '[truncated]' : s;
@@ -362,7 +371,7 @@ function createLLMPluginServer(RED) {
             const providerLabel = provider === 'ollama'
                 ? 'Ollama'
                 : (provider === 'custom' ? 'the custom OpenAI-compatible endpoint' : 'the LLM provider');
-            const code = error && error.code;
+            const code = networkCode(error);
             if (code === 'ECONNREFUSED') {
                 errorMessage = 'Could not connect to ' + providerLabel + '. Please ensure it is running and accessible.';
             } else if (code === 'ECONNRESET') {

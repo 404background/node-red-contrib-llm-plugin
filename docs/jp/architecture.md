@@ -361,7 +361,7 @@ API キーをそのまま引き継げる — 設定と認証情報の置き場�
 | ストレージ解決 | `chatsDir` / `checkpointsDir` / `persistenceEnabled`(`<userDir>/llm-plugin`。書けなければメモリのみ)、`writeFileAtomic` |
 | 設定 + 認証情報 | `getPluginSettings`, `savePluginSettings`、暗号化した認証情報ファイル、旧形式のキーの移行、`maskApiKey`, `redactSecrets` |
 | プロンプト構築 | `buildMessages`(システムプロンプトの読み込みと、現在のフローの Vibe Schema 化)、`buildChatMessages`(フロー文脈を伴わない素のチャット) |
-| LLM アダプタ | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` — 実際の送信先は Ollama のチャット API か、OpenAI 互換のエンドポイント。後者は接続先を指定しなければ OpenAI 本体、指定すれば llama.cpp / LM Studio / vLLM / LocalAI といったローカルサーバになる |
+| LLM アダプタ | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` — 実際の送信先は Ollama のチャット API か、OpenAI 互換のエンドポイント。後者は接続先を指定しなければ OpenAI 本体、指定すれば llama.cpp / LM Studio / vLLM / LocalAI といったローカルサーバになる。どちらも応答を**ストリーミング**で受け取る。ストリーミングしないとエンドポイントは生成が終わるまでヘッダを返さず、Node の `fetch` はタイムアウト設定に関係なく 300 秒でヘッダ待ちを打ち切る(SDK はさらに生成全体を2回送り直していた)。タイムアウトは応答全体にかかる。通信エラーのコードは `cause` 側にあり、generate ルートはそこを読んで「接続できない」と伝える。 |
 
 ### `server.js`
 

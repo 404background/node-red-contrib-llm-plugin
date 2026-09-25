@@ -627,15 +627,17 @@ function createLLMCore(RED) {
         if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
         const endpoint = ollamaUrl.origin + basePath + '/api/chat';
 
+        // Streamed: unstreamed, Ollama sends no headers until the reply is
+        // done, and fetch gives up on headers after 300 s whatever the
+        // timeout says. A stream sends them at once and a line per token.
         const body = JSON.stringify({
             model: model,
             messages: Array.isArray(messages) ? messages : [],
-            stream: false
+            stream: true
         });
 
-        let res;
         try {
-            res = await fetch(endpoint, {
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json; charset=utf-8' },
                 body: body,
@@ -643,6 +645,11 @@ function createLLMCore(RED) {
                 signal: combineSignals(
                     (timeout && timeout > 0) ? AbortSignal.timeout(timeout) : null, callerSignal)
             });
+            if (res.status >= 400) {
+                const responseData = await res.text();
+                throw new Error(`Ollama API error (${res.status}): ${responseData.substring(0, 200)}`);
+            }
+            return await readOllamaStream(res.body);
         } catch (e) {
             if (callerSignal && callerSignal.aborted) throw e;
             // Callers detect a timeout by `err.code === 'ETIMEDOUT'` rather
@@ -655,21 +662,36 @@ function createLLMCore(RED) {
             }
             throw e;
         }
+    }
 
-        const responseData = await res.text();
-        if (res.status >= 400) {
-            throw new Error(`Ollama API error (${res.status}): ${responseData.substring(0, 200)}`);
+    // One JSON object per line; the reply is the `message.content` pieces
+    // joined. An `error` line is Ollama failing mid-generation.
+    async function readOllamaStream(stream) {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let content = '';
+        let sawMessage = false;
+        function take(line) {
+            line = line.trim();
+            if (!line) return;
+            let obj;
+            try { obj = JSON.parse(line); } catch (e) { throw new Error('Invalid response format'); }
+            if (obj && obj.error) throw new Error('Ollama API error: ' + String(obj.error).substring(0, 200));
+            if (obj && obj.message && typeof obj.message.content === 'string') {
+                content += obj.message.content;
+                sawMessage = true;
+            }
         }
-        let response;
-        try {
-            response = JSON.parse(responseData);
-        } catch (parseError) {
-            throw new Error('Invalid response format');
+        for await (const chunk of stream) {
+            buffer += decoder.decode(chunk, { stream: true });
+            let nl;
+            while ((nl = buffer.indexOf('\n')) !== -1) {
+                take(buffer.slice(0, nl));
+                buffer = buffer.slice(nl + 1);
+            }
         }
-        const content = response && response.message && typeof response.message.content === 'string'
-            ? response.message.content
-            : null;
-        if (content === null) throw new Error('No response from model');
+        take(buffer + decoder.decode());
+        if (!sawMessage) throw new Error('No response from model');
         return content;
     }
 
@@ -692,33 +714,49 @@ function createLLMCore(RED) {
         return err;
     }
 
-    function extractContent(completion) {
-        const content = completion && completion.choices && completion.choices[0] &&
-            completion.choices[0].message && completion.choices[0].message.content;
-        if (typeof content !== 'string') {
-            throw new Error('The LLM endpoint returned no message content (unexpected response shape).');
-        }
-        return content;
-    }
-
     // One adapter for OpenAI (`baseURL` null) and OpenAI-compatible
     // endpoints. A blank key becomes a placeholder: the SDK insists on one.
     async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs, signal) {
         const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
         const openai = new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });
-        let completion;
+        // Streamed for the reason the Ollama adapter is: unstreamed, a reply
+        // over 300 s dies waiting for headers, and the SDK retries it whole.
+        const timer = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
+        let content = '';
+        let sawChoice = false;
         try {
-            completion = await openai.chat.completions.create({
+            const stream = await openai.chat.completions.create({
                 messages: Array.isArray(messages) ? messages : [],
                 model: model,
-            }, { timeout: timeoutMs > 0 ? timeoutMs : undefined, signal: signal });
+                stream: true,
+            }, { timeout: timeoutMs > 0 ? timeoutMs : 2147483647, signal: combineSignals(timer, signal) });
+            for await (const part of stream) {
+                const choice = part && part.choices && part.choices[0];
+                if (!choice) continue;
+                sawChoice = true;
+                if (choice.delta && typeof choice.delta.content === 'string') content += choice.delta.content;
+            }
+            // The SDK ends an aborted stream quietly; a cut-off reply must not
+            // pass for a whole one.
+            if ((timer && timer.aborted) || (signal && signal.aborted)) {
+                throw (signal && signal.aborted) ? signal.reason : timer.reason;
+            }
         } catch (e) {
             // Normalize the SDK's timeout error to the same code the Ollama
             // adapter uses, so callers detect timeouts without message parsing.
             if (e && e.name === 'APIConnectionTimeoutError') e.code = 'ETIMEDOUT';
+            if (timer && timer.aborted && !(signal && signal.aborted)) {
+                const timedOut = new Error('Request timed out');
+                timedOut.code = 'ETIMEDOUT';
+                throw timedOut;
+            }
             throw wrapProviderError(e);
         }
-        return extractContent(completion);
+        if (!sawChoice) {
+            throw new Error('The LLM endpoint returned no message content. Verify the Base URL points to an ' +
+                'OpenAI-compatible chat-completions API (e.g. ends in /v1) and that the model name is valid.');
+        }
+        return content;
     }
 
     sharedInstance = {

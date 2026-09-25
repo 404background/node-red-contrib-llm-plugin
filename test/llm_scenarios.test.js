@@ -10,7 +10,8 @@
 //
 // Models: LLM_TEST_MODELS="gemma3:4b,gemma4:e2b" (default: the model in
 // llm-test-config.json). LLM_TEST_ONLY="delete" runs the scenarios whose name
-// contains it. Endpoint: llm-test-config.json / LLM_TEST_URL.
+// contains it. LLM_TEST_RUNS=10 runs each scenario 10 times without retries
+// and reports how often it passed. Endpoint: llm-test-config.json / LLM_TEST_URL.
 // Exit codes: 0 = every scenario passed for every model, 1 = some failed,
 // 2 = skipped (endpoint or model absent).
 
@@ -21,14 +22,17 @@ const { loadPluginSandbox, buildEditorMock, clone } = require('./helpers.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG = (function() {
-  const cfg = { ollamaUrl: 'http://localhost:11434', model: 'gemma3:4b', timeoutMs: 180000, attempts: 2 };
+  const cfg = { ollamaUrl: 'http://localhost:11434', model: 'gemma3:4b', timeoutMs: 1800000, attempts: 2 };
   const file = path.join(__dirname, 'llm-test-config.json');
   if (fs.existsSync(file)) Object.assign(cfg, JSON.parse(fs.readFileSync(file, 'utf8')));
   if (process.env.LLM_TEST_URL) cfg.ollamaUrl = process.env.LLM_TEST_URL;
   cfg.models = (process.env.LLM_TEST_MODELS || process.env.LLM_TEST_MODEL || cfg.model)
     .split(',').map((m) => m.trim()).filter(Boolean);
+  cfg.runs = Math.max(0, parseInt(process.env.LLM_TEST_RUNS, 10) || 0);
   return cfg;
 })();
+
+const TRANSPORT = /^error: .*(fetch failed|ECONN|socket|terminated|timed out|ETIMEDOUT|EAI_AGAIN)/i;
 
 function makeCore() {
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-scenarios-'));
@@ -605,6 +609,55 @@ const SCENARIOS = [
     },
   },
 
+  {
+    name: 'add error handling', mode: 'agent',
+    prompt: 'Add error handling to this tab: catch errors from any node and show them in a new debug node named "errors".',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['f']]),
+      n('f', 'function', 'risky', 320, 100, [['b']], { func: 'return msg;', outputs: 1 }),
+      n('b', 'debug', 'log', 480, 100, []),
+    ] }),
+    check: (f) => {
+      const c = byType(f, 'catch')[0];
+      if (!c) return 'no catch node';
+      if (![...reached(f, c.id)].some((id) => byId(f, id).type === 'debug' && id !== 'b')) return 'catch does not reach a new debug';
+      return kept(f, ['a', 'f', 'b']);
+    },
+  },
+  {
+    name: 'a request that names no node', mode: 'agent',
+    prompt: 'Make it fire every 5 seconds instead.',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const a = byId(f, 'a');
+      if (!a) return 'the inject was replaced';
+      if (String(a.repeat) !== '5') return 'repeat is ' + JSON.stringify(a.repeat);
+      return f.length === 2 ? null : 'nodes were added';
+    },
+  },
+  {
+    name: 'a template node', mode: 'agent',
+    prompt: '`inject_tick` と `debug_log` の間に、msg.payload を「Time is {{payload}}」という文字列に整形する template ノードを入れてください。',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const t = byType(f, 'template')[0];
+      if (!t) return 'no template node';
+      if (!/\{\{\s*payload\s*\}\}/.test(String(t.template))) return 'template is ' + JSON.stringify(t.template);
+      if (!reached(f, 'a').has(t.id) || !reached(f, t.id).has('b')) return 'the template is not in between';
+      return null;
+    },
+  },
+  {
+    name: 'delete everything on the tab', mode: 'agent',
+    prompt: 'このタブのノードをすべて削除してください。',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['f']]),
+      n('f', 'function', 'fmt', 320, 100, [['b']], { func: 'return msg;', outputs: 1 }),
+      n('b', 'debug', 'log', 480, 100, []),
+    ] }),
+    check: (f) => (f.length === 0 ? null : f.length + ' node(s) left'),
+  },
+
   // ---------------------------------------------------------------- //
   //  Mode boundaries                                                   //
   // ---------------------------------------------------------------- //
@@ -700,29 +753,46 @@ async function main() {
   const missing = CONFIG.models.filter((m) => have.indexOf(m) === -1);
   if (missing.length) { console.log('SKIP: not installed: ' + missing.join(', ')); process.exit(2); }
 
-  const table = {};
+  const table = {}, rates = {};
   let failed = 0;
   for (const model of CONFIG.models) {
     console.log('\n=== ' + model + ' ===');
     table[model] = {};
+    rates[model] = { pass: 0, total: 0 };
     for (const sc of SCENARIOS.filter((s) => !process.env.LLM_TEST_ONLY || s.name.indexOf(process.env.LLM_TEST_ONLY) !== -1)) {
-      let result = null, tries = 0;
-      for (tries = 1; tries <= CONFIG.attempts; tries++) {
+      let result = null, tries = 0, passes = 0;
+      const tryLimit = CONFIG.runs || CONFIG.attempts;
+      for (tries = 1; tries <= tryLimit; tries++) {
         const started = Date.now();
-        try {
-          result = await runOnce(core, model, sc);
-        } catch (e) {
-          result = { problem: 'error: ' + (e && e.message ? e.message : e), reply: '' };
+        // A dropped connection or a timeout says nothing about the model:
+        // try again rather than count it.
+        for (let net = 0; ; net++) {
+          try {
+            result = await runOnce(core, model, sc);
+          } catch (e) {
+            result = { problem: 'error: ' + (e && e.message ? e.message : e), reply: '' };
+          }
+          if (!TRANSPORT.test(result.problem || '') || net >= 3) break;
+          console.log('  [' + sc.name + '] transport error, retrying: ' + result.problem);
+          await new Promise((res) => setTimeout(res, 15000));
         }
         const secs = ((Date.now() - started) / 1000).toFixed(1);
         console.log('  [' + sc.name + '] attempt ' + tries + ' (' + secs + 's): ' + (result.problem || 'ok'));
-        if (!result.problem) break;
+        if (result.problem && process.env.LLM_TEST_SHOW_FAILED) {
+          console.log(String(result.reply).split('\n').map((l) => '      | ' + l).join('\n').slice(0, 3000));
+        }
+        if (!result.problem) passes++;
+        if (!result.problem && !CONFIG.runs) break;
       }
-      if (result.problem && process.env.LLM_TEST_SHOW_FAILED) {
-        console.log(String(result.reply).split('\n').map((l) => '      | ' + l).join('\n').slice(0, 3000));
+      if (CONFIG.runs) {
+        table[model][sc.name] = passes + '/' + CONFIG.runs;
+        rates[model].pass += passes;
+        rates[model].total += CONFIG.runs;
+        if (passes < CONFIG.runs) failed++;
+      } else {
+        table[model][sc.name] = result.problem ? 'FAIL' : (tries === 1 ? 'ok' : 'ok (' + tries + ')');
+        if (result.problem) failed++;
       }
-      table[model][sc.name] = result.problem ? 'FAIL' : (tries === 1 ? 'ok' : 'ok (' + tries + ')');
-      if (result.problem) failed++;
     }
   }
 
@@ -732,6 +802,10 @@ async function main() {
   SCENARIOS.filter((sc) => table[CONFIG.models[0]][sc.name]).forEach((sc) => {
     console.log(sc.name.padEnd(width) + '  ' + CONFIG.models.map((m) => table[m][sc.name].padEnd(m.length)).join('  |  '));
   });
+  if (CONFIG.runs) {
+    console.log('pass rate'.padEnd(width) + '  ' + CONFIG.models.map((m) =>
+      (Math.round(1000 * rates[m].pass / rates[m].total) / 10 + '%').padEnd(m.length)).join('  |  '));
+  }
   process.exit(failed ? 1 : 0);
 }
 

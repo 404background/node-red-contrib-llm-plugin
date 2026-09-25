@@ -126,7 +126,7 @@ async function scenarioOllamaRoundTrip() {
     ok(out === 'hello from the model', 'the content is returned (' + out + ')');
     ok(body && body.method === 'POST', 'it was a POST');
     ok(body && body.url === '/api/chat', 'to /api/chat (' + (body && body.url) + ')');
-    ok(body && body.json && body.json.stream === false, 'with streaming off');
+    ok(body && body.json && body.json.stream === true, 'streamed, so fetch never waits 300 s for headers');
     ok(body && body.json && body.json.model === 'llama3.2', 'and the model named');
   } finally { await s.close(); }
 }
@@ -195,6 +195,109 @@ async function scenarioOllamaHonoursABasePath() {
   } finally { await s.close(); }
 }
 
+// Ollama streams one JSON object per line, split across chunks at random.
+async function scenarioOllamaReadsAStream() {
+  console.log('\na streamed Ollama reply is joined, and a mid-stream error surfaces');
+  let fail = false;
+  const s = await serve((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+    const lines = [{ message: { content: 'hel' } }, { message: { content: 'lo 日本' } },
+      fail ? { error: 'model crashed' } : { message: { content: '語' }, done: true }]
+      .map((o) => JSON.stringify(o) + '\n').join('');
+    const bytes = Buffer.from(lines, 'utf8');
+    // Cut inside a line and inside a multi-byte character.
+    const cuts = [5, bytes.indexOf(Buffer.from('本')) + 1, bytes.length - 3];
+    let at = 0;
+    cuts.forEach((c) => { res.write(bytes.slice(at, c)); at = c; });
+    res.end(bytes.slice(at));
+  });
+  try {
+    const core = createLLMCore(fakeRED());
+    const out = await core.generateWithProvider('ollama', { ollamaUrl: 'http://127.0.0.1:' + s.port },
+      'm', [{ role: 'user', content: 'hi' }], {});
+    ok(out === 'hello 日本語', 'the pieces are joined (' + out + ')');
+
+    fail = true;
+    let msg = '';
+    try {
+      await core.generateWithProvider('ollama', { ollamaUrl: 'http://127.0.0.1:' + s.port },
+        'm', [{ role: 'user', content: 'hi' }], {});
+    } catch (e) { msg = e.message || ''; }
+    ok(/model crashed/.test(msg), 'an error line rejects with what Ollama said (' + msg + ')');
+  } finally { await s.close(); }
+}
+
+// The timeout bounds the whole reply, not just the wait for headers.
+async function scenarioOllamaTimeoutMidStream() {
+  console.log('\na generation that times out mid-stream still reports ETIMEDOUT');
+  const s = await serve((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+    res.write(JSON.stringify({ message: { content: 'partial' } }) + '\n');
+    // ...and never finishes.
+  });
+  try {
+    const core = createLLMCore(fakeRED());
+    let err = null;
+    try {
+      await core.generateWithProvider('ollama', { ollamaUrl: 'http://127.0.0.1:' + s.port },
+        'm', [{ role: 'user', content: 'hi' }], { timeoutMs: 300 });
+    } catch (e) { err = e; }
+    ok(err && err.code === 'ETIMEDOUT', 'code ETIMEDOUT (' + (err && (err.code || err.message)) + ')');
+  } finally { await s.close(); }
+}
+
+// OpenAI-compatible endpoints (llama.cpp, LM Studio, vLLM, OpenAI itself)
+// answer a streamed request with server-sent events.
+async function scenarioOpenAICompatibleReadsAStream() {
+  console.log('\nthe OpenAI-compatible adapter streams and joins the reply');
+  let body = null;
+  let mode = 'ok';
+  const s = await serve((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      body = { url: req.url, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
+      if (mode === 'hang') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'partial' } }] }) + '\n\n');
+        return;
+      }
+      if (mode === 'text') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html>not an API</html>');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      ['hel', 'lo 日本', '語'].forEach((c) => {
+        res.write('data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 0, model: 'm',
+          choices: [{ index: 0, delta: { content: c }, finish_reason: null }] }) + '\n\n');
+      });
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  const settings = { customBaseUrl: 'http://127.0.0.1:' + s.port + '/v1' };
+  try {
+    const core = createLLMCore(fakeRED());
+    const out = await core.generateWithProvider('custom', settings, 'm', [{ role: 'user', content: 'hi' }], {});
+    ok(out === 'hello 日本語', 'the deltas are joined (' + out + ')');
+    ok(body && body.url === '/v1/chat/completions' && body.json.stream === true, 'posted streamed to /v1/chat/completions');
+
+    mode = 'hang';
+    let err = null;
+    try {
+      await core.generateWithProvider('custom', settings, 'm', [{ role: 'user', content: 'hi' }], { timeoutMs: 300 });
+    } catch (e) { err = e; }
+    ok(err && err.code === 'ETIMEDOUT', 'a reply that stalls mid-stream times out with ETIMEDOUT (' + (err && (err.code || err.message)) + ')');
+
+    mode = 'text';
+    err = null;
+    try {
+      await core.generateWithProvider('custom', settings, 'm', [{ role: 'user', content: 'hi' }], {});
+    } catch (e) { err = e; }
+    ok(!!err, 'a page that is not an API rejects (' + (err && String(err.message).slice(0, 80)) + ')');
+  } finally { await s.close(); }
+}
+
 async function run() {
   await scenarioAdminApiReadsFlows();
   await scenarioAdminApiKeepsUrlOutOfErrors();
@@ -203,6 +306,9 @@ async function run() {
   await scenarioOllamaSurfacesHttpErrors();
   await scenarioOllamaTimeoutKeepsItsCode();
   await scenarioOllamaHonoursABasePath();
+  await scenarioOllamaReadsAStream();
+  await scenarioOllamaTimeoutMidStream();
+  await scenarioOpenAICompatibleReadsAStream();
   summary();
 }
 
