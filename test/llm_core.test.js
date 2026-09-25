@@ -8,9 +8,10 @@
 //     made every stored API key undecryptable. The plugin now keeps its own
 //     secret and only READS the runtime's to decrypt older blobs.
 //
-// (2) SETTINGS WRITES — `RED.settings.set` is asynchronous. Dropping the
-//     promise means an unhandled rejection in the Node-RED process and a
-//     "saved" setting that was never written.
+// (2) SETTINGS WRITES — a failed write reaches the caller, rather than an
+//     unhandled rejection and a "saved" setting that was never written.
+//
+// Everything the plugin keeps is in one folder, <userDir>/llm-plugin.
 //
 // (3) PACKAGING — the system prompt has no embedded fallback, so it must ship.
 
@@ -32,7 +33,8 @@ const RED = {
   settings: {
     userDir: process.env.DIR,
     get: (k) => store[k],
-    set: (k, v) => { calls.push(k); store[k] = v; return Promise.resolve(); }
+    set: (k, v) => { calls.push(k); store[k] = v; return Promise.resolve(); },
+    delete: (k) => { delete store[k]; return Promise.resolve(); }
   },
   log: { info() {}, warn() {}, error() {} }
 };
@@ -60,11 +62,12 @@ function credentialKeyIsPluginOwned() {
     })();
   `)).store;
 
-  ok(typeof store.llmPluginCredentialSecret === 'string' && store.llmPluginCredentialSecret.length > 0,
-    'the plugin minted and stored a secret of its own');
-  ok(!('_credentialSecret' in store),
-    "the runtime's _credentialSecret was left untouched");
-  ok(!JSON.stringify(store.llmPluginSettings).includes('sk-'),
+  const keyFile = path.join(dir, 'llm-plugin', 'credential.key');
+  ok(fs.existsSync(keyFile) && fs.readFileSync(keyFile, 'utf8').trim().length > 0,
+    'the plugin minted a secret of its own, in its folder');
+  ok(Object.keys(store).length === 0,
+    'and wrote nothing to the runtime settings (' + Object.keys(store).join(',') + ')');
+  ok(!fs.readFileSync(path.join(dir, 'llm-plugin', 'settings.json'), 'utf8').includes('sk-'),
     'the API key is not left in plain settings');
 
   // The user now sets their own credentialSecret, which is when Node-RED
@@ -100,13 +103,12 @@ function legacyBlobsStillOpen() {
 function settingsWritesAreAwaited() {
   console.log('\nSettings writes are awaited, not dropped');
   const dir = tmpUserDir('llmp-async-');
+  // settings.json cannot be written where a directory of that name sits.
+  fs.mkdirSync(path.join(dir, 'llm-plugin', 'settings.json'), { recursive: true });
 
-  // A rejecting store must surface through savePluginSettings, not become an
-  // unhandled rejection.
   const out = execFileSync(process.execPath, ['-e', `
     const RED = {
-      settings: { userDir: process.env.DIR, get: () => undefined,
-                  set: () => Promise.reject(new Error('storage is read-only')) },
+      settings: { userDir: process.env.DIR, get: () => undefined, set: () => Promise.resolve() },
       log: { info() {}, warn() {}, error() {} }
     };
     process.on('unhandledRejection', () => { console.log('UNHANDLED'); process.exit(0); });
@@ -117,8 +119,25 @@ function settingsWritesAreAwaited() {
   `], { env: { ...process.env, DIR: dir }, encoding: 'utf8' }).trim();
 
   ok(out.startsWith('REJECTED:'),
-    'a failed settings write reaches the caller (got: ' + out + ')');
+    'a failed settings write reaches the caller (got: ' + out.slice(0, 60) + ')');
   ok(!out.includes('UNHANDLED'), 'and never becomes an unhandled rejection');
+}
+
+// An older build kept the settings and the key in Node-RED's runtime
+// settings. They move into the folder, and out of the runtime settings.
+function runtimeSettingsMoveIntoTheFolder() {
+  console.log('\nSettings an older build kept in the runtime move into the folder');
+  const dir = tmpUserDir('llmp-move-');
+  const store = { llmPluginSettings: { provider: 'ollama', ollamaUrl: 'http://gpu:11434' },
+                  llmPluginCredentialSecret: 'cafe'.repeat(16) };
+  const out = JSON.parse(session(dir, store, `
+    setTimeout(() => console.log(JSON.stringify({ store, url: core.getPluginSettings().ollamaUrl })), 20);
+  `));
+  ok(out.url === 'http://gpu:11434', 'the settings still read the same');
+  ok(!('llmPluginSettings' in out.store) && !('llmPluginCredentialSecret' in out.store),
+    'and are gone from the runtime settings (' + Object.keys(out.store).join(',') + ')');
+  ok(fs.readFileSync(path.join(dir, 'llm-plugin', 'credential.key'), 'utf8') === 'cafe'.repeat(16),
+    'the key is the one the runtime held, so stored API keys still open');
 }
 
 function onlyTheStorageItUses() {
@@ -129,7 +148,7 @@ function onlyTheStorageItUses() {
   const bare = tmpUserDir('llmp-dirs-');
   session(bare, {}, `(async () => { await core.savePluginSettings({ provider: 'ollama' }); })();`);
   const bareEntries = fs.readdirSync(path.join(bare, 'llm-plugin')).sort();
-  ok(bareEntries.join(',') === 'chats,checkpoints',
+  ok(bareEntries.join(',') === 'chats,checkpoints,settings.json',
     'no API key configured -> no credentials file (got: ' + bareEntries.join(',') + ')');
 
   const keyed = tmpUserDir('llmp-dirs2-');
@@ -137,8 +156,8 @@ function onlyTheStorageItUses() {
     (async () => { await core.savePluginSettings({ provider: 'openai', openaiApiKey: 'sk-x' }); })();
   `);
   const keyedEntries = fs.readdirSync(path.join(keyed, 'llm-plugin')).sort();
-  ok(keyedEntries.join(',') === 'chats,checkpoints,credentials.json',
-    'and nothing beyond credentials.json once one is (got: ' + keyedEntries.join(',') + ')');
+  ok(keyedEntries.join(',') === 'chats,checkpoints,credential.key,credentials.json,settings.json',
+    'a configured key adds the key file and the encrypted one, in the same folder (got: ' + keyedEntries.join(',') + ')');
   ok(!keyedEntries.some((f) => f.includes('client-events')),
     'no client-events log: nothing ever read it, and RED.log already carries those events');
 }
@@ -197,6 +216,22 @@ function apiKeysDoNotEscape() {
     'and no API key is in the prompt');
 }
 
+// With no key set, a request says so in words the chat shows as they are.
+function aMissingKeyIsNamed() {
+  console.log('\nA request with no API key set says so');
+  const dir = tmpUserDir('llmp-nokey-');
+  const out = session(dir, {}, `
+    (async () => {
+      await core.savePluginSettings({ provider: 'openai' });
+      core.generateWithProvider('openai', core.getPluginSettings(), 'gpt-4o', [{ role: 'user', content: 'x' }], {})
+        .then(() => console.log('SENT'))
+        .catch((e) => console.log(core.redactSecrets(e.message)));
+    })();
+  `);
+  ok(/API key is not configured/.test(out) && /LLM Plugin settings/.test(out),
+    'the error names the missing key and where to set it (' + out + ')');
+}
+
 function systemPromptShips() {
   console.log('\nPackaging');
   const prompt = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'prompt_system.txt'), 'utf8');
@@ -251,8 +286,10 @@ function askIsToldToExplainNotBuild() {
 credentialKeyIsPluginOwned();
 legacyBlobsStillOpen();
 settingsWritesAreAwaited();
+runtimeSettingsMoveIntoTheFolder();
 onlyTheStorageItUses();
 apiKeysDoNotEscape();
+aMissingKeyIsNamed();
 systemPromptShips();
 askIsToldToExplainNotBuild();
 summary();

@@ -28,7 +28,6 @@ const COMMON = fs.readFileSync(path.join(ROOT, 'src', 'common.js'), 'utf8');
 // before a third needed it.
 const CLONERS = [
   ['ui_core.js', UI_CORE],
-  ['chat_manager.js', CHAT_MANAGER],
 ];
 const CSS = fs.readFileSync(path.join(ROOT, 'llm-plugin_styles.css'), 'utf8');
 const CLIENT = fs.readFileSync(path.join(ROOT, 'src', 'client.js'), 'utf8');
@@ -114,11 +113,6 @@ function scenarioSelectorsMatchTheMarkup() {
   const cases = [
     ['llm-plugin-message-actions-template', 'retry-btn', 'the retry click handler'],
     ['llm-plugin-flow-actions-template', 'import-btn', 'the import click handler'],
-    ['llm-plugin-checkpoint-modal-template', 'checkpoint-list', 'the restore-point rows'],
-    ['llm-plugin-checkpoint-modal-template', 'close-btn', 'the dialog close handler'],
-    ['llm-plugin-checkpoint-item-template', 'checkpoint-source', 'the source badge'],
-    ['llm-plugin-checkpoint-item-template', 'checkpoint-what', 'the description line'],
-    ['llm-plugin-checkpoint-item-template', 'restore-btn', 'the restore click handler'],
   ];
   cases.forEach(([id, cls, why]) => {
     const inner = templates[id] || '';
@@ -152,22 +146,6 @@ function scenarioMissingTemplateIsLoud() {
     'and there is only the one definition, in common.js');
   ok(/flow actions not rendered/.test(UI_CORE),
     'it logs what failed instead');
-}
-
-// The dialog is only reachable through a header button, and the button is
-// markup while the handler is JS — the same split, one more seam.
-function scenarioRestorePointsButtonIsWired() {
-  console.log('\nThe restore-points button and its handler agree');
-  const shell = templates['llm-plugin-sidebar-template'] || '';
-  ok(/data-action="restore-points"/.test(shell),
-    'the sidebar template has the button');
-  ok(VIBE_UI.indexOf('[data-action="restore-points"]') !== -1,
-    'and vibe_ui.js binds that exact action');
-  ok(/showCheckpointList/.test(VIBE_UI) && /ChatManager\.showCheckpointList = function/.test(CHAT_MANAGER),
-    'to a handler ChatManager actually defines');
-  // fa-history exists in Font Awesome 4.7, which is what the editor bundles;
-  // an FA5-only icon renders as an empty box with no error.
-  ok(/fa-history/.test(shell), 'using an icon that exists in FA 4.7');
 }
 
 // The way out of the sidebar to the documentation. It is one static link, so
@@ -387,7 +365,6 @@ function run() {
   scenarioTemplatesHaveOneRoot();
   scenarioSelectorsMatchTheMarkup();
   scenarioMissingTemplateIsLoud();
-  scenarioRestorePointsButtonIsWired();
   scenarioDocsLinkIsWired();
   scenarioNodeLeansOnThePlugin();
   scenarioNodeHelpStaysShort();

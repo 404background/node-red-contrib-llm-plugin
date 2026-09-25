@@ -37,8 +37,8 @@
      * POST a flow snapshot to the checkpoint endpoint.
      * Resolves to the checkpoint ID on success, or null on any failure.
      */
-    function postCheckpointSave(chatId, label, flow, source, extraMeta) {
-        let meta = Object.assign({ source: source }, extraMeta || {});
+    function postCheckpointSave(chatId, label, flow, source) {
+        let meta = { source: source };
         return Common.apiFetch('llm-plugin/checkpoints/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -90,147 +90,6 @@
         let flow = snapshotCurrentFlow(targetFlowIds);
         if (!flow) return Promise.resolve(null);
         return postCheckpointSave(id, 'pre-import-' + new Date().toISOString(), flow, 'pre-import');
-    };
-
-    // The same snapshot for an edit the Agent NODE is about to apply.
-    // `chatId` stays null deliberately: borrowing the open chat's id would
-    // file the edit under it and delete the checkpoint with that chat.
-    // See docs/{en,jp}/llm-request.md.
-    ChatManager.saveNodeApplyCheckpoint = function(nodeInfo, targetFlowIds) {
-        let flow = snapshotCurrentFlow(targetFlowIds);
-        if (!flow) return Promise.resolve(null);
-        let info = nodeInfo || {};
-        let who = info.name || info.id || 'llm-request';
-        return postCheckpointSave(
-            null,
-            'pre-node-apply-' + who + '-' + new Date().toISOString(),
-            flow,
-            'node-apply',
-            {
-                node: { id: info.id || null, name: info.name || null },
-                targetFlowIds: Array.isArray(targetFlowIds) ? targetFlowIds : []
-            }
-        );
-    };
-
-
-    // ------------------------------------------------------------------ //
-    //  Restore points                                                     //
-    // ------------------------------------------------------------------ //
-    //
-    // A chat checkpoint hangs off its message's Restore button. A node edit
-    // has no message, so the listing is the only way to find its checkpoint.
-
-    let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
-
-    // What this restore point was taken before: the node, or the conversation.
-    // The name only — the badge already says which producer it was, and a
-    // sentence would push the identifying part off the end of the line.
-    function describeCheckpoint(cp) {
-        let meta = (cp && cp.meta) || {};
-        if (meta.source === 'node-apply') {
-            let node = meta.node || {};
-            return node.name || node.id || 'llm-request node';
-        }
-        let chat = (cp && cp.chatId) ? chatHistory[cp.chatId] : null;
-        let title = (chat && typeof chat.title === 'string') ? chat.title.trim() : '';
-        if (title && title !== 'New Chat') return title;
-        return 'Sidebar import';
-    }
-
-    // Flow NAMES, not ids — the ids mean nothing to the person deciding
-    // whether this is the restore point they want. A tab that has since
-    // been deleted falls back to its id rather than disappearing.
-    function describeScope(cp) {
-        let ids = (cp && cp.meta && Array.isArray(cp.meta.targetFlowIds))
-            ? cp.meta.targetFlowIds : [];
-        if (ids.length === 0) return '';
-        try {
-            let names = Common.flowLabels(ids);
-            if (names) return ' · ' + names;
-        } catch (e) { /* fall through to ids */ }
-        return ' · ' + ids.join(', ');
-    }
-
-    function fetchCheckpoints(source) {
-        let url = 'llm-plugin/checkpoints';
-        if (source) url += '?source=' + encodeURIComponent(source);
-        return Common.apiFetch(url)
-            .then(function(res) { return res.json(); })
-            .then(function(data) { return (data && data.checkpoints) || []; });
-    }
-
-    function renderCheckpointList(listEl, source) {
-        while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
-        listEl.appendChild(el('div', 'checkpoint-empty', 'Loading…'));
-
-        return fetchCheckpoints(source).then(function(items) {
-            while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
-            if (items.length === 0) {
-                listEl.appendChild(el('div', 'checkpoint-empty',
-                    'No restore points yet. One is saved automatically before each flow edit.'));
-                return;
-            }
-            items.forEach(function(cp) {
-                let item = Common.cloneTemplate('llm-plugin-checkpoint-item-template');
-
-                let badge = item.querySelector('.checkpoint-source');
-                let src = (cp.meta && cp.meta.source) || null;
-                badge.textContent = SOURCE_LABELS[src] || 'Other';
-                if (src) badge.classList.add('source-' + src);
-
-                item.querySelector('.checkpoint-what').textContent = describeCheckpoint(cp);
-                item.querySelector('.chat-date').textContent =
-                    cp.created ? new Date(cp.created).toLocaleString() : '';
-                item.querySelector('.message-count').textContent =
-                    (cp.nodes || 0) + ' nodes' + describeScope(cp);
-
-                let btn = item.querySelector('.restore-btn');
-                btn.addEventListener('click', function() {
-                    // Same confirmation as the per-message Restore button:
-                    // this replaces the flow, and from here the user may be
-                    // looking at a restore point they didn't create.
-                    if (!confirm('Restore the flow from this restore point? The current flow will be replaced.')) return;
-                    btn.disabled = true;
-                    LLMPlugin.Importer.restoreCheckpoint(cp.id)
-                        .then(function(result) {
-                            if (!result || !result.ok) {
-                                Common.notice((result && result.error) || 'Failed to restore', 'error');
-                            }
-                        })
-                        .catch(function(err) {
-                            Common.notice((err && err.message) || 'Failed to restore', 'error');
-                        })
-                        .finally(function() { btn.disabled = false; });
-                });
-
-                listEl.appendChild(item);
-            });
-        }).catch(function(err) {
-            while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
-            listEl.appendChild(el('div', 'checkpoint-empty',
-                'Could not load restore points: ' + ((err && err.message) || 'request failed')));
-        });
-    }
-
-    ChatManager.showCheckpointList = function() {
-        // Never stack dialogs — the chat list does the same.
-        document.querySelectorAll('.chat-modal').forEach(function(m) { m.remove(); });
-
-        let modal = Common.cloneTemplate('llm-plugin-checkpoint-modal-template');
-        modal.querySelector('.close-btn')
-            .addEventListener('click', function() { modal.remove(); });
-
-        let listEl = modal.querySelector('.checkpoint-list');
-        modal.querySelectorAll('input[name="cp-source"]').forEach(function(radio) {
-            radio.addEventListener('change', function() {
-                if (radio.checked) renderCheckpointList(listEl, radio.value || null);
-            });
-        });
-
-        document.body.appendChild(modal);
-        renderCheckpointList(listEl, null);
-        return modal;
     };
 
     ChatManager.saveChatToServer = function(chatId) {
@@ -302,12 +161,53 @@
 
         let chatList = el('div', 'chat-list');
 
+        // Several at once: tick them, or tick All, then Delete selected.
+        let toolbar = el('div', 'chat-list-toolbar');
+        let allLabel = el('label', 'chat-select-all');
+        let allBox = el('input');
+        allBox.type = 'checkbox';
+        allLabel.appendChild(allBox);
+        allLabel.appendChild(document.createTextNode(' All'));
+        let deleteSelectedBtn = el('button', 'delete-btn', 'Delete selected');
+        toolbar.appendChild(allLabel);
+        toolbar.appendChild(deleteSelectedBtn);
+
+        let boxes = [];
+        function selectedIds() {
+            return boxes.filter(function(b) { return b.checked; }).map(function(b) { return b.value; });
+        }
+        function syncToolbar() {
+            let n = selectedIds().length;
+            allBox.checked = boxes.length > 0 && n === boxes.length;
+            allBox.indeterminate = n > 0 && n < boxes.length;
+            deleteSelectedBtn.disabled = n === 0;
+            deleteSelectedBtn.textContent = n > 0 ? 'Delete selected (' + n + ')' : 'Delete selected';
+        }
+        allBox.addEventListener('change', function() {
+            boxes.forEach(function(b) { b.checked = allBox.checked; });
+            syncToolbar();
+        });
+        deleteSelectedBtn.addEventListener('click', function() {
+            ChatManager.deleteChats(selectedIds(), function(success) {
+                if (!success) return;
+                modal.remove();
+                ChatManager.showChatList();
+            });
+        });
+
         if (chats.length === 0) {
             chatList.appendChild(el('p', null, 'No chat history found.'));
         } else {
             chats.forEach(function(chat) {
                 let chatItem = el('div', 'chat-item');
                 if (chat.id === currentChatId) chatItem.classList.add('current-chat');
+
+                let box = el('input', 'chat-select');
+                box.type = 'checkbox';
+                box.value = chat.id;
+                box.addEventListener('change', syncToolbar);
+                boxes.push(box);
+                chatItem.appendChild(box);
 
                 let chatInfo = el('div', 'chat-info');
                 chatInfo.appendChild(el('div', 'chat-title', chat.title));
@@ -322,9 +222,10 @@
                 });
                 let deleteBtn = el('button', 'delete-btn', 'Delete');
                 deleteBtn.addEventListener('click', function() {
-                    ChatManager.deleteChat(chat.id, function(success) {
+                    ChatManager.deleteChats([chat.id], function(success) {
+                        if (!success) return;
                         modal.remove();
-                        if (success) ChatManager.showChatList();
+                        ChatManager.showChatList();
                     });
                 });
                 chatActions.appendChild(loadBtn);
@@ -337,7 +238,9 @@
         }
 
         modalContent.appendChild(modalHeader);
+        if (chats.length > 0) modalContent.appendChild(toolbar);
         modalContent.appendChild(chatList);
+        syncToolbar();
         modal.appendChild(modalContent);
         document.body.appendChild(modal);
     };
@@ -364,19 +267,25 @@
         }
     };
 
-    ChatManager.deleteChat = function(chatId, callback) {
-        if (!confirm('Delete this chat? This cannot be undone.')) {
-            if (typeof callback === 'function') callback(false);
-            return;
-        }
-        Common.apiFetch('llm-plugin/chats/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chatId: chatId })
-        }).finally(function() {
-            delete chatHistory[chatId];
-            if (currentChatId === chatId) ChatManager.startNewChat();
-            if (typeof callback === 'function') callback(true);
+    // One confirmation for the whole selection.
+    ChatManager.deleteChats = function(chatIds, callback) {
+        let ids = (chatIds || []).filter(function(id) { return !!chatHistory[id]; });
+        let done = function(ok) { if (typeof callback === 'function') callback(ok); };
+        if (ids.length === 0) return done(false);
+        let question = ids.length === 1
+            ? 'Delete this chat? This cannot be undone.'
+            : 'Delete ' + ids.length + ' chats? This cannot be undone.';
+        if (!confirm(question)) return done(false);
+        Promise.all(ids.map(function(id) {
+            return Common.apiFetch('llm-plugin/chats/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chatId: id })
+            }).catch(function() { /* the local copy goes regardless */ });
+        })).then(function() {
+            ids.forEach(function(id) { delete chatHistory[id]; });
+            if (ids.indexOf(currentChatId) !== -1) ChatManager.startNewChat();
+            done(true);
         });
     };
 

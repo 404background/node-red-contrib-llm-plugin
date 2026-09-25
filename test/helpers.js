@@ -11,6 +11,7 @@ const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
+
 // The editor's own load order (see src/client.js). Keeping it identical is
 // deliberate: a load-time dependency that only holds in one order must fail
 // here too, not only in production.
@@ -74,6 +75,7 @@ function loadPluginSandbox(RED, opts) {
     console: { log() {}, warn() {}, error() {} },
     setTimeout,
     requestAnimationFrame: (cb) => cb(),
+    confirm: (opts && opts.confirm) || (() => true),
     fetch: (opts && opts.fetch) ||
       (() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })),
     document: {

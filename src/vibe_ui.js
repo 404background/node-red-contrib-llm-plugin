@@ -31,10 +31,6 @@
         container.querySelector('[data-action="chat-list"]').addEventListener('click', function() {
             LLMPlugin.ChatManager.showChatList();
         });
-        container.querySelector('[data-action="restore-points"]').addEventListener('click', function() {
-            LLMPlugin.ChatManager.showCheckpointList();
-        });
-
         // Settings manager (dialog controller defined in client.js)
         let settingsManager = null;
         if (window.createLLMPluginSettings) {

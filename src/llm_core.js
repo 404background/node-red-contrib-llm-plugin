@@ -78,55 +78,104 @@ function createLLMCore(RED) {
     // ------------------------------------------------------------------ //
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
-    // API keys are encrypted into the plugin's own `credentials.json`;
-    // everything else stays in `RED.settings`.
-
+    // Everything the plugin keeps is in `<userDir>/llm-plugin`, beside the
+    // chats and checkpoints: `settings.json`, the API keys encrypted in
+    // `credentials.json`, and `credential.key` they are encrypted with.
+    // Removing that one folder resets the plugin.
+    // See docs/{en,jp}/architecture.md — Security measures.
     const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
+    const settingsFile = persistenceEnabled ? path.join(baseDir, 'settings.json') : null;
+    const secretFile = persistenceEnabled ? path.join(baseDir, 'credential.key') : null;
     let credsCache = null;
+    let settingsCache = null;
 
-    // `RED.settings.set` returns a Promise and throws synchronously when the
-    // runtime has no settings storage; both failure modes are normalised here.
-    function persistSetting(name, value) {
+    function readRuntimeSetting(name) {
+        try { return RED.settings.get(name); } catch (e) { return undefined; }
+    }
+
+    function dropRuntimeSetting(name) {
         try {
-            const result = RED.settings.set(name, value);
-            return (result && typeof result.then === 'function') ? result : Promise.resolve();
+            if (typeof RED.settings.delete !== 'function') return;
+            const result = RED.settings.delete(name);
+            if (result && typeof result.catch === 'function') result.catch(function() { /* left in place */ });
+        } catch (e) { /* left in place */ }
+    }
+
+    // An older build kept the settings and the key in Node-RED's runtime
+    // settings (`.config.runtime.json`). They move into the folder once, and
+    // leave the runtime settings only once they are written here.
+    (function moveFromRuntimeSettings() {
+        if (!persistenceEnabled) return;
+        try {
+            const settings = readRuntimeSetting('llmPluginSettings');
+            if (settings && typeof settings === 'object') {
+                if (!fs.existsSync(settingsFile)) writeFileAtomic(settingsFile, JSON.stringify(settings, null, 2));
+                dropRuntimeSetting('llmPluginSettings');
+            }
+            const secret = readRuntimeSetting('llmPluginCredentialSecret');
+            if (typeof secret === 'string' && secret) {
+                if (!fs.existsSync(secretFile)) writeFileAtomic(secretFile, secret, 0o600);
+                dropRuntimeSetting('llmPluginCredentialSecret');
+            }
+        } catch (e) {
+            RED.log.warn('[LLM Plugin] Could not move settings into ' + baseDir + ': ' + (e && e.message ? e.message : e));
+        }
+    })();
+
+    // With no writable folder the settings live in memory, starting from
+    // whatever an older build left in the runtime settings.
+    function loadPlainSettings() {
+        if (settingsCache) return settingsCache;
+        settingsCache = {};
+        if (settingsFile) {
+            try {
+                if (fs.existsSync(settingsFile)) settingsCache = JSON.parse(fs.readFileSync(settingsFile, 'utf8')) || {};
+            } catch (e) {
+                RED.log.warn('[LLM Plugin] Failed to read settings file: ' + (e && e.message ? e.message : e));
+            }
+        } else {
+            const legacy = readRuntimeSetting('llmPluginSettings');
+            if (legacy && typeof legacy === 'object') settingsCache = Object.assign({}, legacy);
+        }
+        return settingsCache;
+    }
+
+    function persistPlainSettings(value) {
+        const next = Object.assign({}, value);
+        try {
+            if (settingsFile) writeFileAtomic(settingsFile, JSON.stringify(next, null, 2));
         } catch (e) {
             return Promise.reject(e);
         }
-    }
-
-    function readSetting(name) {
-        try {
-            const s = RED.settings.get(name);
-            return (typeof s === 'string' && s.length > 0) ? s : null;
-        } catch (e) {
-            return null;
-        }
+        settingsCache = next;
+        return Promise.resolve();
     }
 
     // The plugin keeps its OWN secret rather than deriving from Node-RED's.
-    // See docs/{en,jp}/architecture.md — Security measures.
-    const SECRET_SETTING = 'llmPluginCredentialSecret';
-    // Read-only, and only to decrypt blobs an older build wrote.
+    // Node-RED's are read only to decrypt blobs an older build wrote.
     const LEGACY_SECRET_SETTINGS = ['credentialSecret', '_credentialSecret'];
 
     let credentialSecret = null;
 
     function resolveCredentialSecret() {
         if (credentialSecret) return credentialSecret;
-
-        credentialSecret = readSetting(SECRET_SETTING);
+        try {
+            if (secretFile && fs.existsSync(secretFile)) credentialSecret = fs.readFileSync(secretFile, 'utf8').trim() || null;
+        } catch (e) { /* minted below */ }
         if (credentialSecret) return credentialSecret;
 
-        // Nothing stored yet: mint one and persist it. The generated value is
-        // used for this session either way, so a failed write costs the keys
-        // only on restart — and says so.
+        // Nothing stored yet: mint one. It is used for this session either
+        // way, so a failed write costs the keys only on restart — and says so.
         credentialSecret = crypto.randomBytes(32).toString('hex');
-        persistSetting(SECRET_SETTING, credentialSecret).catch(function(e) {
-            RED.log.warn('[LLM Plugin] Could not persist the credential key (' +
-                (e && e.message ? e.message : e) + '). Stored API keys will not ' +
-                'survive a restart.');
-        });
+        if (secretFile) {
+            try {
+                writeFileAtomic(secretFile, credentialSecret, 0o600);
+            } catch (e) {
+                RED.log.warn('[LLM Plugin] Could not persist the credential key (' +
+                    (e && e.message ? e.message : e) + '). Stored API keys will not ' +
+                    'survive a restart.');
+            }
+        }
         return credentialSecret;
     }
 
@@ -143,8 +192,8 @@ function createLLMCore(RED) {
     function decryptionKeys() {
         const keys = [encryptionKey()];
         LEGACY_SECRET_SETTINGS.forEach(function(name) {
-            const s = readSetting(name);
-            if (s) keys.push(keyFrom(s));
+            const s = readRuntimeSetting(name);
+            if (typeof s === 'string' && s) keys.push(keyFrom(s));
         });
         return keys;
     }
@@ -226,7 +275,7 @@ function createLLMCore(RED) {
     // Merge secrets back in for runtime use; the client GET handler will
     // mask the API key separately before responding.
     function getPluginSettings() {
-        let s = Object.assign({}, RED.settings.get('llmPluginSettings') || {});
+        let s = Object.assign({}, loadPlainSettings());
         let creds = loadCreds();
         if (creds.openaiApiKey) s.openaiApiKey = creds.openaiApiKey;
         if (creds.customApiKey) s.customApiKey = creds.customApiKey;
@@ -245,13 +294,13 @@ function createLLMCore(RED) {
             setCredField('customApiKey', plain.customApiKey);
             delete plain.customApiKey;
         }
-        return persistSetting('llmPluginSettings', plain);
+        return persistPlainSettings(plain);
     }
 
     // One-time migration out of the old plaintext store and the earlier
     // broken `addCredentials` attempt.
     (function migrateLegacyApiKey() {
-        let raw = RED.settings.get('llmPluginSettings') || {};
+        let raw = Object.assign({}, loadPlainSettings());
         let creds = loadCreds();
         let migrated = false;
         let plaintextCleared = false;
@@ -283,7 +332,7 @@ function createLLMCore(RED) {
         }
 
         if (plaintextCleared) {
-            persistSetting('llmPluginSettings', raw).catch(function(e) {
+            persistPlainSettings(raw).catch(function(e) {
                 RED.log.warn('[LLM Plugin] Could not clear the plaintext API key from settings: ' +
                     (e && e.message ? e.message : e));
             });

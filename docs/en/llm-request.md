@@ -45,16 +45,11 @@ it would need is the plugin's already.
 - An **editor must be open** with the plugin loaded; headless runs have no canvas.
   With several open, the reply reaches all of them but only the first to claim
   it applies it (write permission required), so it is never applied twice.
-- **No chat history** for anything driven through an `llm-request` node (unlike
-  the sidebar), but the edit is still undoable: the editor saves a checkpoint of
-  the target flows immediately before applying, tagged `node-apply`, and the
-  sidebar's **Restore Points** dialog is where to find it — a node checkpoint has
-  no chat message to hang a Restore button off. If the checkpoint cannot be
-  saved the edit still applies and a line in the chat panel says so. Review on the canvas
-  before Deploy; the editor's undo works too.
+- **No chat history and no checkpoint** for anything driven through an
+  `llm-request` node (unlike the sidebar). Review the edit on the canvas before
+  Deploy.
 - **Applies are not queued.** A reply is applied when it arrives, onto the
-  canvas as it stands then — see [design.md §13](./design.md). Its checkpoint
-  is what undoes it.
+  canvas as it stands then — see [design.md §13](./design.md).
 - **Auto deploy skips validation.** The editor half invokes
   `core:deploy-flows` with the deploy action's `skipValidation` flag, which is
   the path behind the confirm dialog's own Confirm button. Without it a single

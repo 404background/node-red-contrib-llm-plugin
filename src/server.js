@@ -41,12 +41,8 @@ function createLLMPluginServer(RED) {
     const MAX_EVENT_FIELD_CHARS = 4096;
     // Checkpoints are pruned oldest-first past this count.
     const MAX_CHECKPOINT_FILES = 200;
-    // Node-driven checkpoints get their own, smaller budget. They
-    // accumulate unattended (a timer-driven Agent node), so they are the
-    // ones that must not grow into the chat checkpoints' space.
-    const MAX_NODE_CHECKPOINT_FILES = 50;
-    // One definition of what a checkpoint file is named, shared by the
-    // pruner and the listing so they can never disagree about it.
+    // One definition of what a checkpoint file is named, shared by every
+    // reader of the directory.
     const CHECKPOINT_FILE_RE = /^cp_(\d+)_[a-z0-9]+\.json$/i;
     // The id alone, as a route receives it. Nothing else can reach a path.
     const CHECKPOINT_ID_RE = /^cp_\d+_[a-z0-9]+$/;
@@ -243,56 +239,28 @@ function createLLMPluginServer(RED) {
         }
         if (!fs.existsSync(checkpointsDir)) return;
         fs.readdirSync(checkpointsDir).filter(file => CHECKPOINT_FILE_RE.test(file)).forEach(file => {
-            const head = readCheckpointHeader(file);
-            if (!head || head.chatId !== chatId) return;
+            if (readCheckpointChatId(file) !== chatId) return;
             try { fs.unlinkSync(path.join(checkpointsDir, file)); }
             catch (e) { RED.log.warn('[LLM Plugin] Failed to remove checkpoint ' + file + ': ' + errText(e)); }
         });
     }
 
-    // Prune oldest-first: an automated Agent loop must not grow the
-    // directory without bound. The `flow` is the bulk of a file, so the
-    // listing reads only enough to classify it.
-    function checkpointHeader(cp) {
-        return {
-            id: cp.id, chatId: cp.chatId || null, label: cp.label,
-            created: cp.created, meta: cp.meta || {},
-            nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
-        };
-    }
-
-    function readCheckpointHeader(file) {
+    function readCheckpointChatId(file) {
         try {
-            return checkpointHeader(JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8')));
+            return JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8')).chatId || null;
         } catch (e) { return null; }
     }
 
-    // Oldest-first, but per SOURCE rather than across the whole directory, so
-    // a busy node can only crowd out itself. See docs/{en,jp}/design.md §9.
+    // Prune oldest-first, so repeated applies cannot grow the directory
+    // without bound.
     function pruneCheckpoints() {
         try {
-            const buckets = {};
-            fs.readdirSync(checkpointsDir)
+            const files = fs.readdirSync(checkpointsDir)
                 .map((name) => CHECKPOINT_FILE_RE.exec(name))
                 .filter(Boolean)
-                .map((m) => ({ file: m[0], ts: parseInt(m[1], 10) }))
-                .sort((a, b) => a.ts - b.ts)
-                .forEach((e) => {
-                    // Classified by source, falling back to "chat": an
-                    // unreadable or older checkpoint gets the protected
-                    // budget rather than the disposable one.
-                    const head = readCheckpointHeader(e.file);
-                    const src = (head && head.meta && head.meta.source === 'node-apply')
-                        ? 'node' : 'chat';
-                    (buckets[src] = buckets[src] || []).push(e);
-                });
-            Object.keys(buckets).forEach((src) => {
-                const list = buckets[src];
-                const cap = (src === 'node') ? MAX_NODE_CHECKPOINT_FILES : MAX_CHECKPOINT_FILES;
-                if (list.length <= cap) return;
-                list.slice(0, list.length - cap).forEach((e) => {
-                    try { fs.unlinkSync(path.join(checkpointsDir, e.file)); } catch (err) { /* best effort */ }
-                });
+                .sort((a, b) => parseInt(a[1], 10) - parseInt(b[1], 10));
+            files.slice(0, Math.max(0, files.length - MAX_CHECKPOINT_FILES)).forEach((m) => {
+                try { fs.unlinkSync(path.join(checkpointsDir, m[0])); } catch (err) { /* best effort */ }
             });
         } catch (e) { /* pruning must never block a save */ }
     }
@@ -499,8 +467,7 @@ function createLLMPluginServer(RED) {
             } else {
                 newSettings.maxPromptLength = existing.maxPromptLength || 10000;
             }
-            // Awaited: RED.settings.set is asynchronous, so answering 200
-            // before it resolves reports a save the user may not actually have.
+            // Awaited, so a failed write is reported rather than answered 200.
             await savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
@@ -564,34 +531,6 @@ function createLLMPluginServer(RED) {
             return res.json({ checkpointId: cp.id, created: cp.created, label: cp.label });
         } catch (error) {
             return fail(res, error, 'Failed to save checkpoint');
-        }
-    });
-
-    // Checkpoint headers (no flow bodies), newest first; `?source=node-apply`
-    // narrows to node checkpoints. See docs/{en,jp}/design.md §9.
-    RED.httpAdmin.get('/llm-plugin/checkpoints', guard(PERM_READ), function(req, res) {
-        try {
-            const wanted = req.query && req.query.source ? String(req.query.source) : null;
-            let heads;
-            if (!persistenceEnabled) {
-                heads = Object.keys(memCheckpoints).map(function(k) {
-                    return checkpointHeader(memCheckpoints[k]);
-                });
-            } else {
-                heads = fs.readdirSync(checkpointsDir)
-                    .filter(function(name) { return CHECKPOINT_FILE_RE.test(name); })
-                    .map(readCheckpointHeader)
-                    .filter(Boolean);
-            }
-            if (wanted) {
-                heads = heads.filter(function(h) { return h.meta && h.meta.source === wanted; });
-            }
-            heads.sort(function(a, b) {
-                return String(b.created || "").localeCompare(String(a.created || ""));
-            });
-            return res.json({ checkpoints: heads });
-        } catch (error) {
-            return fail(res, error, 'Failed to list checkpoints');
         }
     });
 

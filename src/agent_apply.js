@@ -20,42 +20,30 @@
         if (ids.length === 1 && RED.workspaces && typeof RED.workspaces.show === 'function') {
             try { RED.workspaces.show(ids[0]); } catch (e) { /* tab may be gone */ }
         }
-        // Undo for a node-driven edit. A failed save is reported, not fatal.
-        let cpPromise = (P.ChatManager && typeof P.ChatManager.saveNodeApplyCheckpoint === 'function')
-            ? P.ChatManager.saveNodeApplyCheckpoint(
-                { id: payload.nodeId, name: payload.nodeName }, ids)
-            : Promise.resolve(null);
-
-        cpPromise.then(function(checkpointId) {
-            return P.Importer.importFlowFromMessage(payload.response, {
-                mode: 'agent',
-                // The flows sent to the model are the only ones it may
-                // write to. Empty = no context was sent.
-                allowedWorkspaceIds: ids
-            })
-            .then(function(result) {
-                if (result && result.ok) {
-                    let applied = 'llm-request node applied changes to ' + flowNames(ids);
-                    if (!checkpointId) {
-                        notice(applied + ', but no restore point could be saved.', 'warning');
+        P.Importer.importFlowFromMessage(payload.response, {
+            mode: 'agent',
+            // The flows sent to the model are the only ones it may write to.
+            // Empty = no context was sent.
+            allowedWorkspaceIds: ids
+        }).then(function(result) {
+            if (result && result.ok) {
+                let applied = 'llm-request node applied changes to ' + flowNames(ids);
+                if (!payload.autoDeploy) return;
+                if (RED.actions && typeof RED.actions.invoke === 'function') {
+                    // The editor's own Deploy, async; `true` is
+                    // save()'s skipValidation flag, so an unattended
+                    // loop cannot stall on a confirm dialog.
+                    try {
+                        RED.actions.invoke('core:deploy-flows', true);
+                    } catch (e) {
+                        notice(applied + ', but auto deploy failed to start: ' + (e && e.message ? e.message : e), 'warning');
                     }
-                    if (!payload.autoDeploy) return;
-                    if (RED.actions && typeof RED.actions.invoke === 'function') {
-                        // The editor's own Deploy, async; `true` is
-                        // save()'s skipValidation flag, so an unattended
-                        // loop cannot stall on a confirm dialog.
-                        try {
-                            RED.actions.invoke('core:deploy-flows', true);
-                        } catch (e) {
-                            notice(applied + ', but auto deploy failed to start: ' + (e && e.message ? e.message : e), 'warning');
-                        }
-                    } else {
-                        notice(applied + ', but this editor does not support auto deploy — deploy manually.', 'warning');
-                    }
-                } else if (result && result.error) {
-                    notice('llm-request node: ' + result.error, 'warning');
+                } else {
+                    notice(applied + ', but this editor does not support auto deploy — deploy manually.', 'warning');
                 }
-            });
+            } else if (result && result.error) {
+                notice('llm-request node: ' + result.error, 'warning');
+            }
         }).catch(function(e) {
             notice('llm-request node import error: ' + (e && e.message ? e.message : e), 'error');
         });

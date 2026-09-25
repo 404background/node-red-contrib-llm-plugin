@@ -96,7 +96,6 @@ everything above. All modules use the IIFE pattern and communicate via
 | POST | `/llm-plugin/chats/delete` | write | Delete a chat, and its checkpoints, by chat id |
 | POST | `/llm-plugin/checkpoints/save` | write | Save flow snapshot |
 | POST | `/llm-plugin/agent-apply/claim` | write | Claim an Agent-node reply; only the first editor to claim it applies it |
-| GET | `/llm-plugin/checkpoints` | read | List restore points (the Agent node's have no message to find them by) |
 | GET | `/llm-plugin/checkpoints/:id` | read | Load saved checkpoint |
 | POST | `/llm-plugin/client-log` | write | Report a client-side failure into the Node-RED log |
 | GET | `/llm-plugin/vendor/marked.js` | **none** | Serve the bundled marked.js (offline Markdown rendering) |
@@ -187,7 +186,7 @@ Chat session lifecycle.
 | `saveChatToServer(chatId)` | `POST /chats/save`. |
 | `loadChatHistoriesFromServer()` | `GET /chats`. Auto-loads the most recent if none open. |
 | `loadChat(chatId)` | Replay messages into the chat area. |
-| `showChatList()` / `deleteChat(chatId, cb)` | Chat-list modal. |
+| `showChatList()` / `deleteChats(chatIds, cb)` | Chat-list modal. Chats are ticked one by one or all at once and deleted together, behind one confirmation. |
 | `saveImportCheckpoint(chatId?, flowIds?)` | Snapshot the flow immediately before an import; ID attached to the message so the per-message Restore button rewinds to that point. Called by the UI at import-button click time — not on every chat send. The snapshot opts into `includeCanvasExtras` so junctions/groups are recorded (see [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group)). |
 | `updateMessageMeta(messageId, patch)` | Patch stored message metadata. |
 
@@ -323,8 +322,8 @@ Full import workflow with these guarantees:
 **`restoreCheckpoint(checkpointId)`** — Load a saved checkpoint and
 replace the workspace flow (with a deferred SVG redraw to avoid the
 "wires-only" render race). Every caller
-goes through here — the per-message Restore button, the restore-point list,
-and Retry, which restores before re-asking.
+goes through here — the per-message Restore button, and Retry, which
+restores before re-asking.
 
 ### `ui_core.js`
 
@@ -470,7 +469,12 @@ No chat history is sent — each request is stateless to the LLM.
   `<userDir>/llm-plugin/credentials.json` using AES-256-GCM, in a
   plugin-owned file so `cleanCredentials` can't strip them on deploy.
   The key comes from the plugin's **own** secret
-  (`llmPluginCredentialSecret`, generated on first use). It is deliberately
+  (`<userDir>/llm-plugin/credential.key`, generated on first use). It sits
+  in the same folder on purpose: everything the plugin keeps is in that one
+  folder, so removing it resets the plugin. The encryption keeps the keys
+  out of anything that copies `credentials.json` alone; whoever can read
+  the whole folder can read the keys, as with Node-RED's own
+  `flows_cred.json`. It is deliberately
   NOT derived from Node-RED's `_credentialSecret`: that setting belongs to
   the runtime, which generates it *and deletes it* the moment the user sets
   their own `credentialSecret` in `settings.js` — so deriving from it made
@@ -510,7 +514,7 @@ No chat history is sent — each request is stateless to the LLM.
   so no pattern covers it, and an endpoint that echoes the Authorization
   header into its error body would otherwise put it in the Node-RED log.
   The patterns remain as a net for keys that were never stored here.
-- `credentials.json` is written atomically with the file created `0600` —
+- `credentials.json` and `credential.key` are written atomically with the file created `0600` —
   a mode passed to a plain write is ignored once the target exists, and a
   crash mid-write would otherwise truncate the blob and lose every key.
 - A key too short to mask by its ends gets a FIXED-width placeholder, so the
@@ -560,22 +564,22 @@ shared `helpers.js` sandbox, and how to configure the live round-trip
   `LLMJsonParser`, `ChatManager`, `UI`, `Importer`).
 - **Chat / checkpoint storage**: server-side, resolved by `llm_core.js`.
   There is exactly one location — `<userDir>/llm-plugin` — and memory-only
-  if that is not writable (logged once; nothing survives a restart, API keys
-  included).
+  if that is not writable (logged once; nothing survives a restart, API
+  keys and settings included).
 
   Two places it deliberately does **not** fall back to. The OS temp dir used
-  to be second in line, which is where the encrypted `credentials.json`
-  landed on any host with a read-only userDir: world-readable on some
-  systems, cleared on no schedule the plugin controls, and left behind after
-  an uninstall. The plugin's own install directory is not a candidate either
+  to be second in line: world-readable on some systems, cleared on no
+  schedule the plugin controls, and left behind after an uninstall. The plugin's own install directory is not a candidate either
   — npm replaces that whole tree on a version upgrade, so it would lose the
   history on precisely the event that has to preserve it.
 
   What userDir buys is the intended lifecycle: **a plugin update keeps the
-  chat history; removing `<userDir>/llm-plugin` resets it.** It is also
-  where the rest of the plugin's state already is — the non-secret settings
-  and the credential secret both go through `RED.settings`, i.e.
-  `<userDir>/.config.runtime.json`.
+  chat history, settings and API keys; removing `<userDir>/llm-plugin`
+  resets them.** Everything the plugin keeps is in that folder:
+  `chats/`, `checkpoints/`, `settings.json`, `credentials.json` and
+  `credential.key`. An older build kept the settings and the key in the
+  runtime settings (`<userDir>/.config.runtime.json`); they are moved into
+  the folder on first boot and removed from there.
 - **`prompt_system.txt` and `prompt_ask.txt`** are read from the plugin install dir at module
   load. There is no embedded fallback: the file ships in the package and
   sits beside the module that reads it, so a failure is a packaging bug,
@@ -583,8 +587,7 @@ shared `helpers.js` sandbox, and how to configure the live round-trip
   dropping the alias / `flow` / `above` / `reposition` rules the importer
   depends on. Presence is asserted by `npm test`.
 - **Settings storage**: non-secret fields live in
-  `RED.settings.get/set('llmPluginSettings')` (Node-RED's internal
-  config, not in exported flows). API keys (OpenAI and Custom-endpoint)
+  `<userDir>/llm-plugin/settings.json` (not in exported flows). API keys (OpenAI and Custom-endpoint)
   are split off into the encrypted credentials store — see Security
   measures above. The Custom endpoint's API key may be left blank for
   servers that don't require authentication.
@@ -593,9 +596,7 @@ shared `helpers.js` sandbox, and how to configure the live round-trip
   sidebar loading against endpoints that all 404, with nothing in the log.
 - **Node-RED API shapes that have already caused bugs here:**
   `RED.log.info/warn/error` take ONE message — unlike `console.error(a, b, c)`,
-  extra arguments are dropped. `RED.settings.set` returns a Promise and throws
-  synchronously when the runtime has no settings store, so it must be both
-  awaited and try/caught. `_credentialSecret` is owned by the runtime, which
+  extra arguments are dropped. `_credentialSecret` is owned by the runtime, which
   deletes it when the user sets `credentialSecret` — never derive from it or
   write to it.
 - **Adding a new endpoint**: add to `server.js`, restart Node-RED.

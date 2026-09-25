@@ -63,13 +63,12 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 
 - **Two modes, two questions**: **Ask** is read-only — it is given your flow and asked to explain and diagnose it, so "why does this not fire?" comes back as "`inject_tick`'s `repeat` is empty" rather than as a flow to import. **Agent** is the one that builds, and applies what it builds.
 - **Node names are links**: in either mode, a node the reply mentions is clickable — it switches to that tab and reveals the node on the canvas (config nodes open their edit dialog).
-- **Chat history**: conversations are persisted on the server and can be loaded, deleted, or continued across sessions.
-- **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state. It sits above the prompt it undoes, and **Apply Again** sits on the reply's schema block, so you can switch between the flow you had and the one the model proposed. The **Restore Points** dialog lists them all, including the ones an `llm-request` node took, which have no chat message to hang a button off.
+- **Chat history**: conversations are persisted on the server and can be loaded, deleted (several at once, or all), or continued across sessions.
+- **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state. It sits above the prompt it undoes, and **Apply Again** sits on the reply's schema block, so you can switch between the flow you had and the one the model proposed.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
 - **Forgiving import**: the flow in a reply is found whether it is fenced or not and whatever prose surrounds it.
 - **Edits are merges**: what the reply lists is added or updated, what it maps to `null` is deleted, and the rest of your flow is left alone — so a partial answer never rewrites the whole tab.
-- **Sequences as groups**: ask for several flows in one tab and you get several independent sequences, each wrapped in its own Node-RED group (`flow` in the schema always means the tab). Say "group" and you get a group.
-- **Every apply can be undone**: each edit saves a restore point just before it lands, and replies are applied as they arrive.
+- **Several sequences**: ask for several flows in one tab and you get several independent sequences (`flow` in the schema always means the tab). Group boxes stay yours: a new node wired into a boxed sequence joins that box.
 
 ## `llm-request` node
 
@@ -81,9 +80,8 @@ The package also registers an `llm-request` node (palette category
 
 Provider, model and target flows are set on the `llm-request` node; API keys and
 URLs come from the sidebar Settings. Agent mode needs an open editor. A node's
-edit is not saved to chat history, but a checkpoint of the target flows is taken
-immediately before it and is listed in the sidebar's **Restore Points** dialog,
-so it can be rolled back.
+edit is not saved to chat history or a checkpoint; review it on the canvas before
+Deploy.
 
 Two examples ship with the package — import them via **Menu → Import →
 Examples**: `llm-nodes` (Ask and Agent side by side, deployed manually) and
@@ -129,9 +127,9 @@ So whoever controls the model's output controls the Node-RED host. Point Agent m
 
 ### Credentials and shared instances
 
-API keys are stored encrypted in `<userDir>/llm-plugin/credentials.json`, masked in the UI and redacted from logs, and a stored key is never carried over to a new endpoint behind your back. With `adminAuth` enabled the plugin's endpoints require an authenticated editor session — but Agent-mode results are broadcast to **every** open editor session, so on a shared instance one user's Agent node edits everyone's canvas.
+Everything the plugin keeps — settings, chat history, and API keys (encrypted) — is in one folder, `<userDir>/llm-plugin`; removing it resets the plugin. API keys are masked in the UI and redacted from logs, and a stored key is never carried over to a new endpoint behind your back. With `adminAuth` enabled the plugin's endpoints require an authenticated editor session — but Agent-mode results are broadcast to **every** open editor session, so on a shared instance one user's Agent node edits everyone's canvas.
 
-When sharing your Node-RED user directory (Git, backups, environment exports), keep `credentials.json`, `flows_cred.json`, `.config.*.json` and `settings.js` out of the share.
+When sharing your Node-RED user directory (Git, backups, environment exports), keep `llm-plugin/`, `flows_cred.json`, `.config.*.json` and `settings.js` out of the share.
 
 Every measure and the reasoning behind it:
 [architecture → Security measures](docs/en/architecture.md#security-measures)
