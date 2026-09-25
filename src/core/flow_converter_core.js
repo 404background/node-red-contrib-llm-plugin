@@ -744,8 +744,13 @@
         }
 
         // Default to msg.payload: the full msg object is noisy. An explicit
-        // `complete` is left alone, and an existing node keeps its setting.
+        // `complete` is left alone, and an existing node keeps its setting —
+        // except `"msg"` / `true`, which mean the whole message (`"true"`).
         function normalizeDebugNode(node) {
+            if (node.complete === 'msg' || node.complete === true) {
+                node.complete = 'true';
+                node.targetType = 'full';
+            }
             if (node.complete === undefined) {
                 node.complete = 'payload';
                 node.targetType = 'msg';

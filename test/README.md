@@ -65,7 +65,7 @@ Model output is not deterministic, so its assertions are structural rather than
 exact: a schema must be extractable, and the flow it yields must be one
 `RED.nodes.import` would accept.
 
-`llm_scenarios.test.js` goes one step further: realistic requests — build a flow, insert a node, change a property, delete a node or a single connection (also through a junction), add a comment, build several sequences, route with a switch, edit a node on another flow, and two Ask questions — are sent to the model, applied to a mocked editor through the real importer, and the canvas is checked for the outcome the user asked for, plus two invariants (every wire lands on a node, nothing overlaps). Each scenario gets `attempts` tries. `LLM_TEST_MODELS=gemma3:4b,gemma4:e2b` runs it against several models and prints a table; `LLM_TEST_SHOW_FAILED=1` prints the replies that failed. `LLM_TEST_ONLY=delete` runs only the scenarios whose name contains it.
+`llm_scenarios.test.js` goes one step further: realistic requests — building, inserting, editing properties (inject, function, change with JSONata, debug), renaming, disabling, deleting nodes and single connections (also through a junction or link nodes), comments, layout, group boxes, config nodes (reuse, never invent), several sequences, switches and multi-output functions, other flows, a request for a node that does not exist, and questions in both modes — are sent to the model, applied to a mocked editor through the real importer, and the canvas is checked for the outcome the user asked for, plus two invariants (every wire lands on a node, nothing overlaps). Each scenario gets `attempts` tries. `LLM_TEST_MODELS=gemma3:4b,gemma4:e2b` runs it against several models and prints a table; `LLM_TEST_SHOW_FAILED=1` prints the replies that failed. `LLM_TEST_ONLY=delete` runs only the scenarios whose name contains it.
 
 Endpoint and model come from `llm-test-config.json`, next to the suites it
 configures. That file is git-ignored, so copy the template to create it:
@@ -176,7 +176,7 @@ Vibe Schema 抽出、インポート可能なフローへの変換 — をその
 すなわち「スキーマが抽出できること」と「そこから得られるフローが
 `RED.nodes.import` の受け付ける形であること」。
 
-`llm_scenarios.test.js` はさらに一歩進める。現実的な依頼(フローの新規作成、ノードの挿入、プロパティの変更、ノードや接続1本の削除(junction 経由も)、コメントの追加、複数シーケンスの作成、switch での振り分け、別フローのノードの編集、Ask の質問2つ)をモデルに送り、実際のインポート処理でモックのエディタに適用し、依頼どおりの結果になったかをキャンバスで確かめる。あわせて2つの不変条件(すべてのワイヤが実在するノードに届くこと、何も重ならないこと)も確かめる。各シナリオは `attempts` 回まで試す。`LLM_TEST_MODELS=gemma3:4b,gemma4:e2b` で複数のモデルを続けて試し、結果を表で出す。`LLM_TEST_SHOW_FAILED=1` で失敗した応答を表示する。`LLM_TEST_ONLY=delete` で名前にその文字列を含むシナリオだけを実行する。
+`llm_scenarios.test.js` はさらに一歩進める。現実的な依頼(新規作成、挿入、プロパティの変更(inject、function、JSONata の change、debug)、名前の変更、無効化、ノードや接続1本の削除(junction や link ノード経由も)、コメント、整列、グループ枠、設定ノード(再利用し、作り出さない)、複数シーケンス、switch や複数出力の function、別フロー、存在しないノードへの依頼、両モードでの質問)をモデルに送り、実際のインポート処理でモックのエディタに適用し、依頼どおりの結果になったかをキャンバスで確かめる。あわせて2つの不変条件(すべてのワイヤが実在するノードに届くこと、何も重ならないこと)も確かめる。各シナリオは `attempts` 回まで試す。`LLM_TEST_MODELS=gemma3:4b,gemma4:e2b` で複数のモデルを続けて試し、結果を表で出す。`LLM_TEST_SHOW_FAILED=1` で失敗した応答を表示する。`LLM_TEST_ONLY=delete` で名前にその文字列を含むシナリオだけを実行する。
 
 接続先とモデルは、スイートと同じ `test/` に置く `llm-test-config.json` から読む。
 このファイルは git 管理外なので、テンプレートをコピーして作る。

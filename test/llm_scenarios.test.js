@@ -51,6 +51,13 @@ const n = (id, type, name, x, y, wires, extra) =>
   Object.assign({ id, type, z: 't1', name, x, y, wires: wires || [] }, extra || {});
 
 function byType(flow, type) { return flow.filter((x) => x.type === type); }
+function byId(flow, id) { return flow.find((x) => x.id === id); }
+function configCount(mock) { let c = 0; mock.RED.nodes.eachConfig(() => { c++; }); return c; }
+// Every listed id is still on the canvas.
+function kept(flow, ids) {
+  const gone = ids.filter((id) => !byId(flow, id));
+  return gone.length ? 'lost ' + gone.join(', ') : null;
+}
 
 // Where a node's messages go, through junctions and link nodes.
 function reached(flow, fromId, port) {
@@ -275,6 +282,380 @@ const SCENARIOS = [
       return null;
     },
   },
+  // ---------------------------------------------------------------- //
+  //  Deletes, flags, renames                                          //
+  // ---------------------------------------------------------------- //
+  {
+    name: 'delete two nodes at once', mode: 'agent',
+    prompt: '`debug_extra1` と `debug_extra2` を削除してください。',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['b', 'c', 'd']]),
+      n('b', 'debug', 'log', 350, 60, []),
+      n('c', 'debug', 'extra1', 350, 120, []),
+      n('d', 'debug', 'extra2', 350, 180, []),
+    ] }),
+    check: (f) => {
+      if (byId(f, 'c') || byId(f, 'd')) return 'an extra debug is still there';
+      if (!byId(f, 'b') || !reached(f, 'a').has('b')) return 'debug_log or its wire was lost';
+      return null;
+    },
+  },
+  {
+    name: 'disable a node', mode: 'agent',
+    prompt: 'Disable `debug_log` but keep it on the canvas.',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const b = byId(f, 'b');
+      if (!b) return 'debug_log was deleted';
+      if (b.d !== true) return 'debug_log is not disabled';
+      if (!reached(f, 'a').has('b')) return 'its wire was lost';
+      return null;
+    },
+  },
+  {
+    name: 're-enable a node', mode: 'agent',
+    prompt: '無効になっている `debug_log` を有効に戻してください。',
+    canvas: () => { const c = TICK_LOG(); c.nodes[1].d = true; return c; },
+    check: (f) => {
+      const b = byId(f, 'b');
+      if (!b) return 'debug_log was deleted';
+      if (b.d) return 'debug_log is still disabled';
+      return null;
+    },
+  },
+  {
+    name: 'rename a node', mode: 'agent',
+    prompt: 'Rename `debug_log` to "output".',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const b = byId(f, 'b');
+      if (!b) return 'debug_log was replaced instead of renamed';
+      if (b.name !== 'output') return 'its name is ' + JSON.stringify(b.name);
+      if (!reached(f, 'a').has('b')) return 'its wire was lost';
+      if (f.filter((x) => x.type === 'debug').length !== 1) return 'a second debug appeared';
+      return null;
+    },
+  },
+  {
+    name: 'two edits in one request', mode: 'agent',
+    prompt: 'Make `inject_tick` fire every 10 seconds, and rename `debug_log` to "clock".',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const a = byId(f, 'a'), b = byId(f, 'b');
+      if (!a || !b) return kept(f, ['a', 'b']);
+      if (String(a.repeat) !== '10') return 'repeat is ' + JSON.stringify(a.repeat);
+      if (b.name !== 'clock') return 'the debug is named ' + JSON.stringify(b.name);
+      return null;
+    },
+  },
+  {
+    name: 'delete a node that does not exist', mode: 'agent', allowNoSchema: true,
+    prompt: 'Delete `debug_missing`.',
+    canvas: TICK_LOG,
+    check: (f) => kept(f, ['a', 'b']) || (reached(f, 'a').has('b') ? null : 'the existing wire was cut'),
+  },
+
+  // ---------------------------------------------------------------- //
+  //  Properties of common nodes                                        //
+  // ---------------------------------------------------------------- //
+  {
+    name: 'edit function code', mode: 'agent',
+    prompt: '`function_double` を、msg.payload を2倍ではなく3倍にするよう変更してください。',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['f']], { repeat: '1', payloadType: 'num', payload: '1' }),
+      n('f', 'function', 'double', 320, 100, [['b']], { func: 'msg.payload = msg.payload * 2;\nreturn msg;', outputs: 1 }),
+      n('b', 'debug', 'log', 480, 100, []),
+    ] }),
+    check: (f) => {
+      const fn = byId(f, 'f');
+      if (!fn) return 'function_double was replaced';
+      let out;
+      try { out = new Function('msg', fn.func)({ payload: 2 }); } catch (e) { return 'func does not run: ' + e.message; }
+      if (!out || out.payload !== 6) return 'func turns 2 into ' + JSON.stringify(out && out.payload);
+      if (!reached(f, 'a').has('f') || !reached(f, 'f').has('b')) return 'a wire was lost';
+      return null;
+    },
+  },
+  {
+    name: 'a change node with JSONata', mode: 'agent',
+    prompt: 'Insert a change node between `inject_tick` and `debug_log` that sets msg.payload with a JSONata expression to the text "time: " followed by the current payload.',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const ch = byType(f, 'change')[0];
+      if (!ch) return 'no change node';
+      const rule = (ch.rules || [])[0];
+      if (!rule || rule.tot !== 'jsonata') return 'the rule is not JSONata: ' + JSON.stringify(rule);
+      if (!/time/.test(String(rule.to))) return 'the expression is ' + JSON.stringify(rule.to);
+      if (!reached(f, 'a').has(ch.id) || !reached(f, ch.id).has('b')) return 'the change node is not in between';
+      return null;
+    },
+  },
+  {
+    name: 'debug shows the whole message', mode: 'agent',
+    prompt: '`debug_log` にメッセージ全体を表示させてください。',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const b = byId(f, 'b');
+      if (!b) return 'debug_log was replaced';
+      if (String(b.complete) !== 'true') return 'complete is ' + JSON.stringify(b.complete);
+      return null;
+    },
+  },
+  {
+    name: 'a function with two outputs', mode: 'agent',
+    prompt: 'After `inject_tick`, add a function node with two outputs: even seconds go to a debug named "even", odd seconds to a debug named "odd".',
+    canvas: TICK_LOG,
+    check: (f) => {
+      const fn = byType(f, 'function')[0];
+      if (!fn) return 'no function node';
+      if (fn.outputs !== 2) return 'outputs is ' + JSON.stringify(fn.outputs);
+      if (!reached(f, 'a').has(fn.id)) return 'inject does not feed the function';
+      const p0 = reached(f, fn.id, 0), p1 = reached(f, fn.id, 1);
+      if (!p0.size || !p1.size) return 'an output is unwired';
+      if ([...p0].some((id) => p1.has(id))) return 'both outputs reach the same node';
+      return null;
+    },
+  },
+  {
+    name: 'build an HTTP endpoint', mode: 'agent',
+    prompt: 'Create an HTTP endpoint: GET /hello responds with the text "hello world".',
+    canvas: () => ({ tabs: [TAB1], nodes: [] }),
+    check: (f) => {
+      const hin = byType(f, 'http in')[0], hout = byType(f, 'http response')[0];
+      if (!hin || !hout) return 'no http in or no http response';
+      if (!/\/hello/.test(String(hin.url))) return 'url is ' + JSON.stringify(hin.url);
+      if (!reached(f, hin.id).has(hout.id) && ![...reached(f, hin.id)].some((id) => reached(f, id).has(hout.id)))
+        return 'http in does not lead to http response';
+      return null;
+    },
+  },
+
+  // ---------------------------------------------------------------- //
+  //  Wiring and layout                                                 //
+  // ---------------------------------------------------------------- //
+  {
+    name: 'wire two existing nodes', mode: 'agent',
+    prompt: 'Connect `inject_tick` to `debug_log`.',
+    canvas: () => ({ tabs: [TAB1], nodes: [n('a', 'inject', 'tick', 150, 100, []), n('b', 'debug', 'log', 350, 100, [])] }),
+    check: (f) => kept(f, ['a', 'b']) || (reached(f, 'a').has('b') ? null : 'not wired') ||
+      (f.length === 2 ? null : 'nodes were added'),
+  },
+  {
+    name: 'tidy the layout', mode: 'agent',
+    prompt: 'ノードをきれいに整列してください。',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 500, 300, [['f']]),
+      n('f', 'function', 'fmt', 120, 40, [['b']], { func: 'return msg;', outputs: 1 }),
+      n('b', 'debug', 'log', 330, 220, []),
+    ] }),
+    check: (f) => kept(f, ['a', 'f', 'b']) ||
+      (reached(f, 'a').has('f') && reached(f, 'f').has('b') ? null : 'a wire was lost') ||
+      (f.length === 3 ? null : 'nodes were added'),
+  },
+  {
+    name: 'move a comment', mode: 'agent',
+    prompt: 'Move the comment `comment_about` so it sits above `debug_log`.',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('cm', 'comment', 'about', 150, 60, [], { info: 'Sends the time.' }),
+      n('a', 'inject', 'tick', 150, 100, [['b']]),
+      n('b', 'debug', 'log', 450, 100, []),
+    ] }),
+    check: (f) => {
+      const cm = byId(f, 'cm'), a = byId(f, 'a'), b = byId(f, 'b');
+      if (!cm) return 'the comment was replaced';
+      if (byType(f, 'comment').length !== 1) return 'a second comment appeared';
+      if (Math.abs(cm.x - b.x) >= Math.abs(cm.x - a.x)) return 'the comment is still nearer inject_tick';
+      if (cm.y >= b.y) return 'the comment is not above debug_log';
+      return null;
+    },
+  },
+  {
+    name: 'insert into a larger flow', mode: 'agent',
+    prompt: 'Add a 1 second delay node between `json_parse` and `switch_status`.',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('i', 'inject', 'poll', 100, 100, [['h']], { repeat: '60' }),
+      n('h', 'http request', 'fetch', 250, 100, [['j']], { method: 'GET', url: 'http://example.com/api', ret: 'txt' }),
+      n('j', 'json', 'parse', 400, 100, [['s']]),
+      n('s', 'switch', 'status', 550, 100, [['c'], ['e']], { property: 'payload.ok', rules: [{ t: 'true' }, { t: 'else' }], outputs: 2 }),
+      n('c', 'change', 'pick', 720, 60, [['d']], { rules: [{ t: 'set', p: 'payload', pt: 'msg', to: 'payload.value', tot: 'msg' }] }),
+      n('d', 'debug', 'value', 880, 60, []),
+      n('e', 'debug', 'error', 720, 160, []),
+    ] }),
+    check: (f) => {
+      const lost = kept(f, ['i', 'h', 'j', 's', 'c', 'd', 'e']);
+      if (lost) return lost;
+      const dl = byType(f, 'delay')[0];
+      if (!dl) return 'no delay node';
+      if (!reached(f, 'j').has(dl.id) || !reached(f, dl.id).has('s')) return 'the delay is not in between';
+      if (!reached(f, 's', 0).has('c') || !reached(f, 's', 1).has('e')) return 'the switch outputs changed';
+      return null;
+    },
+  },
+
+  // ---------------------------------------------------------------- //
+  //  Groups, link nodes, config nodes                                  //
+  // ---------------------------------------------------------------- //
+  {
+    name: 'insert into a group box', mode: 'agent',
+    prompt: 'Insert a change node between `inject_tick` and `debug_log` that sets msg.topic to "clock".',
+    canvas: () => {
+      const c = TICK_LOG();
+      c.nodes.forEach((x) => { x.g = 'grp'; });
+      c.groups = [{ id: 'grp', type: 'group', z: 't1', name: 'Clock', style: { label: true }, nodes: ['a', 'b'], x: 90, y: 60, w: 330, h: 80 }];
+      return c;
+    },
+    check: (f) => {
+      const ch = byType(f, 'change')[0], grp = byId(f, 'grp');
+      if (!ch) return 'no change node';
+      if (!grp) return 'the group was dropped';
+      if (ch.g !== 'grp' || grp.nodes.indexOf(ch.id) === -1) return 'the change node is outside the box';
+      if (!reached(f, 'a').has(ch.id) || !reached(f, ch.id).has('b')) return 'the change node is not in between';
+      return null;
+    },
+  },
+  {
+    name: 'delete a node inside a group box', mode: 'agent',
+    prompt: 'Delete `debug_extra`.',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['b', 'c']], { g: 'grp' }),
+      n('b', 'debug', 'log', 350, 100, [], { g: 'grp' }),
+      n('c', 'debug', 'extra', 350, 180, [], { g: 'grp' }),
+    ], groups: [{ id: 'grp', type: 'group', z: 't1', name: 'Clock', style: { label: true }, nodes: ['a', 'b', 'c'], x: 90, y: 60, w: 330, h: 160 }] }),
+    check: (f) => {
+      if (byId(f, 'c')) return 'debug_extra is still there';
+      const grp = byId(f, 'grp');
+      if (!grp) return 'the group was dropped';
+      if (grp.nodes.indexOf('a') === -1 || grp.nodes.indexOf('b') === -1) return 'a node left the box';
+      return null;
+    },
+  },
+  {
+    name: 'remove a connection through link nodes', mode: 'agent',
+    prompt: '`inject_tick` から `debug_log` への接続を削除してください。`debug_other` には引き続き届くようにしてください。',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['lo']]),
+      n('lo', 'link out', 'send', 300, 100, [], { mode: 'link', links: ['li'] }),
+      n('li', 'link in', 'recv', 150, 220, [['b', 'c']], { links: ['lo'] }),
+      n('b', 'debug', 'log', 350, 180, []),
+      n('c', 'debug', 'other', 350, 260, []),
+    ] }),
+    check: (f) => {
+      if (reached(f, 'a').has('b')) return 'inject still reaches debug_log';
+      if (!reached(f, 'a').has('c')) return 'debug_other no longer receives';
+      return kept(f, ['b', 'c']);
+    },
+  },
+  {
+    name: 'reuse an existing config node', mode: 'agent',
+    prompt: 'Add an mqtt in node that subscribes to "sensors/temp" using the existing broker, and send its messages to `debug_log`.',
+    canvas: () => {
+      const c = TICK_LOG();
+      c.configs = [{ id: 'br', type: 'mqtt-broker', name: 'local', broker: 'localhost', port: '1883' }];
+      c.nodes.push(n('m0', 'mqtt out', 'status', 150, 200, [], { topic: 'status', broker: 'br' }));
+      return c;
+    },
+    check: (f, ctx) => {
+      const m = byType(f, 'mqtt in')[0];
+      if (!m) return 'no mqtt in node';
+      if (m.broker !== 'br') return 'broker is ' + JSON.stringify(m.broker);
+      if (configCount(ctx.mock) !== 1) return 'a config node was invented';
+      if (!reached(f, m.id).has('b')) return 'mqtt in does not reach debug_log';
+      return null;
+    },
+  },
+  {
+    name: 'no config node to reuse', mode: 'agent', allowNoSchema: true,
+    prompt: 'Add an mqtt out node after `inject_tick` that publishes to "alerts".',
+    canvas: TICK_LOG,
+    check: (f, ctx) => (configCount(ctx.mock) === 0 ? null : 'a config node was invented') || kept(f, ['a', 'b']),
+  },
+
+  // ---------------------------------------------------------------- //
+  //  Other flows                                                       //
+  // ---------------------------------------------------------------- //
+  {
+    name: 'edit nodes on both flows', mode: 'agent',
+    prompt: 'Flow 1 と Flow 2 の debug ノードを両方とも無効にしてください。',
+    tabs: ['t1', 't2'],
+    canvas: () => ({ tabs: [TAB1, TAB2], nodes: [
+      n('a1', 'inject', 'one', 150, 100, [['d1']]), n('d1', 'debug', 'one', 350, 100, []),
+      Object.assign(n('a2', 'inject', 'two', 150, 100, [['d2']]), { z: 't2' }),
+      Object.assign(n('d2', 'debug', 'two', 350, 100, []), { z: 't2' }),
+    ] }),
+    check: (f) => {
+      const d1 = byId(f, 'd1'), d2 = byId(f, 'd2');
+      if (!d1 || !d2) return kept(f, ['d1', 'd2']);
+      if (d1.d !== true || d2.d !== true) return 'disabled: Flow 1 ' + !!d1.d + ', Flow 2 ' + !!d2.d;
+      if (d1.z !== 't1' || d2.z !== 't2') return 'a debug moved flow';
+      return null;
+    },
+  },
+  {
+    name: 'build on the second flow', mode: 'agent',
+    prompt: 'On Flow 2, add an inject node that sends "hello" into a debug node. Do not change Flow 1.',
+    tabs: ['t1', 't2'],
+    canvas: () => ({ tabs: [TAB1, TAB2], nodes: TICK_LOG().nodes }),
+    check: (f) => {
+      const t2 = f.filter((x) => x.z === 't2');
+      const inj = t2.find((x) => x.type === 'inject'), dbg = t2.find((x) => x.type === 'debug');
+      if (!inj || !dbg) return 'Flow 2 has ' + t2.map((x) => x.type).join(', ');
+      if (!reached(f, inj.id).has(dbg.id)) return 'not wired on Flow 2';
+      if (f.filter((x) => x.z === 't1').length !== 2) return 'Flow 1 changed';
+      return null;
+    },
+  },
+
+  // ---------------------------------------------------------------- //
+  //  Mode boundaries                                                   //
+  // ---------------------------------------------------------------- //
+  {
+    name: 'agent asked only to explain', mode: 'agent', allowNoSchema: true,
+    prompt: 'このフローが何をしているか説明してください。',
+    canvas: TICK_LOG,
+    check: (f, ctx) => {
+      if (ctx.schema) return 'Agent proposed a change to a question';
+      if (!ctx.reply || ctx.reply.trim().length < 20) return 'the answer is empty';
+      return kept(f, ['a', 'b']);
+    },
+  },
+  {
+    name: 'ask: asked to change something', mode: 'ask',
+    prompt: '`debug_log` を削除してください。',
+    canvas: TICK_LOG,
+    checkReply: (reply, schema) => {
+      if (schema) return 'Ask proposed a flow';
+      if (!reply || reply.trim().length < 10) return 'the answer is empty';
+      return null;
+    },
+  },
+  {
+    name: 'ask: how to fire at startup', mode: 'ask',
+    prompt: 'How can I make `inject_tick` fire once when Node-RED starts?',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 150, 100, [['b']], { repeat: '', once: false }),
+      n('b', 'debug', 'log', 350, 100, []),
+    ] }),
+    checkReply: (reply, schema) => {
+      if (schema) return 'Ask proposed a flow';
+      if (!/once|起動|start/i.test(reply)) return 'the answer never mentions firing once at start';
+      return null;
+    },
+  },
+  {
+    name: 'ask: where a message goes', mode: 'ask',
+    prompt: 'msg.payload が 5 のとき、メッセージはどのノードに届きますか？',
+    canvas: () => ({ tabs: [TAB1], nodes: [
+      n('a', 'inject', 'tick', 100, 100, [['s']]),
+      n('s', 'switch', 'level', 260, 100, [['h'], ['l']], { property: 'payload', rules: [{ t: 'gte', v: '10', vt: 'num' }, { t: 'else' }], outputs: 2 }),
+      n('h', 'debug', 'high', 420, 60, []),
+      n('l', 'debug', 'low', 420, 140, []),
+    ] }),
+    checkReply: (reply, schema) => {
+      if (schema) return 'Ask proposed a flow';
+      if (!/debug_low|\blow\b/i.test(reply)) return 'the answer does not name debug_low';
+      return null;
+    },
+  },
 ];
 
 // ------------------------------------------------------------------ //
@@ -284,7 +665,7 @@ const SCENARIOS = [
 async function runOnce(core, model, sc) {
   const canvas = sc.canvas();
   const mock = buildEditorMock({ tabs: canvas.tabs, nodes: clone(canvas.nodes), junctions: clone(canvas.junctions || []),
-    activeId: 't1' });
+    groups: clone(canvas.groups || []), configs: clone(canvas.configs || []), activeId: 't1' });
   const P = loadPluginSandbox(mock.RED);
   const ids = sc.tabs || ['t1'];
   const context = canvas.nodes.length || (canvas.junctions || []).length
@@ -295,13 +676,15 @@ async function runOnce(core, model, sc) {
   const schema = P.LLMJsonParser.extractVibeSchema(reply, P.FlowConverterCore);
   if (sc.mode === 'ask') return { problem: sc.checkReply(reply, schema), reply };
 
-  if (!schema) return { problem: 'no Vibe Schema in the reply', reply };
-  const res = await P.Importer.importFlowFromMessage(reply, { mode: 'agent', allowedWorkspaceIds: ids });
-  if (!res || !res.ok) return { problem: 'import failed: ' + (res && res.error), reply };
+  if (!schema && !sc.allowNoSchema) return { problem: 'no Vibe Schema in the reply', reply };
+  if (schema) {
+    const res = await P.Importer.importFlowFromMessage(reply, { mode: 'agent', allowedWorkspaceIds: ids });
+    if (!res || !res.ok) return { problem: 'import failed: ' + (res && res.error), reply };
+  }
   const flow = [].concat(...canvas.tabs.map((t) => mock.snapshot(t.id)));
   const broken = invariants(P, flow);
   if (broken.length) return { problem: 'invariant: ' + broken.slice(0, 3).join('; '), reply };
-  return { problem: sc.check(flow), reply };
+  return { problem: sc.check(flow, { mock, reply, schema }), reply };
 }
 
 async function main() {

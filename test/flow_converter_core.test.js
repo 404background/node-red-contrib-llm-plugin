@@ -130,6 +130,19 @@ it('vibe-schema.md Example 1 produces exactly its 5 declared nodes', function() 
     assert.deepStrictEqual(out.wires, []);
 });
 
+// --- A debug asked for the whole message ---
+// Models write `complete: "msg"` or `true`; the editor's value is `"true"`.
+it('a debug told to show msg shows the whole message', function() {
+    ['msg', true].forEach(function(complete) {
+        const flow = Cfg.toNodeRed({
+            nodes: { debug_x: { type: 'debug', props: { complete: complete } } }, connections: []
+        }, { workspace: 'ws' });
+        const d = byType(flow, 'debug')[0];
+        assert.strictEqual(d.complete, 'true', JSON.stringify(complete) + ' -> ' + JSON.stringify(d.complete));
+        assert.strictEqual(d.targetType, 'full');
+    });
+});
+
 // --- The single-line `func` pretty-printer may only touch whitespace ---
 // Its character walk models string literals but NOT regex literals or
 // comments, so a `/"/` or a `// note {` can flip it into the wrong state.
