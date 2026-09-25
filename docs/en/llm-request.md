@@ -1,0 +1,106 @@
+# `llm-request` node
+
+> **Not in the release yet — planned.** The node is not debugged enough to
+> ship, so the published package does not register it and it will not appear
+> in the palette. The code is all here (`node/llm-request/`, with the editor
+> half in `src/agent_apply.js`), and everything below describes how it works
+> and is meant to work; putting the `node-red.nodes` entry back in
+> `package.json` is what turns it on.
+
+The node registered alongside the LLM Plugin sidebar (palette category
+**llm-plugin**) so a flow can call an LLM.
+Provider, model and the target flows are set on the `llm-request` node; API keys
+and URLs are inherited from the **LLM Plugin sidebar** (Settings).
+
+## Configuring an `llm-request` node
+
+| Field | Notes |
+|-------|-------|
+| Mode | **Ask** — reply on `msg.payload`. With flows selected it is given them and asked to EXPLAIN them, not to propose one; with none selected it is a plain chat turn. **Agent** — builds a flow and applies it live in the open editor. |
+| Provider | Ollama / OpenAI / Custom. Keys & URLs come from the sidebar. |
+| Model | Free text (e.g. `llama3.1`, `gpt-4o-mini`); **required**. `msg.model` overrides per message. |
+| Flows | Multi-select (none / one / many). Sent to the LLM as context in **both** modes; the list refreshes when the `llm-request` node is opened. |
+| API URL | Admin API base used to read flow context — normally the URL the editor is served at (standalone `http://localhost:1880`; embedded: the `httpAdminRoot` base, e.g. `http://localhost:8000/red`). Accepts a string, a **flow/global** context variable, or a **msg** property. Blank = auto-detect (recommended; works when embedded on a non-1880 port). A URL is read from the message only when the field is set to `msg`: the node fetches from that URL, so message data must not choose it by default. If the configured URL fails, the node falls back to auto-detection with a warning. |
+| Timeout | Seconds; default **3600** (1 h — local LLMs can be slow). `0` = no limit. `msg.timeout` overrides per message. |
+| Auto deploy | **Agent only, developer feature.** When checked, the editor deploys immediately after applying the changes (`RED.actions.invoke('core:deploy-flows', true)` — the editor's own Deploy with validation skipped, so no confirmation dialog can stall an unattended loop and the dirty state clears properly). The deploy is async: the editor's own deploy toast reports the outcome. No review step; keep a single editor open; prefer the Modified Nodes/Flows deploy type; use only on disposable dev instances. **Security:** with no review step and no node-type restriction, a generated `function` / `exec` node runs on this host — never drive an `llm-request` node in Agent mode from untrusted input. |
+
+**Inputs:** `payload` (prompt; strings are newline-normalised, objects are
+JSON-stringified). **Outputs:** `payload` (text reply — do not `JSON.parse` it),
+`llm` (mode/provider/model/elapsed), and in Agent mode `flow`
+(`{ targetFlows, dispatchedToEditor }`).
+
+**Status:** blue dot while requesting (ticks the elapsed seconds), green
+`done (…)` / `sent to editor` on success, red `error` / `timeout` on failure.
+
+## How Agent mode applies changes
+
+The `llm-request` node runs on the runtime side, so it can't edit the browser
+canvas directly. It publishes the reply over Node-RED's comms channel instead,
+and the plugin's own `src/agent_apply.js` applies it with the plugin's
+importer — the same path as the sidebar. The editor half lives with the
+plugin rather than in the node so the node stays a thin caller: everything
+it would need is the plugin's already.
+
+- The `llm-request` node's **Flows** selection is passed to the importer as the write scope, exactly as the sidebar passes a message's `targetFlowIds`: the flows sent to the model are the only flows the reply may modify. Selecting nothing sends no flow context and keeps the legacy active-tab behaviour. See [docs/en/architecture.md](./architecture.md) — `importer.js`, guarantee 2.
+- An **editor must be open** with the plugin loaded; headless runs have no canvas.
+  With several open, the reply reaches all of them but only the first to claim
+  it applies it (write permission required), so it is never applied twice.
+- **No chat history** for anything driven through an `llm-request` node (unlike
+  the sidebar), but the edit is still undoable: the editor saves a checkpoint of
+  the target flows immediately before applying, tagged `node-apply`, and the
+  sidebar's **Restore Points** dialog is where to find it — a node checkpoint has
+  no chat message to hang a Restore button off. If the checkpoint cannot be
+  saved the edit still applies and a line in the chat panel says so. Review on the canvas
+  before Deploy; the editor's undo works too.
+- **Applies are not queued.** A reply is applied when it arrives, onto the
+  canvas as it stands then — see [design.md §13](./design.md). Its checkpoint
+  is what undoes it.
+- **Auto deploy skips validation.** The editor half invokes
+  `core:deploy-flows` with the deploy action's `skipValidation` flag, which is
+  the path behind the confirm dialog's own Confirm button. Without it a single
+  unconfigured or unknown node **anywhere** in the workspace pops a modal that
+  an unattended loop can never answer. The deploy is asynchronous, so the
+  editor's own deploy notification — not the node's — reports the outcome.
+- There is intentionally **no "deploy" node**: a server-side node cannot reproduce
+  the editor's Deploy button (it deploys the browser's editor state — purely
+  client-side). Agent mode applies edits live, which you then Deploy yourself —
+  or check the `llm-request` node's **Auto deploy** and its editor half invokes
+  the editor's own Deploy action right after applying (that's why it works where a
+  server-side deploy node couldn't: the browser itself deploys).
+
+## Files
+
+The files that make up the `llm-request` node:
+
+```
+node/
+  lib/admin_api.js              GET /flows client (read flow context; auto-detects the instance)
+  llm-request/llm-request.js    runtime side: msg -> prompt, provider call, comms publish
+  llm-request/llm-request.html  editor side: the config dialog and the help panel, nothing else
+src/
+  agent_apply.js                editor half: subscribes to the comms topic and applies the reply
+```
+
+The shared LLM engine (settings, credentials, provider adapters, prompt build,
+flow-context selection, redaction) lives in
+[`src/llm_core.js`](../../src/llm_core.js) and is reused by the sidebar. The node
+owns only what is node-shaped: `msg` in, status, timeout, config.
+
+## Examples
+
+Import via **Menu → Import → Examples** (or the JSON files in `examples/`):
+
+- `llm-nodes` — two `llm-request` nodes, Ask and Agent side by side (core nodes
+  only). The Agent row's edit is applied live in the open editor; you review and
+  Deploy manually — nothing deploys automatically.
+- `llm-self-feedback` — **developer sample**: an Agent-mode `llm-request` node
+  with Auto deploy in a self-feedback loop over HTTP in/request nodes,
+  hard-capped at 5 iterations (each loop costs
+  one LLM request and one deploy — never remove the cap). Iteration 1 creates a
+  small demo flow on a separate target tab and later iterations each improve it,
+  until the LLM judges it complete and replies `END` (checked by the loop's
+  `next loop URL` function) or the cap is hit; select the
+  **Modified Flows** deploy type before running so the loop flow itself is never
+  restarted mid-iteration. The instance's HTTP API endpoint base is set once in
+  a change node (flow variable `apiBase`, default `http://127.0.0.1:1880`) —
+  edit it there for embedded instances (e.g. `http://127.0.0.1:8000/api`).

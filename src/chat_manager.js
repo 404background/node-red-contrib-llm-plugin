@@ -2,23 +2,14 @@
 // Uses fetch API for server communication and native DOM for UI.
 (function(){
     let ChatManager = {};
+    let Common = window.LLMPlugin.Common;
+    let el = Common.el;
 
     let currentChatId = null;
     let chatHistory = {};
 
-    function randomSuffix() {
-        return Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    }
-    function generateChatId()    { return 'chat_' + randomSuffix(); }
-    function generateMessageId() { return 'msg_'  + randomSuffix(); }
-
-    /** Tiny DOM helper: createElement with optional className and textContent. */
-    function el(tag, className, text) {
-        let node = document.createElement(tag);
-        if (className) node.className = className;
-        if (text !== undefined) node.textContent = text;
-        return node;
-    }
+    function generateChatId()    { return Common.randomId('chat_'); }
+    function generateMessageId() { return Common.randomId('msg_'); }
 
     function newChatObject(id) {
         return {
@@ -35,8 +26,10 @@
     }
 
     function snapshotCurrentFlow(targetFlowIds) {
-        if (!(window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.getCurrentFlow)) return null;
-        let flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds);
+        // includeCanvasExtras: checkpoints must record junctions and groups
+        // too, else Restore removes them from the workspace and re-imports a
+        // snapshot that never had them — deleting them for good.
+        let flow = LLMPlugin.UI.getCurrentFlow(targetFlowIds, { includeCanvasExtras: true });
         return (Array.isArray(flow) && flow.length > 0) ? flow : null;
     }
 
@@ -44,15 +37,16 @@
      * POST a flow snapshot to the checkpoint endpoint.
      * Resolves to the checkpoint ID on success, or null on any failure.
      */
-    function postCheckpointSave(chatId, label, flow, source) {
-        return fetch('llm-plugin/checkpoint/save', {
+    function postCheckpointSave(chatId, label, flow, source, extraMeta) {
+        let meta = Object.assign({ source: source }, extraMeta || {});
+        return Common.apiFetch('llm-plugin/checkpoints/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 chatId: chatId,
                 label: label,
                 flow: flow,
-                meta: { source: source }
+                meta: meta
             })
         })
         .then(function(res) { return res.json(); })
@@ -72,19 +66,25 @@
         return chatHistory;
     };
 
+    // The sidebar's flow selection belongs to the conversation too, and
+    // lives outside this module — hence announce rather than reach.
+    let newChatListeners = [];
+    ChatManager.onNewChat = function(fn) {
+        if (typeof fn === 'function') newChatListeners.push(fn);
+    };
+
     ChatManager.startNewChat = function() {
         currentChatId = generateChatId();
         chatHistory[currentChatId] = newChatObject(currentChatId);
         clearChatArea();
-        if (window.RED && RED.notify) RED.notify('Started new chat', 'success');
+        newChatListeners.forEach(function(fn) {
+            // One bad listener must not leave the chat half-started.
+            try { fn(currentChatId); } catch (e) { /* ignore */ }
+        });
     };
 
-    /**
-     * Snapshot the current flow as a Restore Checkpoint immediately before
-     * a flow-modifying import. Returns the checkpoint ID on success, or
-     * null on failure. Callers wait on this before applying the import so
-     * the Restore button always points at the true pre-edit state.
-     */
+    // A Restore Checkpoint taken immediately before a flow-modifying import.
+    // The checkpoint id, or null on failure.
     ChatManager.saveImportCheckpoint = function(chatId, targetFlowIds) {
         let id = chatId || ChatManager.getCurrentChatId();
         let flow = snapshotCurrentFlow(targetFlowIds);
@@ -92,24 +92,183 @@
         return postCheckpointSave(id, 'pre-import-' + new Date().toISOString(), flow, 'pre-import');
     };
 
+    // The same snapshot for an edit the Agent NODE is about to apply.
+    // `chatId` stays null deliberately: borrowing the open chat's id would
+    // file the edit under it and delete the checkpoint with that chat.
+    // See docs/{en,jp}/llm-request.md.
+    ChatManager.saveNodeApplyCheckpoint = function(nodeInfo, targetFlowIds) {
+        let flow = snapshotCurrentFlow(targetFlowIds);
+        if (!flow) return Promise.resolve(null);
+        let info = nodeInfo || {};
+        let who = info.name || info.id || 'llm-request';
+        return postCheckpointSave(
+            null,
+            'pre-node-apply-' + who + '-' + new Date().toISOString(),
+            flow,
+            'node-apply',
+            {
+                node: { id: info.id || null, name: info.name || null },
+                targetFlowIds: Array.isArray(targetFlowIds) ? targetFlowIds : []
+            }
+        );
+    };
+
+
+    // ------------------------------------------------------------------ //
+    //  Restore points                                                     //
+    // ------------------------------------------------------------------ //
+    //
+    // A chat checkpoint hangs off its message's Restore button. A node edit
+    // has no message, so the listing is the only way to find its checkpoint.
+
+    let SOURCE_LABELS = { 'pre-import': 'Chat', 'node-apply': 'Node' };
+
+    // What this restore point was taken before: the node, or the conversation.
+    // The name only — the badge already says which producer it was, and a
+    // sentence would push the identifying part off the end of the line.
+    function describeCheckpoint(cp) {
+        let meta = (cp && cp.meta) || {};
+        if (meta.source === 'node-apply') {
+            let node = meta.node || {};
+            return node.name || node.id || 'llm-request node';
+        }
+        let chat = (cp && cp.chatId) ? chatHistory[cp.chatId] : null;
+        let title = (chat && typeof chat.title === 'string') ? chat.title.trim() : '';
+        if (title && title !== 'New Chat') return title;
+        return 'Sidebar import';
+    }
+
+    // Flow NAMES, not ids — the ids mean nothing to the person deciding
+    // whether this is the restore point they want. A tab that has since
+    // been deleted falls back to its id rather than disappearing.
+    function describeScope(cp) {
+        let ids = (cp && cp.meta && Array.isArray(cp.meta.targetFlowIds))
+            ? cp.meta.targetFlowIds : [];
+        if (ids.length === 0) return '';
+        try {
+            let names = Common.flowLabels(ids);
+            if (names) return ' · ' + names;
+        } catch (e) { /* fall through to ids */ }
+        return ' · ' + ids.join(', ');
+    }
+
+    function fetchCheckpoints(source) {
+        let url = 'llm-plugin/checkpoints';
+        if (source) url += '?source=' + encodeURIComponent(source);
+        return Common.apiFetch(url)
+            .then(function(res) { return res.json(); })
+            .then(function(data) { return (data && data.checkpoints) || []; });
+    }
+
+    function renderCheckpointList(listEl, source) {
+        while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+        listEl.appendChild(el('div', 'checkpoint-empty', 'Loading…'));
+
+        return fetchCheckpoints(source).then(function(items) {
+            while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+            if (items.length === 0) {
+                listEl.appendChild(el('div', 'checkpoint-empty',
+                    'No restore points yet. One is saved automatically before each flow edit.'));
+                return;
+            }
+            items.forEach(function(cp) {
+                let item = Common.cloneTemplate('llm-plugin-checkpoint-item-template');
+
+                let badge = item.querySelector('.checkpoint-source');
+                let src = (cp.meta && cp.meta.source) || null;
+                badge.textContent = SOURCE_LABELS[src] || 'Other';
+                if (src) badge.classList.add('source-' + src);
+
+                item.querySelector('.checkpoint-what').textContent = describeCheckpoint(cp);
+                item.querySelector('.chat-date').textContent =
+                    cp.created ? new Date(cp.created).toLocaleString() : '';
+                item.querySelector('.message-count').textContent =
+                    (cp.nodes || 0) + ' nodes' + describeScope(cp);
+
+                let btn = item.querySelector('.restore-btn');
+                btn.addEventListener('click', function() {
+                    // Same confirmation as the per-message Restore button:
+                    // this replaces the flow, and from here the user may be
+                    // looking at a restore point they didn't create.
+                    if (!confirm('Restore the flow from this restore point? The current flow will be replaced.')) return;
+                    btn.disabled = true;
+                    LLMPlugin.Importer.restoreCheckpoint(cp.id)
+                        .then(function(result) {
+                            if (!result || !result.ok) {
+                                Common.notice((result && result.error) || 'Failed to restore', 'error');
+                            }
+                        })
+                        .catch(function(err) {
+                            Common.notice((err && err.message) || 'Failed to restore', 'error');
+                        })
+                        .finally(function() { btn.disabled = false; });
+                });
+
+                listEl.appendChild(item);
+            });
+        }).catch(function(err) {
+            while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+            listEl.appendChild(el('div', 'checkpoint-empty',
+                'Could not load restore points: ' + ((err && err.message) || 'request failed')));
+        });
+    }
+
+    ChatManager.showCheckpointList = function() {
+        // Never stack dialogs — the chat list does the same.
+        document.querySelectorAll('.chat-modal').forEach(function(m) { m.remove(); });
+
+        let modal = Common.cloneTemplate('llm-plugin-checkpoint-modal-template');
+        modal.querySelector('.close-btn')
+            .addEventListener('click', function() { modal.remove(); });
+
+        let listEl = modal.querySelector('.checkpoint-list');
+        modal.querySelectorAll('input[name="cp-source"]').forEach(function(radio) {
+            radio.addEventListener('change', function() {
+                if (radio.checked) renderCheckpointList(listEl, radio.value || null);
+            });
+        });
+
+        document.body.appendChild(modal);
+        renderCheckpointList(listEl, null);
+        return modal;
+    };
+
     ChatManager.saveChatToServer = function(chatId) {
         let chat = chatHistory[chatId];
         if (!chat) return;
-        fetch('llm-plugin/save-chat', {
+        Common.apiFetch('llm-plugin/chats/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chatId: chatId, chatData: chat })
+        }).then(function(res) {
+            // fetch only rejects on a transport error, so a refusal (a chat
+            // past the server's 5 MB storage cap, or a permission failure)
+            // used to look exactly like a successful save.
+            if (res && res.ok) return;
+            return res.json()
+                .catch(function() { return {}; })
+                .then(function(d) {
+                    Common.notice('Failed to save chat: ' +
+                        ((d && d.error) || ('HTTP ' + (res ? res.status : '?'))), 'warning');
+                });
         }).catch(function() {
-            if (window.RED && RED.notify) RED.notify('Failed to save chat', 'warning');
+            Common.notice('Failed to save chat', 'warning');
         });
     };
 
     ChatManager.loadChatHistoriesFromServer = function() {
-        return fetch('llm-plugin/chat-histories')
+        return Common.apiFetch('llm-plugin/chats')
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (!data || !data.chatHistories) return;
-                chatHistory = data.chatHistories;
+                // Merge: server wins for chats it knows, but keep chats
+                // created locally in the meantime (still unsaved server-side)
+                // — replacing wholesale would drop them mid-conversation.
+                let merged = data.chatHistories;
+                Object.keys(chatHistory).forEach(function(id) {
+                    if (!merged[id]) merged[id] = chatHistory[id];
+                });
+                chatHistory = merged;
                 // Auto-load the most recent chat if nothing is currently open.
                 if (currentChatId) return;
                 let chatsArray = Object.values(chatHistory);
@@ -119,7 +278,7 @@
                 try { ChatManager.loadChat(currentChatId); } catch(e) {}
             })
             .catch(function() {
-                if (window.RED && RED.notify) RED.notify('Failed to load chat histories', 'warning');
+                Common.notice('Failed to load chat histories', 'warning');
             });
     };
 
@@ -189,11 +348,8 @@
         currentChatId = chatId;
         clearChatArea();
         (chat.messages || []).forEach(function(msg) {
-            if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-                LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, false, msg);
-            }
+            LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, msg);
         });
-        if (window.RED && RED.notify) RED.notify('Loaded chat: ' + chat.title, 'success');
     };
 
     ChatManager.updateMessageMeta = function(messageId, patch) {
@@ -213,13 +369,10 @@
             if (typeof callback === 'function') callback(false);
             return;
         }
-        let chat = chatHistory[chatId] || {};
-        let payload = chat.__file ? { filename: chat.__file } : { chatId: chatId };
-
-        fetch('llm-plugin/delete-chat', {
+        Common.apiFetch('llm-plugin/chats/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ chatId: chatId })
         }).finally(function() {
             delete chatHistory[chatId];
             if (currentChatId === chatId) ChatManager.startNewChat();
@@ -230,6 +383,11 @@
     ChatManager.addMessage = function(content, isUser, metaOverwrite) {
         let chatId = ChatManager.getCurrentChatId();
         let chat = chatHistory[chatId];
+        // The async history reload can replace chatHistory and drop a chat
+        // created locally in the meantime; recreate rather than crash.
+        if (!chat) {
+            chat = chatHistory[chatId] = newChatObject(chatId);
+        }
 
         let message = {
             id: generateMessageId(),
@@ -246,15 +404,7 @@
         }
         ChatManager.saveChatToServer(chatId);
 
-        if (window.LLMPlugin && LLMPlugin.UI && LLMPlugin.UI.addMessageToUI) {
-            return LLMPlugin.UI.addMessageToUI(content, isUser, !isUser, message);
-        }
-        // Fallback when UI module is unavailable
-        let chatArea = document.getElementById('llm-plugin-chat');
-        if (chatArea) {
-            chatArea.appendChild(el('div', null, content));
-            chatArea.scrollTop = chatArea.scrollHeight;
-        }
+        return LLMPlugin.UI.addMessageToUI(content, isUser, message);
     };
 
     window.LLMPlugin = window.LLMPlugin || {};

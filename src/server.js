@@ -1,338 +1,140 @@
-// LLM Plugin  -  Server Side
-// Registers all HTTP admin endpoints used by the client sidebar.
+// LLM Plugin  -  Server side: the HTTP admin endpoints, plus chat-history and
+// checkpoint persistence. The LLM engine itself lives in ./llm_core.js, shared
+// with the llm-request node. See docs/{en,jp}/architecture.md — `server.js`.
 const fs = require('fs-extra');
 const path = require('path');
-const os = require('os');
-const http = require('http');
-const https = require('https');
 const crypto = require('crypto');
-const { exec } = require('child_process');
-const { OpenAI } = require('openai');
-const Configurator = require('./core/flow_converter_core');
-const LLMJsonParser = require('./core/llm_json_parser');
-
-// Fall back to a minimal embedded prompt if the bundled file is
-// unreadable (sandboxed cloud environments occasionally restrict reads).
-const FALLBACK_PROMPT = 'You are a Node-RED expert. Be concise; reply in the user\'s language. ' +
-    'When modifying flows, output one ```json``` block in Vibe Schema with `nodes` and/or `connections` (either may be omitted; merge semantics: list to add/update, map alias to null to delete). Otherwise plain text.\n';
-let SYSTEM_PROMPT_TEMPLATE;
-try {
-    SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_system.txt'), 'utf8');
-} catch (e) {
-    SYSTEM_PROMPT_TEMPLATE = FALLBACK_PROMPT;
-}
+const createLLMCore = require('./llm_core');
+const agentDispatch = require('./agent_dispatch');
 
 function createLLMPluginServer(RED) {
-    // --- Storage location resolution ---
-    // Try, in order:
-    //   1) <userDir>/llm-plugin/   (Node-RED's standard writable user dir)
-    //   2) <os.tmpdir>/llm-plugin/  (ephemeral, but writable on sandboxed
-    //                                cloud Node-REDs like enebular)
-    //   3) in-memory only           (no persistence; chats / checkpoints
-    //                                live in RAM until the server restarts)
-    let baseDir = null;
-    let chatsDir = null;
-    let checkpointsDir = null;
-    let clientEventsLog = null;
-    let persistenceEnabled = false;
-    let storageMode = 'memory';
+    const core = createLLMCore(RED);
+
+    // Storage locations resolved once by the shared core.
+    const chatsDir = core.chatsDir;
+    const checkpointsDir = core.checkpointsDir;
+    const persistenceEnabled = core.persistenceEnabled;
+    const writeFileAtomic = core.writeFileAtomic;
+
+    // Shorthand for the engine helpers used by the endpoints below.
+    const getPluginSettings = core.getPluginSettings;
+    const savePluginSettings = core.savePluginSettings;
+    const generateWithProvider = core.generateWithProvider;
+    const buildMessages = core.buildMessages;
+    const maskApiKey = core.maskApiKey;
+    const redactSecrets = core.redactSecrets;
+
+    // In-memory fallback stores when no writable storage is available.
     let memChats = {};
     let memCheckpoints = {};
 
-    (function setupStorage() {
-        let candidates = [];
-        if (RED.settings && RED.settings.userDir) candidates.push({ root: RED.settings.userDir, label: 'userDir' });
-        try { candidates.push({ root: os.tmpdir(), label: 'tmpdir' }); } catch (e) {}
-        for (let i = 0; i < candidates.length; i++) {
-            let base = path.join(candidates[i].root, 'llm-plugin');
-            try {
-                fs.ensureDirSync(base);
-                fs.ensureDirSync(path.join(base, 'chats'));
-                fs.ensureDirSync(path.join(base, 'checkpoints'));
-                baseDir = base;
-                chatsDir = path.join(base, 'chats');
-                checkpointsDir = path.join(base, 'checkpoints');
-                clientEventsLog = path.join(base, 'client-events.log');
-                persistenceEnabled = true;
-                storageMode = candidates[i].label;
-                RED.log.info('[LLM Plugin] Storage: ' + base + ' (' + candidates[i].label + ')');
-                return;
-            } catch (e) { /* try next */ }
-        }
-        RED.log.warn('[LLM Plugin] No writable storage; chat history and checkpoints will be kept in memory only.');
-    })();
-
-    function writeClientEvent(level, event, message, meta) {
-        const lv = String(level || 'info').toLowerCase();
-        const safeLevel = (lv === 'error' || lv === 'warn' || lv === 'warning') ? lv : 'info';
-        const payload = {
-            ts: new Date().toISOString(),
-            level: safeLevel,
-            event: String(event || 'client-event'),
-            message: redactSecrets(message || ''),
-            meta: meta && typeof meta === 'object' ? meta : {}
-        };
-
-        if (persistenceEnabled && clientEventsLog) {
-            try {
-                fs.appendFile(clientEventsLog, JSON.stringify(payload) + '\n', 'utf8', () => {});
-            } catch (e) { /* logs are best-effort */ }
-        }
-
-        const metaPreview = (() => {
-            try {
-                const text = JSON.stringify(payload.meta);
-                return text && text.length > 0 ? ' meta=' + redactSecrets(text) : '';
-            } catch (e) {
-                return '';
-            }
-        })();
-
-        const line = `[LLM Plugin][Client][${payload.event}] ${payload.message}${metaPreview}`;
-        if (safeLevel === 'error') RED.log.error(line);
-        else if (safeLevel === 'warn' || safeLevel === 'warning') RED.log.warn(line);
-        // By default, info level debug output to terminal is suppressed.
-        // else RED.log.info(line);
-    }
-
     // ------------------------------------------------------------------ //
-    //  Settings + credential persistence                                  //
+    //  Resource limits                                                    //
     // ------------------------------------------------------------------ //
-    //
-    // Secrets (the OpenAI API key and the Custom-endpoint API key) are
-    // encrypted at rest in `<baseDir>/credentials.json` using AES-256-CTR
-    // — the same algorithm Node-RED applies to `flows_cred.json`. We
-    // reuse Node-RED's `credentialSecret` (or auto-generated
-    // `_credentialSecret`) so the secret is tied to the existing user setup.
-    //
-    // We deliberately do NOT use `RED.nodes.addCredentials` with a
-    // synthetic id: Node-RED's `cleanCredentials` strips any credential
-    // whose id isn't referenced by a flow node, wiping our entry on every
-    // deploy. A plugin-owned file sidesteps that lifecycle entirely.
-    // Non-secret settings stay in `RED.settings` (plain JSON).
+    // `apiMaxLength` bounds one request body; the flow context lands in the
+    // same system message as the prompt and needs its own bound.
+    // See docs/{en,jp}/architecture.md — Security measures.
+    const MAX_FLOW_CONTEXT_CHARS = 1024 * 1024;
+    // Ceiling for anything persisted as a JSON file (chat, checkpoint).
+    const MAX_STORED_JSON_CHARS = 5 * 1024 * 1024;
+    // Per-field clip for a reported client event.
+    const MAX_EVENT_FIELD_CHARS = 4096;
+    // Checkpoints are pruned oldest-first past this count.
+    const MAX_CHECKPOINT_FILES = 200;
+    // Node-driven checkpoints get their own, smaller budget. They
+    // accumulate unattended (a timer-driven Agent node), so they are the
+    // ones that must not grow into the chat checkpoints' space.
+    const MAX_NODE_CHECKPOINT_FILES = 50;
+    // One definition of what a checkpoint file is named, shared by the
+    // pruner and the listing so they can never disagree about it.
+    const CHECKPOINT_FILE_RE = /^cp_(\d+)_[a-z0-9]+\.json$/i;
+    // The id alone, as a route receives it. Nothing else can reach a path.
+    const CHECKPOINT_ID_RE = /^cp_\d+_[a-z0-9]+$/;
 
-    const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
-    let credsCache = null;
-    let inMemoryCredentialSecret = null; // fallback when RED.settings can't persist one
-
-    function resolveCredentialSecret() {
-        try {
-            let s = RED.settings.get('credentialSecret');
-            if (typeof s === 'string' && s.length > 0) return s;
-        } catch (e) { /* ignore */ }
-        try {
-            let s = RED.settings.get('_credentialSecret');
-            if (typeof s === 'string' && s.length > 0) return s;
-        } catch (e) { /* ignore */ }
-        // Try to auto-generate and persist, mirroring Node-RED's behavior
-        // when the user hasn't configured `credentialSecret` themselves.
-        try {
-            if (RED.settings && typeof RED.settings.set === 'function') {
-                let generated = crypto.randomBytes(32).toString('hex');
-                RED.settings.set('_credentialSecret', generated);
-                return generated;
-            }
-        } catch (e) { /* ignore */ }
-        // Last resort: per-process key. Credentials become unreadable on
-        // restart, but the plugin keeps working in the current session.
-        if (!inMemoryCredentialSecret) {
-            inMemoryCredentialSecret = crypto.randomBytes(32).toString('hex');
-            RED.log.warn('[LLM Plugin] Could not resolve credentialSecret; using an in-memory key. ' +
-                'Stored credentials will not survive restart. Set `credentialSecret` in settings.js to fix.');
-        }
-        return inMemoryCredentialSecret;
+    // RED.log takes ONE message, unlike console.error(a, b, c).
+    function errText(e) {
+        return String((e && e.message) ? e.message : e);
     }
 
-    function deriveKey() {
-        return crypto.createHash('sha256').update(resolveCredentialSecret()).digest();
+    function clip(text, max) {
+        const s = String(text === undefined || text === null ? '' : text);
+        return s.length > max ? s.substring(0, max) + '[truncated]' : s;
     }
 
-    function encryptBlob(plain) {
-        const iv = crypto.randomBytes(16);
-        const cipher = crypto.createCipheriv('aes-256-ctr', deriveKey(), iv);
-        const encrypted = cipher.update(JSON.stringify(plain), 'utf8', 'base64') + cipher.final('base64');
-        return iv.toString('hex') + encrypted;
+    // A deliberate refusal (`status` set where it was raised) keeps its code;
+    // anything else is a 500. The message is redacted either way.
+    function fail(res, error, fallback) {
+        const status = (error && error.status >= 400 && error.status < 500) ? error.status : 500;
+        return res.status(status).json({
+            error: redactSecrets((error && error.message) || fallback || 'Request failed')
+        });
     }
 
-    function decryptBlob(blob) {
-        const iv = Buffer.from(blob.substring(0, 32), 'hex');
-        const ciphertext = blob.substring(32);
-        const decipher = crypto.createDecipheriv('aes-256-ctr', deriveKey(), iv);
-        const decrypted = decipher.update(ciphertext, 'base64', 'utf8') + decipher.final('utf8');
-        return JSON.parse(decrypted);
-    }
-
-    function loadCredsFromFile() {
-        if (!credsFile) return {};
+    function assertStorableSize(value, label) {
+        let text;
         try {
-            if (!fs.existsSync(credsFile)) return {};
-            const raw = fs.readFileSync(credsFile, 'utf8');
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.$ === 'string') return decryptBlob(parsed.$) || {};
-            return {};
+            text = JSON.stringify(value);
         } catch (e) {
-            RED.log.warn('[LLM Plugin] Failed to read credentials file: ' + (e && e.message ? e.message : e));
-            return {};
+            throw badRequest(label + ' is not serialisable');
         }
-    }
-
-    function loadCreds() {
-        if (credsCache === null) credsCache = loadCredsFromFile();
-        return credsCache;
-    }
-
-    function persistCreds() {
-        if (!credsFile) return; // no writable storage; in-memory only
-        try {
-            const body = JSON.stringify({ $: encryptBlob(credsCache || {}) });
-            fs.writeFileSync(credsFile, body, { encoding: 'utf8', mode: 0o600 });
-        } catch (e) {
-            RED.log.warn('[LLM Plugin] Failed to persist credentials: ' + (e && e.message ? e.message : e));
+        if (text && text.length > MAX_STORED_JSON_CHARS) {
+            throw badRequest(label + ' exceeds the ' + MAX_STORED_JSON_CHARS + '-character storage limit');
         }
-    }
-
-    function setCredField(key, value) {
-        let creds = loadCreds();
-        if (value === '' || value === null || value === undefined) delete creds[key];
-        else creds[key] = value;
-        persistCreds();
-    }
-
-    // Merge secrets back in for runtime use; the client GET handler will
-    // mask the API key separately before responding.
-    function getPluginSettings() {
-        let s = Object.assign({}, RED.settings.get('llmPluginSettings') || {});
-        let creds = loadCreds();
-        if (creds.openaiApiKey) s.openaiApiKey = creds.openaiApiKey;
-        if (creds.customApiKey) s.customApiKey = creds.customApiKey;
-        return s;
-    }
-
-    // Strips secret fields from `settings` (routed to encrypted creds
-    // instead) and persists the rest as plain settings.
-    function savePluginSettings(settings) {
-        let plain = Object.assign({}, settings);
-        if ('openaiApiKey' in plain) {
-            setCredField('openaiApiKey', plain.openaiApiKey);
-            delete plain.openaiApiKey;
-        }
-        if ('customApiKey' in plain) {
-            setCredField('customApiKey', plain.customApiKey);
-            delete plain.customApiKey;
-        }
-        RED.settings.set('llmPluginSettings', plain);
-    }
-
-    // One-time migration: pull an API key out of either the old plaintext
-    // `llmPluginSettings` store OR the previous broken `addCredentials`
-    // attempt, and write it into the new encrypted file.
-    (function migrateLegacyApiKey() {
-        let raw = RED.settings.get('llmPluginSettings') || {};
-        let creds = loadCreds();
-        let migrated = false;
-
-        if (raw.openaiApiKey && !creds.openaiApiKey) {
-            creds.openaiApiKey = raw.openaiApiKey;
-            migrated = true;
-            RED.log.info('[LLM Plugin] Migrated API key from plaintext settings to encrypted credentials file.');
-        }
-
-        if (!creds.openaiApiKey && RED.nodes && typeof RED.nodes.getCredentials === 'function') {
-            try {
-                let legacy = RED.nodes.getCredentials('llm-plugin-credentials');
-                if (legacy && legacy.openaiApiKey) {
-                    creds.openaiApiKey = legacy.openaiApiKey;
-                    migrated = true;
-                    RED.log.info('[LLM Plugin] Recovered API key from legacy synthetic-id credentials store.');
-                }
-            } catch (e) { /* ignore */ }
-        }
-
-        if (raw.openaiApiKey) {
-            delete raw.openaiApiKey;
-            RED.settings.set('llmPluginSettings', raw);
-        }
-        if (migrated) persistCreds();
-    })();
-
-    // Mask API key for safe client-side display (never expose full key)
-    function maskApiKey(key) {
-        if (!key || key.length < 8) return '';
-        return key.substring(0, 5) + '...' + key.substring(key.length - 4);
-    }
-
-    function redactSecrets(input) {
-        let text = String(input || '');
-        text = text.replace(/sk-[A-Za-z0-9_-]{10,}/g, 'sk-***REDACTED***');
-        text = text.replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+=*/gi, '$1***REDACTED***');
-        text = text.replace(/("(?:openai|custom)ApiKey"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3');
-        text = text.replace(/https?:\/\/[^\s'"`]+/gi, '***URL_REDACTED***');
-        text = text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '***IP_REDACTED***');
         return text;
     }
 
     // ------------------------------------------------------------------ //
-    //  Ollama model discovery                                             //
+    //  Endpoint authorisation                                             //
     // ------------------------------------------------------------------ //
+    // `adminAuth` does not reach routes a plugin adds to RED.httpAdmin, so
+    // every endpoint guards itself. See docs/{en,jp}/architecture.md.
+    const PERM_READ = 'llm-plugin.read';
+    const PERM_WRITE = 'llm-plugin.write';
 
-    function listOllamaModels() {
-        const settings = getPluginSettings();
-        const ollamaUrl = settings.ollamaUrl || 'http://localhost:11434';
-        
-        // If localhost, try CLI first as it's more reliable for local installs
-        if (ollamaUrl.includes('localhost') || ollamaUrl.includes('127.0.0.1')) {
-            return new Promise((resolve) => {
-                exec('ollama list --format json', { timeout: 5000 }, (error, stdout) => {
-                    if (!error && stdout) {
-                        const models = [];
-                        stdout.split(/\r?\n/).forEach(line => {
-                            const trimmed = line.trim();
-                            if (!trimmed) return;
-                            try {
-                                const parsed = JSON.parse(trimmed);
-                                const name = parsed.name || parsed.model || '';
-                                if (name) models.push(name);
-                            } catch (e) {}
-                        });
-                        return resolve(Array.from(new Set(models)));
-                    }
-                    // Fallback to API if CLI fails
-                    listOllamaModelsFromApi(ollamaUrl).then(resolve);
-                });
-            });
-        } else {
-            return listOllamaModelsFromApi(ollamaUrl);
-        }
+    // No "runtime without RED.auth" branch: were it ever missing, this throws
+    // while registering routes instead of leaving them reachable.
+    function guard(permission) {
+        return RED.auth.needsPermission(permission);
     }
 
-    function listOllamaModelsFromApi(baseUrl) {
-        return new Promise((resolve) => {
-            try {
-                let base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-                const url = new URL(base + '/api/tags');
-                const httpModule = url.protocol === 'https:' ? https : http;
-                const req = httpModule.request(url.toString(), { method: 'GET', timeout: 5000 }, (res) => {
-                    let data = '';
-                    res.on('data', chunk => data += chunk);
-                    res.on('end', () => {
-                        if (res.statusCode && res.statusCode >= 400) {
-                            return resolve([]);
-                        }
-                        try {
-                            const parsed = JSON.parse(data);
-                            if (parsed && parsed.models) {
-                                resolve(parsed.models.map(m => m.name));
-                            } else {
-                                resolve([]);
-                            }
-                        } catch (e) { resolve([]); }
-                    });
-                });
-                req.on('error', () => resolve([]));
-                req.on('timeout', () => { req.destroy(); resolve([]); });
-                req.end();
-            } catch (e) { resolve([]); }
-        });
+    // redactSecrets only ever substitutes quote-free placeholders, so a
+    // redacted JSON string stays parseable - which keeps the log valid
+    // JSON-lines while guaranteeing nothing unmasked reaches the file.
+    function redactJson(value) {
+        let text;
+        try {
+            text = JSON.stringify(value);
+        } catch (e) {
+            return '[unserialisable]';
+        }
+        if (!text) return {};
+        text = redactSecrets(clip(text, MAX_EVENT_FIELD_CHARS));
+        try { return JSON.parse(text); } catch (e) { return text; }
+    }
+
+    // An import failure happens in the browser, where the operator cannot see
+    // it; the Node-RED log is the record a user can attach to a bug report.
+    // `meta` is redacted — importer diagnostics put node contents in it.
+    function writeClientEvent(level, event, message, meta) {
+        const lv = String(level || 'info').toLowerCase();
+        if (lv !== 'error' && lv !== 'warn' && lv !== 'warning') return;
+
+        // Newlines collapsed: this text is caller-supplied and goes into a
+        // line-oriented log, where an embedded newline forges a log entry.
+        const oneLine = (t) => String(t).replace(/[\r\n]+/g, ' ');
+        const safeEvent = oneLine(clip(event || 'client-event', 200));
+        const safeMessage = oneLine(redactSecrets(clip(message, MAX_EVENT_FIELD_CHARS)));
+        const safeMeta = redactJson(meta && typeof meta === 'object' ? meta : {});
+
+        let metaPreview = '';
+        try {
+            const text = JSON.stringify(safeMeta);
+            if (text && text.length > 0) metaPreview = ' meta=' + text;
+        } catch (e) { /* preview is optional */ }
+
+        const line = `[LLM Plugin][Client][${safeEvent}] ${safeMessage}${metaPreview}`;
+        if (lv === 'error') RED.log.error(line);
+        else RED.log.warn(line);
     }
 
     // ------------------------------------------------------------------ //
@@ -371,7 +173,7 @@ function createLLMPluginServer(RED) {
 
             writeFileAtomic(filepath, JSON.stringify(chatData, null, 2));
         } catch (error) {
-            console.error("[LLM Plugin] Error saving chat history:", error);
+            RED.log.error('[LLM Plugin] Error saving chat history: ' + errText(error));
         }
     }
 
@@ -393,224 +195,113 @@ function createLLMPluginServer(RED) {
                     const filepath = path.join(chatsDir, file);
                     const content = fs.readFileSync(filepath, 'utf8');
                     const chatData = JSON.parse(content);
-                    // include the source filename so clients can request deletion by filename
-                    if (chatData && typeof chatData === 'object') {
-                        chatData.__file = file;
-                    }
+                    // Written into older files; the id is the handle now.
+                    if (chatData && typeof chatData === 'object') delete chatData.__file;
                     chatHistories[chatData.id] = chatData;
                 } catch (error) {
-                    console.error("[LLM Plugin] Error reading chat file:", file, error);
+                    RED.log.error('[LLM Plugin] Error reading chat file ' + file + ': ' + errText(error));
                 }
             });
             return chatHistories;
         } catch (error) {
-            console.error("[LLM Plugin] Error loading chat histories:", error);
+            RED.log.error('[LLM Plugin] Error loading chat histories: ' + errText(error));
             return {};
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  Prompt construction & flow context                                  //
-    // ------------------------------------------------------------------ //
-
-    // Build a flow context description for the prompt.
-    // Converts the Node-RED flow to Vibe Schema (intermediate JSON) so the LLM
-    // sees a clean, alias-based representation without random IDs or coordinates.
-    function buildFlowContextDescription(flow, activeWorkspaceId) {
-        const empty = { header: 'CURRENT FLOW (Vibe Schema):', body: 'No current flow context available.' };
-        if (!flow) return empty;
-
-        // Normalize input
-        let nodes = [];
-        if (Array.isArray(flow)) {
-            nodes = flow.filter(n => n && n.type);
-        } else if (flow.nodes) {
-            nodes = (flow.nodes || []);
+    // Every file holding this chat: saveChatHistory names them by the
+    // sanitised id, but the id inside is what identifies a file an older
+    // build named differently.
+    function deleteChatHistory(chatId) {
+        const safeChatId = sanitizeChatId(chatId);
+        if (!persistenceEnabled) {
+            delete memChats[safeChatId];
+            return;
         }
-
-        if (!nodes || nodes.length === 0) return empty;
-
-        // Defensive credential stripping
-        nodes = nodes.map(n => {
-            const out = Object.assign({}, n);
-            delete out.credentials;
-            return out;
+        if (!fs.existsSync(chatsDir)) return;
+        fs.readdirSync(chatsDir).filter(file => file.endsWith('.json')).forEach(file => {
+            const filepath = path.join(chatsDir, file);
+            try {
+                let match = file.endsWith(`-${safeChatId}.json`);
+                if (!match) {
+                    const chatData = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+                    match = !!chatData && chatData.id === chatId;
+                }
+                if (match) fs.unlinkSync(filepath);
+            } catch (e) {
+                RED.log.warn('[LLM Plugin] Could not check chat file ' + file + ': ' + errText(e));
+            }
         });
+    }
 
-        // Index tab labels and split nodes by category.
-        const tabLabelById = {};
-        const canvasNodes = [];
-        const configById = {};
-        for (const n of nodes) {
-            if (n.type === 'tab') {
-                tabLabelById[n.id] = n.label || n.id;
-            } else if (n.z) {
-                canvasNodes.push(n);
-            } else {
-                configById[n.id] = n;
-            }
+    function deleteCheckpointsOfChat(chatId) {
+        if (!persistenceEnabled) {
+            Object.keys(memCheckpoints).forEach(function(k) {
+                if (memCheckpoints[k].chatId === chatId) delete memCheckpoints[k];
+            });
+            return;
         }
+        if (!fs.existsSync(checkpointsDir)) return;
+        fs.readdirSync(checkpointsDir).filter(file => CHECKPOINT_FILE_RE.test(file)).forEach(file => {
+            const head = readCheckpointHeader(file);
+            if (!head || head.chatId !== chatId) return;
+            try { fs.unlinkSync(path.join(checkpointsDir, file)); }
+            catch (e) { RED.log.warn('[LLM Plugin] Failed to remove checkpoint ' + file + ': ' + errText(e)); }
+        });
+    }
 
-        // Group canvas nodes by their workspace (z).
-        const byTab = {};
-        for (const n of canvasNodes) {
-            (byTab[n.z] = byTab[n.z] || []).push(n);
-        }
-        const tabIdSet = new Set(Object.keys(tabLabelById));
-        Object.keys(byTab).forEach(z => tabIdSet.add(z));
-        const tabIds = Array.from(tabIdSet);
-
-        // Single-flow case: keep the original single-schema output for prompt
-        // continuity (existing prompt template references "CURRENT FLOW").
-        if (tabIds.length <= 1) {
-            let flowDisplay = 'Vibe Schema';
-            if (tabIds.length === 1) {
-                flowDisplay += ' - ' + JSON.stringify(tabLabelById[tabIds[0]] || tabIds[0]);
-            }
-            return {
-                header: 'CURRENT FLOW (' + flowDisplay + '):',
-                body: JSON.stringify(Configurator.toIntermediate(nodes), null, 2)
-            };
-        }
-
-        // Multi-flow case: emit ONE flat Vibe Schema where every canvas node
-        // carries a `flow` field naming its home flow (tab label). Aliases
-        // come from a single toIntermediate pass so they are globally unique
-        // across all flows, preventing cross-flow alias collisions that
-        // caused the importer to overwrite nodes in the wrong tab.
-        // Config nodes are collected once (referenced by any flow) and
-        // emitted without a `flow` field since they live outside canvases.
-        const allCanvas = [];
-        const neededConfigs = {};
-        for (const z of tabIds) {
-            const flowNodes = byTab[z] || [];
-            for (const n of flowNodes) allCanvas.push(n);
-        }
-        for (const cn of Object.values(configById)) {
-            if (cn && cn.id) neededConfigs[cn.id] = cn;
-        }
-        const allNodes = allCanvas.concat(Object.values(neededConfigs));
-        const inter = Configurator.toIntermediate(allNodes, { includeIdMap: true });
-        const idToAlias = (inter._meta && inter._meta.idToAlias) || {};
-        delete inter._meta;
-
-        // Annotate each canvas node's intermediate entry with its flow label.
-        // Config nodes get no flow tag (shared/global scope).
-        for (const n of allCanvas) {
-            const alias = idToAlias[n.id];
-            if (alias && inter.nodes[alias]) {
-                inter.nodes[alias].flow = tabLabelById[n.z] || n.z;
-            }
-        }
-
-        const flowNames = [];
-        let activeLabel = null;
-        for (const z of tabIds) {
-            const label = tabLabelById[z] || z;
-            if (flowNames.indexOf(label) === -1) flowNames.push(label);
-            if (activeWorkspaceId && z === activeWorkspaceId) activeLabel = label;
-        }
-
-        let header = 'CURRENT FLOWS (Vibe Schema - each canvas node has a "flow" field naming its home flow tab). Aliases are globally unique across all flows; do not rename existing aliases.';
-        header += '\nFLOWS: ' + flowNames.map(n => JSON.stringify(n)).join(', ');
-        if (activeLabel) header += '\nACTIVE FLOW: ' + JSON.stringify(activeLabel);
-        header += '\nAll listed flows are editable. When adding a new node, set its "flow" field to one of the FLOWS names to choose its target flow. DO NOT output tab (workflow/canvas) definition nodes yourself.';
-
+    // Prune oldest-first: an automated Agent loop must not grow the
+    // directory without bound. The `flow` is the bulk of a file, so the
+    // listing reads only enough to classify it.
+    function checkpointHeader(cp) {
         return {
-            header: header,
-            body: JSON.stringify(inter, null, 2)
+            id: cp.id, chatId: cp.chatId || null, label: cp.label,
+            created: cp.created, meta: cp.meta || {},
+            nodes: Array.isArray(cp.flow) ? cp.flow.length : 0
         };
     }
 
-    // Build the system prompt.
-    // Instructs the LLM to output Vibe Schema (intermediate JSON) instead of
-    // raw Node-RED JSON, which avoids the need for random IDs and coordinates.
-    function buildMessages(userPrompt, flowContext, activeWorkspaceId) {
-        const settings = getPluginSettings();
-        const userSystemPrompt = (settings.systemPrompt !== undefined && settings.systemPrompt !== null)
-            ? String(settings.systemPrompt).trim()
-            : '';
-
-        let system = '';
-        if (userSystemPrompt) {
-            system += userSystemPrompt + '\n\n';
-        }
-        system += SYSTEM_PROMPT_TEMPLATE;
-
-        if (flowContext) {
-            const ctx = buildFlowContextDescription(flowContext, activeWorkspaceId);
-            system += '\n' + ctx.header + '\n' + ctx.body + '\n';
-        }
-
-        return [
-            { role: 'system', content: system },
-            { role: 'user', content: String(userPrompt || '') }
-        ];
+    function readCheckpointHeader(file) {
+        try {
+            return checkpointHeader(JSON.parse(fs.readFileSync(path.join(checkpointsDir, file), 'utf8')));
+        } catch (e) { return null; }
     }
 
-    function generateWithProvider(provider, settings, model, messages) {
-        if (provider === 'openai') {
-            if (!settings.openaiApiKey) {
-                return Promise.reject(new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.'));
-            }
-            return generateWithOpenAI(settings.openaiApiKey, model, messages);
-        }
-        if (provider === 'custom') {
-            let baseUrl = (settings.customBaseUrl && String(settings.customBaseUrl).trim()) || '';
-            if (!baseUrl) {
-                return Promise.reject(new Error('Custom endpoint Base URL is not configured. Please set it in LLM Plugin settings.'));
-            }
-            return generateWithCustomOpenAI(baseUrl, settings.customApiKey, model, messages);
-        }
-        return generateWithOllamaChat(model, messages);
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Agent-mode validation helpers                                      //
-    // ------------------------------------------------------------------ //
-
-    function parseFlowPayloadFromText(text) {
-        const candidates = [];
-        const codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
-        let m;
-        while ((m = codeBlockRegex.exec(String(text || ''))) !== null) {
-            candidates.push(m[1].trim());
-        }
-        if (candidates.length === 0) {
-            candidates.push(String(text || '').trim());
-        }
-
-        for (let i = candidates.length - 1; i >= 0; i--) {
-            const cleaned = LLMJsonParser.stripJsonComments(candidates[i]).trim();
-            try {
-                return JSON.parse(cleaned);
-            } catch (e1) {
-                try {
-                    return JSON.parse(LLMJsonParser.repairJsonQuotes(cleaned));
-                } catch (e2) { /* keep trying */ }
-            }
-        }
-        return null;
-    }
-
-    function isExplanationOnlyRequest(userPrompt) {
-        const text = String(userPrompt || '').trim();
-        if (!text) return false;
-
-        const explainRe = /(explain|explanation|describe|summary|review|analy[sz]e|walk\s*through)/i;
-        const changeRe = /(create|generate|build|add|modify|update|edit|fix|implement|convert|refactor)/i;
-
-        return explainRe.test(text) && !changeRe.test(text);
-    }
-
-    function writeFileAtomic(filepath, content) {
-        const tmpPath = filepath + '.tmp';
-        fs.writeFileSync(tmpPath, content, 'utf8');
-        fs.renameSync(tmpPath, filepath);
+    // Oldest-first, but per SOURCE rather than across the whole directory, so
+    // a busy node can only crowd out itself. See docs/{en,jp}/design.md §9.
+    function pruneCheckpoints() {
+        try {
+            const buckets = {};
+            fs.readdirSync(checkpointsDir)
+                .map((name) => CHECKPOINT_FILE_RE.exec(name))
+                .filter(Boolean)
+                .map((m) => ({ file: m[0], ts: parseInt(m[1], 10) }))
+                .sort((a, b) => a.ts - b.ts)
+                .forEach((e) => {
+                    // Classified by source, falling back to "chat": an
+                    // unreadable or older checkpoint gets the protected
+                    // budget rather than the disposable one.
+                    const head = readCheckpointHeader(e.file);
+                    const src = (head && head.meta && head.meta.source === 'node-apply')
+                        ? 'node' : 'chat';
+                    (buckets[src] = buckets[src] || []).push(e);
+                });
+            Object.keys(buckets).forEach((src) => {
+                const list = buckets[src];
+                const cap = (src === 'node') ? MAX_NODE_CHECKPOINT_FILES : MAX_CHECKPOINT_FILES;
+                if (list.length <= cap) return;
+                list.slice(0, list.length - cap).forEach((e) => {
+                    try { fs.unlinkSync(path.join(checkpointsDir, e.file)); } catch (err) { /* best effort */ }
+                });
+            });
+        } catch (e) { /* pruning must never block a save */ }
     }
 
     function saveCheckpoint(chatId, label, flow, meta) {
-        const checkpointId = 'cp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+        // crypto RNG rather than Math.random: the id is the only handle on a
+        // checkpoint, and a Math.random suffix next to a known epoch is
+        // guessable.
+        const checkpointId = 'cp_' + Date.now() + '_' + crypto.randomBytes(6).toString('hex');
         const record = {
             id: checkpointId,
             chatId: chatId || null,
@@ -621,125 +312,41 @@ function createLLMPluginServer(RED) {
         };
         if (!persistenceEnabled) {
             memCheckpoints[checkpointId] = record;
+            // Same bound as the on-disk pruning, so the memory-only fallback
+            // cannot grow without limit either.
+            const ids = Object.keys(memCheckpoints);
+            if (ids.length > MAX_CHECKPOINT_FILES) {
+                ids.sort().slice(0, ids.length - MAX_CHECKPOINT_FILES)
+                   .forEach(k => { delete memCheckpoints[k]; });
+            }
             return record;
         }
         try {
+            // Prune AFTER the write, so the cap means what it says.
+            // See docs/{en,jp}/design.md §9.
             writeFileAtomic(path.join(checkpointsDir, checkpointId + '.json'), JSON.stringify(record, null, 2));
+            pruneCheckpoints();
         } catch (e) {
-            console.error('[LLM Plugin] Failed to save checkpoint:', e && e.message ? e.message : e);
+            RED.log.error('[LLM Plugin] Failed to save checkpoint: ' + errText(e));
             throw e;
         }
         return record;
     }
 
     // ------------------------------------------------------------------ //
-    //  LLM provider adapters                                              //
-    // ------------------------------------------------------------------ //
-
-    // Ollama chat generation (timeout 0 = wait indefinitely)
-    function generateWithOllamaChat(model, messages, timeout = 0) {
-        const settings = getPluginSettings();
-        const ollamaUrlStr = settings.ollamaUrl || 'http://localhost:11434';
-        let ollamaUrl;
-        try {
-            ollamaUrl = new URL(ollamaUrlStr);
-        } catch (e) {
-            ollamaUrl = new URL('http://localhost:11434');
-        }
-
-        return new Promise((resolve, reject) => {
-            const data = JSON.stringify({
-                model: model,
-                messages: Array.isArray(messages) ? messages : [],
-                stream: false
-            });
-            const isHttps = ollamaUrl.protocol === 'https:';
-            let basePath = ollamaUrl.pathname === '/' ? '' : ollamaUrl.pathname;
-            if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
-            const options = {
-                hostname: ollamaUrl.hostname,
-                port: ollamaUrl.port || (isHttps ? 443 : 80),
-                path: basePath + '/api/chat',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json; charset=utf-8',
-                    'Content-Length': Buffer.byteLength(data)
-                }
-            };
-            if (timeout && timeout > 0) {
-                options.timeout = timeout;
-            }
-            const httpModule = isHttps ? https : http;
-            const req = httpModule.request(options, (res) => {
-                const chunks = [];
-                res.on('data', (chunk) => {
-                    chunks.push(chunk);
-                });
-                res.on('end', () => {
-                    const responseData = Buffer.concat(chunks).toString('utf8');
-                    if (res.statusCode && res.statusCode >= 400) {
-                        return reject(new Error(`Ollama API error (${res.statusCode}): ${responseData.substring(0, 200)}`));
-                    }
-                    try {
-                        const response = JSON.parse(responseData);
-                        const content = response && response.message && typeof response.message.content === 'string'
-                            ? response.message.content
-                            : null;
-                        if (content !== null) {
-                            resolve(content);
-                        } else {
-                            reject(new Error('No response from model'));
-                        }
-                    } catch (parseError) {
-                        reject(new Error('Invalid response format'));
-                    }
-                });
-            });
-            req.on('error', (error) => {
-                reject(error);
-            });
-            if (timeout && timeout > 0) {
-                req.on('timeout', () => {
-                    req.destroy();
-                    reject(new Error('Request timed out'));
-                });
-            }
-            req.write(data);
-            req.end();
-        });
-    }
-
-    // OpenAI generation
-    async function generateWithOpenAI(apiKey, model, messages) {
-        const openai = new OpenAI({ apiKey });
-        const completion = await openai.chat.completions.create({
-            messages: Array.isArray(messages) ? messages : [],
-            model: model,
-        });
-        return completion.choices[0].message.content;
-    }
-
-    // Custom OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM, LocalAI, …).
-    // The OpenAI SDK requires a non-empty `apiKey`, so we pass a placeholder
-    // when the user leaves it blank — endpoints that don't require auth
-    // ignore the Authorization header anyway.
-    async function generateWithCustomOpenAI(baseURL, apiKey, model, messages) {
-        const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
-        const openai = new OpenAI({ apiKey: effectiveKey, baseURL: baseURL });
-        const completion = await openai.chat.completions.create({
-            messages: Array.isArray(messages) ? messages : [],
-            model: model,
-        });
-        return completion.choices[0].message.content;
-    }
-
-
-    // ------------------------------------------------------------------ //
     //  HTTP admin endpoints                                               //
     // ------------------------------------------------------------------ //
 
-    RED.httpAdmin.post('/llm-plugin/generate', async function(req, res) {
-        const { model, prompt, currentFlow, activeWorkspaceId } = req.body;
+    // One generation endpoint for both sidebar modes, but not one prompt:
+    // `mode: 'ask'` reads the flow and explains it, anything else builds one.
+    // The mode has to be decided HERE because it chooses the instructions the
+    // model is given; what stays client-side is only what happens to a reply
+    // once it arrives.
+    //
+    // Bounded like the node (core.DEFAULT_TIMEOUT_MS), and abandoned when the
+    // sidebar goes away: its Stop button only closes the connection.
+    RED.httpAdmin.post('/llm-plugin/generate', guard(PERM_WRITE), async function(req, res) {
+        const { model, prompt, currentFlow, activeWorkspaceId, mode } = req.body;
         if (!model || !prompt) {
             return res.status(400).json({ error: 'Model and prompt are required' });
         }
@@ -749,27 +356,50 @@ function createLLMPluginServer(RED) {
         if (String(prompt).length > maxLen) {
             return res.status(400).json({ error: 'Prompt exceeds maximum length (' + maxLen + ' characters)' });
         }
+        // maxPromptLength alone is not a limit: buildMessages concatenates the
+        // flow context into the same system message, so an unbounded
+        // currentFlow would carry any payload straight past the check above.
+        if (currentFlow !== undefined && currentFlow !== null) {
+            let flowChars;
+            try {
+                flowChars = JSON.stringify(currentFlow).length;
+            } catch (e) {
+                return res.status(400).json({ error: 'currentFlow is not serialisable' });
+            }
+            if (flowChars > MAX_FLOW_CONTEXT_CHARS) {
+                return res.status(413).json({
+                    error: 'Flow context is too large (' + flowChars + ' > ' +
+                        MAX_FLOW_CONTEXT_CHARS + ' characters). Select fewer flows.'
+                });
+            }
+        }
         const provider = settings.provider || 'ollama';
 
-        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId);
+        const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId, settings,
+            { mode: (mode === 'ask') ? 'ask' : 'agent' });
         const genStart = Date.now();
+        const abort = new AbortController();
+        res.on('close', function() { if (!res.writableFinished) abort.abort(); });
 
         try {
-            const response = await generateWithProvider(provider, settings, model, enhancedMessages);
+            const response = await generateWithProvider(provider, settings, model, enhancedMessages,
+                { timeoutMs: core.DEFAULT_TIMEOUT_MS, signal: abort.signal });
             res.json({ response: response, elapsed: Date.now() - genStart, model: model });
         } catch (error) {
+            if (abort.signal.aborted) return;      // nobody is left to answer
             // Log only safe fields  -  never log the full error object which may contain sensitive headers
             const safeErrorText = redactSecrets(error && error.message ? error.message : error);
-            console.error("[LLM Plugin] Generation error:", safeErrorText);
+            RED.log.error('[LLM Plugin] Generation error: ' + safeErrorText);
             let errorMessage = 'Generation failed';
             const providerLabel = provider === 'ollama'
                 ? 'Ollama'
                 : (provider === 'custom' ? 'the custom OpenAI-compatible endpoint' : 'the LLM provider');
-            if (error.code === 'ECONNREFUSED') {
+            const code = error && error.code;
+            if (code === 'ECONNREFUSED') {
                 errorMessage = 'Could not connect to ' + providerLabel + '. Please ensure it is running and accessible.';
-            } else if (error.code === 'ECONNRESET') {
+            } else if (code === 'ECONNRESET') {
                 errorMessage = 'The connection to ' + providerLabel + ' was unexpectedly closed. Please check that the server is running and stable.';
-            } else if (error.message && error.message.includes('timeout')) {
+            } else if (code === 'ETIMEDOUT' || (error && error.message && error.message.includes('timeout'))) {
                 errorMessage = 'Request timed out. The model may be too slow or not responding.';
             } else {
                 errorMessage = redactSecrets(error && error.message ? error.message : error);
@@ -778,60 +408,8 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/agent-generate', async function(req, res) {
-        const { model, prompt, currentFlow, activeWorkspaceId } = req.body || {};
-
-        if (!model || !prompt) {
-            return res.status(400).json({ error: 'Model and prompt are required' });
-        }
-
-        const settings = getPluginSettings();
-        const maxLen = parseInt(settings.maxPromptLength, 10) || 10000;
-        if (String(prompt).length > maxLen) {
-            return res.status(400).json({ error: 'Prompt exceeds maximum length (' + maxLen + ' characters)' });
-        }
-        const provider = settings.provider || 'ollama';
-
-        try {
-            const enhancedMessages = buildMessages(prompt, currentFlow, activeWorkspaceId);
-            const totalStart = Date.now();
-
-            if (isExplanationOnlyRequest(prompt)) {
-                const response = await generateWithProvider(provider, settings, model, enhancedMessages);
-                return res.json({
-                    response,
-                    elapsed: Date.now() - totalStart,
-                    model: model,
-                    agent: {
-                        mode: 'agent',
-                        performed: 1,
-                        singlePass: true,
-                        reason: 'explanation-only'
-                    }
-                });
-            }
-
-            const response = await generateWithProvider(provider, settings, model, enhancedMessages);
-
-            return res.json({
-                response,
-                elapsed: Date.now() - totalStart,
-                model: model,
-                agent: {
-                    mode: 'agent',
-                    performed: 1,
-                    singlePass: true
-                }
-            });
-        } catch (error) {
-            const safeErrorText = redactSecrets(error && error.message ? error.message : error);
-            console.error('[LLM Plugin] Agent generation error:', safeErrorText);
-            return res.status(500).json({ error: redactSecrets(error && error.message ? error.message : 'Agent generation failed') });
-        }
-    });
-
     // --- Settings endpoints ---
-    RED.httpAdmin.get('/llm-plugin/settings', function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/settings', guard(PERM_READ), function(req, res) {
         const settings = Object.assign({}, getPluginSettings());
         // Never expose the full API key to the client
         const hasKey = !!(settings.openaiApiKey && settings.openaiApiKey.length > 0);
@@ -848,44 +426,66 @@ function createLLMPluginServer(RED) {
         res.json(settings);
     });
 
-    RED.httpAdmin.post('/llm-plugin/settings', function(req, res) {
+    // The form shows URLs and keys as placeholders, so blank means "keep"
+    // for a URL, and '__EXISTING_KEY__' means "keep" for a key.
+    function urlOrExisting(value, existingValue) {
+        return (value && typeof value === 'string' && value.trim() !== '') ? value.trim() : existingValue;
+    }
+    function keyOrExisting(value, existingValue) {
+        if (value === '__EXISTING_KEY__') return existingValue || '';
+        return (value && typeof value === 'string' && value.trim() !== '') ? value.trim() : '';
+    }
+
+    // Endpoint URLs must be http(s). Anything else (file:, gopher:, and the
+    // like) is either useless to an OpenAI-compatible client or a way to
+    // point the runtime at something it should not be opening.
+    const ALLOWED_URL_SCHEMES = { 'http:': 1, 'https:': 1 };
+    function badRequest(message) {
+        const e = new Error(message);
+        e.status = 400;
+        return e;
+    }
+    function assertHttpUrl(value, label) {
+        if (!value) return; // blank = unset / keep default
+        let parsed;
+        try {
+            parsed = new URL(String(value));
+        } catch (e) {
+            throw badRequest(label + ' must be a valid URL');
+        }
+        if (!ALLOWED_URL_SCHEMES[parsed.protocol]) {
+            throw badRequest(label + ' must use http:// or https://');
+        }
+    }
+
+    // Keeping a stored key while the URL changes in the same request would
+    // send that key to a new endpoint the user never typed it for.
+    // See docs/{en,jp}/architecture.md — Security measures.
+    function rejectKeyReuseOnUrlChange(bodyKey, oldUrl, newUrl, label) {
+        if (bodyKey !== '__EXISTING_KEY__') return;
+        if ((oldUrl || '') === (newUrl || '')) return;
+        throw badRequest('Re-enter the ' + label + ' API key when changing its Base URL ' +
+            '(the stored key is never sent to a new endpoint without confirmation).');
+    }
+
+    const PROVIDERS = { ollama: 1, openai: 1, custom: 1 };
+
+    RED.httpAdmin.post('/llm-plugin/settings', guard(PERM_WRITE), async function(req, res) {
         try {
             const body = req.body || {};
+            const provider = body.provider || 'ollama';
+            if (!PROVIDERS[provider]) throw badRequest('Unknown provider: ' + clip(provider, 40));
             // Whitelist: only persist known settings fields
-            const newSettings = {
-                provider: body.provider || 'ollama'
-            };
+            const newSettings = { provider: provider };
             const existing = getPluginSettings();
-            // If URL field is empty, preserve existing URL.
-            if (body.ollamaUrl && typeof body.ollamaUrl === 'string' && body.ollamaUrl.trim() !== '') {
-                newSettings.ollamaUrl = body.ollamaUrl.trim();
-            } else {
-                newSettings.ollamaUrl = existing.ollamaUrl || 'http://localhost:11434';
-            }
-            // Handle API key updates (including deletion)
-            if (body.openaiApiKey === '__EXISTING_KEY__') {
-                newSettings.openaiApiKey = existing.openaiApiKey || '';
-            } else if (body.openaiApiKey && typeof body.openaiApiKey === 'string' && body.openaiApiKey.trim() !== '') {
-                newSettings.openaiApiKey = body.openaiApiKey.trim();
-            } else {
-                newSettings.openaiApiKey = '';
-            }
-            // Custom Base URL: same blank-preserves-existing rule as Ollama URL.
-            if (body.customBaseUrl && typeof body.customBaseUrl === 'string' && body.customBaseUrl.trim() !== '') {
-                newSettings.customBaseUrl = body.customBaseUrl.trim();
-            } else {
-                newSettings.customBaseUrl = existing.customBaseUrl || '';
-            }
-            // Custom API key: same placeholder convention as openaiApiKey, but
-            // an empty value is a valid configuration (some endpoints don't
-            // require auth) so we never reject blank submissions.
-            if (body.customApiKey === '__EXISTING_KEY__') {
-                newSettings.customApiKey = existing.customApiKey || '';
-            } else if (body.customApiKey && typeof body.customApiKey === 'string' && body.customApiKey.trim() !== '') {
-                newSettings.customApiKey = body.customApiKey.trim();
-            } else {
-                newSettings.customApiKey = '';
-            }
+            newSettings.ollamaUrl = urlOrExisting(body.ollamaUrl, existing.ollamaUrl || 'http://localhost:11434');
+            newSettings.customBaseUrl = urlOrExisting(body.customBaseUrl, existing.customBaseUrl || '');
+            assertHttpUrl(newSettings.ollamaUrl, 'Ollama URL');
+            assertHttpUrl(newSettings.customBaseUrl, 'Custom endpoint Base URL');
+            rejectKeyReuseOnUrlChange(body.customApiKey, existing.customBaseUrl,
+                newSettings.customBaseUrl, 'custom endpoint');
+            newSettings.openaiApiKey = keyOrExisting(body.openaiApiKey, existing.openaiApiKey);
+            newSettings.customApiKey = keyOrExisting(body.customApiKey, existing.customApiKey);
             // System prompt (user-authored, always save as-is)
             if (body.systemPrompt !== undefined && body.systemPrompt !== null) {
                 newSettings.systemPrompt = String(body.systemPrompt);
@@ -899,151 +499,106 @@ function createLLMPluginServer(RED) {
             } else {
                 newSettings.maxPromptLength = existing.maxPromptLength || 10000;
             }
-            savePluginSettings(newSettings);
+            // Awaited: RED.settings.set is asynchronous, so answering 200
+            // before it resolves reports a save the user may not actually have.
+            await savePluginSettings(newSettings);
             res.status(200).send();
         } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
+            fail(res, error);
         }
     });
-
-    // --- Model list ---
-    RED.httpAdmin.get('/llm-plugin/ollama/models', async function(req, res) {
-        try {
-            const models = await listOllamaModels();
-            res.json({ models });
-        } catch (error) {
-            console.error('[LLM Plugin] Error fetching Ollama models:', redactSecrets(error && error.message ? error.message : error));
-            res.status(500).json({ error: 'Failed to list Ollama models' });
-        }
-    });
-
 
     // --- Chat history endpoints ---
-    RED.httpAdmin.get('/llm-plugin/chat-histories', function(req, res) {
+    RED.httpAdmin.get('/llm-plugin/chats', guard(PERM_READ), function(req, res) {
         try {
-            const chatHistories = loadAllChatHistories();
-            res.json({ chatHistories: chatHistories });
+            res.json({ chatHistories: loadAllChatHistories() });
         } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
+            fail(res, error);
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/save-chat', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/chats/save', guard(PERM_WRITE), function(req, res) {
         try {
-            const { chatId, chatData } = req.body;
+            const { chatId, chatData } = req.body || {};
             if (!chatId || !chatData) {
                 return res.status(400).json({ error: 'Chat ID and data required' });
             }
+            assertStorableSize(chatData, 'Chat data');
             saveChatHistory(chatId, chatData);
             res.json({ success: true });
         } catch (error) {
-            res.status(500).json({ error: redactSecrets(error.message) });
+            fail(res, error);
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/delete-chat', function(req, res) {
+    // Idempotent: a chat that is already gone is a success. Its checkpoints
+    // go with it.
+    RED.httpAdmin.post('/llm-plugin/chats/delete', guard(PERM_WRITE), function(req, res) {
         try {
-            const { chatId, filename } = req.body || {};
-
-            if (!persistenceEnabled) {
-                if (chatId) delete memChats[chatId];
-                Object.keys(memCheckpoints).forEach(function(k) {
-                    if (memCheckpoints[k] && memCheckpoints[k].chatId === chatId) delete memCheckpoints[k];
-                });
-                return res.json({ success: true });
+            const chatId = (req.body || {}).chatId;
+            if (!chatId || typeof chatId !== 'string') {
+                return res.status(400).json({ error: 'Chat ID required' });
             }
-
-            if (!fs.existsSync(chatsDir)) return res.json({ success: true });
-
-            function cleanupCheckpointsByChatId(targetChatId) {
-                if (!targetChatId) return;
-                try {
-                    const cpFiles = fs.readdirSync(checkpointsDir).filter(file => file.endsWith('.json'));
-                    cpFiles.forEach(file => {
-                        const fp = path.join(checkpointsDir, file);
-                        try {
-                            const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
-                            if (cp && cp.chatId === targetChatId) fs.unlinkSync(fp);
-                        } catch (e) {
-                            console.warn('[LLM Plugin] Failed to clean up checkpoint file:', file, e && e.message ? e.message : e);
-                        }
-                    });
-                } catch (e) { /* ignore cleanup issues */ }
-            }
-
-            // If filename provided, only allow basename (no path traversal) and delete directly
-            if (filename && typeof filename === 'string') {
-                const safeName = path.basename(filename);
-                const filepath = path.resolve(chatsDir, safeName);
-                if (!filepath.startsWith(path.resolve(chatsDir) + path.sep)) {
-                    return res.status(400).json({ error: 'Invalid filename' });
-                }
-                if (fs.existsSync(filepath)) {
-                    let targetChatId = null;
-                    try {
-                        const content = fs.readFileSync(filepath, 'utf8');
-                        const chatData = JSON.parse(content);
-                        if (chatData && chatData.id) targetChatId = chatData.id;
-                    } catch (e) { /* ignore parse issues */ }
-                    fs.unlinkSync(filepath);
-                    cleanupCheckpointsByChatId(targetChatId || chatId || null);
-                    return res.json({ success: true });
-                }
-                // Already gone -> idempotent success
-                cleanupCheckpointsByChatId(chatId || null);
-                return res.json({ success: true });
-            }
-
-            // Fallback: match by chatId (legacy support)
-            if (!chatId) return res.status(400).json({ error: 'Chat ID or filename required' });
-            const chatFiles = fs.readdirSync(chatsDir).filter(file => file.endsWith('.json'));
-            let deleted = false;
-            chatFiles.forEach(file => {
-                try {
-                    const filepath = path.join(chatsDir, file);
-                    const content = fs.readFileSync(filepath, 'utf8');
-                    const chatData = JSON.parse(content);
-                    if (chatData && chatData.id === chatId) {
-                        fs.unlinkSync(filepath);
-                        deleted = true;
-                    }
-                } catch (e) {
-                    console.error('[LLM Plugin] Error checking/deleting chat file:', file, e);
-                }
-            });
-            // Always respond success if nothing found to keep idempotency
-            // Best-effort cleanup of checkpoints for this chat
-            cleanupCheckpointsByChatId(chatId);
-            return res.json({ success: deleted });
+            deleteChatHistory(chatId);
+            deleteCheckpointsOfChat(chatId);
+            return res.json({ success: true });
         } catch (error) {
-            console.error('[LLM Plugin] Error deleting chat file:', error);
-            return res.status(500).json({ error: redactSecrets(error.message) });
+            RED.log.error('[LLM Plugin] Error deleting chat: ' + errText(error));
+            return fail(res, error);
         }
     });
 
     // --- Checkpoint endpoints ---
-    RED.httpAdmin.post('/llm-plugin/checkpoint/save', function(req, res) {
+    RED.httpAdmin.post('/llm-plugin/checkpoints/save', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
-            const chatId = body.chatId || null;
-            const label = body.label || 'checkpoint';
             const flow = Array.isArray(body.flow) ? body.flow : [];
             const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
-
             if (flow.length === 0) {
                 return res.status(400).json({ error: 'flow array is required' });
             }
-            const cp = saveCheckpoint(chatId, label, flow, meta);
+            // The whole record, not just the flow: `meta` is caller-supplied too.
+            assertStorableSize({ flow: flow, meta: meta }, 'Checkpoint');
+            const chatId = body.chatId ? clip(body.chatId, 200) : null;
+            const cp = saveCheckpoint(chatId, clip(body.label || 'checkpoint', 200), flow, meta);
             return res.json({ checkpointId: cp.id, created: cp.created, label: cp.label });
         } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to save checkpoint') });
+            return fail(res, error, 'Failed to save checkpoint');
         }
     });
 
-    RED.httpAdmin.get('/llm-plugin/checkpoint/:id', function(req, res) {
+    // Checkpoint headers (no flow bodies), newest first; `?source=node-apply`
+    // narrows to node checkpoints. See docs/{en,jp}/design.md §9.
+    RED.httpAdmin.get('/llm-plugin/checkpoints', guard(PERM_READ), function(req, res) {
         try {
-            const id = path.basename(String(req.params.id || ''));
-            if (!id || !/^cp_\d+_[a-z0-9]+$/.test(id)) {
+            const wanted = req.query && req.query.source ? String(req.query.source) : null;
+            let heads;
+            if (!persistenceEnabled) {
+                heads = Object.keys(memCheckpoints).map(function(k) {
+                    return checkpointHeader(memCheckpoints[k]);
+                });
+            } else {
+                heads = fs.readdirSync(checkpointsDir)
+                    .filter(function(name) { return CHECKPOINT_FILE_RE.test(name); })
+                    .map(readCheckpointHeader)
+                    .filter(Boolean);
+            }
+            if (wanted) {
+                heads = heads.filter(function(h) { return h.meta && h.meta.source === wanted; });
+            }
+            heads.sort(function(a, b) {
+                return String(b.created || "").localeCompare(String(a.created || ""));
+            });
+            return res.json({ checkpoints: heads });
+        } catch (error) {
+            return fail(res, error, 'Failed to list checkpoints');
+        }
+    });
+
+    RED.httpAdmin.get('/llm-plugin/checkpoints/:id', guard(PERM_READ), function(req, res) {
+        try {
+            const id = String(req.params.id || '');
+            if (!CHECKPOINT_ID_RE.test(id)) {
                 return res.status(400).json({ error: 'Invalid checkpoint id' });
             }
             if (!persistenceEnabled) {
@@ -1051,76 +606,88 @@ function createLLMPluginServer(RED) {
                 if (!cp) return res.status(404).json({ error: 'Checkpoint not found' });
                 return res.json({ checkpoint: cp });
             }
-            const fp = path.resolve(checkpointsDir, id + '.json');
-            if (!fp.startsWith(path.resolve(checkpointsDir) + path.sep)) {
-                return res.status(400).json({ error: 'Invalid checkpoint id' });
-            }
+            const fp = path.join(checkpointsDir, id + '.json');
             if (!fs.existsSync(fp)) {
                 return res.status(404).json({ error: 'Checkpoint not found' });
             }
-            const cp = JSON.parse(fs.readFileSync(fp, 'utf8'));
-            return res.json({ checkpoint: cp });
+            return res.json({ checkpoint: JSON.parse(fs.readFileSync(fp, 'utf8')) });
         } catch (error) {
-            return res.status(500).json({ error: redactSecrets(error.message || 'Failed to load checkpoint') });
+            return fail(res, error, 'Failed to load checkpoint');
         }
     });
 
-    RED.httpAdmin.post('/llm-plugin/client-log', function(req, res) {
+    // An Agent-node reply is published to every editor; the first one to
+    // claim it applies it, the rest drop it. PERM_WRITE, so an editor that
+    // could not deploy the edit never makes it. See docs/{en,jp}/llm-request.md.
+    RED.httpAdmin.post('/llm-plugin/agent-apply/claim', guard(PERM_WRITE), function(req, res) {
+        try {
+            return res.json({ granted: agentDispatch.claim(String((req.body || {}).dispatchId || '')) });
+        } catch (error) {
+            return fail(res, error);
+        }
+    });
+
+    RED.httpAdmin.post('/llm-plugin/client-log', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
             writeClientEvent(body.level, body.event, body.message, body.meta);
             return res.json({ ok: true });
         } catch (error) {
-            return res.status(500).json({ ok: false, error: redactSecrets(error.message || 'Failed to write client log') });
+            return fail(res, error, 'Failed to write client log');
         }
     });
 
-    RED.httpAdmin.get('/llm-plugin_styles.css', function(req, res) {
+    // ------------------------------------------------------------------ //
+    //  Static client files                                                //
+    // ------------------------------------------------------------------ //
+    // Unauthenticated by necessity (script and link tags send no auth
+    // header), so each route serves a fixed list and nothing else.
+
+    function serveFile(res, filePath, contentType) {
         try {
-            const cssPath = path.join(__dirname, '..', 'llm-plugin_styles.css');
-            if (fs.existsSync(cssPath)) {
-                res.setHeader('Content-Type', 'text/css; charset=utf-8');
-                const cssContent = fs.readFileSync(cssPath, 'utf8');
-                res.send(cssContent);
-            } else {
-                res.status(404).send('/* CSS file not found */');
-            }
+            const content = fs.readFileSync(filePath, 'utf8');
+            res.setHeader('Content-Type', contentType);
+            res.send(content);
         } catch (error) {
-            console.error('[LLM Plugin] Error serving CSS:', error);
-            res.status(500).send('/* Error loading CSS */');
+            RED.log.error('[LLM Plugin] Error serving ' + path.basename(filePath) + ': ' + errText(error));
+            res.status(404).send('/* Not found */');
         }
+    }
+
+    // The bundled marked.js, so Markdown rendering works offline. Its
+    // exports map hides lib/, hence resolving through package.json.
+    RED.httpAdmin.get('/llm-plugin/vendor/marked.js', function(req, res) {
+        let markedPath;
+        try {
+            markedPath = path.join(path.dirname(require.resolve('marked/package.json')), 'lib', 'marked.umd.js');
+        } catch (error) {
+            return res.status(404).send('/* marked.js not available */');
+        }
+        serveFile(res, markedPath, 'application/javascript; charset=utf-8');
     });
 
-    RED.httpAdmin.get('/llm-plugin/src/*', function(req, res) {
-        try {
-            const relPathRaw = String((req.params && req.params[0]) || '');
-            const normalized = path.normalize(relPathRaw).replace(/\\/g, '/');
-            // Prevent path traversal / absolute paths
-            if (!normalized || normalized.indexOf('..') !== -1 || normalized.startsWith('/')) {
-                return res.status(400).send('Invalid file');
-            }
-            const filePath = path.join(__dirname, normalized);
-            const srcRoot = path.join(__dirname);
-            const relativePath = path.relative(srcRoot, filePath);
-            if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-                return res.status(400).send('Invalid file path');
-            }
-            if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-                const ext = path.extname(filePath).toLowerCase();
-                let contentType = 'application/octet-stream';
-                if (ext === '.js') contentType = 'application/javascript; charset=utf-8';
-                else if (ext === '.css') contentType = 'text/css; charset=utf-8';
-                else if (ext === '.json') contentType = 'application/json; charset=utf-8';
-                res.setHeader('Content-Type', contentType);
-                const content = fs.readFileSync(filePath, 'utf8');
-                res.send(content);
-            } else {
-                res.status(404).send('/* Not found */');
-            }
-        } catch (error) {
-            console.error('[LLM Plugin] Error serving client file:', error);
-            res.status(500).send('/* Error */');
-        }
+    RED.httpAdmin.get('/llm-plugin/styles.css', function(req, res) {
+        serveFile(res, path.join(__dirname, '..', 'llm-plugin_styles.css'), 'text/css; charset=utf-8');
+    });
+
+    // Exactly what client.js loads — never the server-side modules beside
+    // them. test/http_transport.test.js keeps the two lists equal.
+    const CLIENT_FILES = [
+        'client.js',
+        'common.js',
+        'core/canvas_layout.js',
+        'core/flow_converter_core.js',
+        'core/llm_json_parser.js',
+        'chat_manager.js',
+        'importer.js',
+        'ui_core.js',
+        'vibe_ui.js',
+        'agent_apply.js'
+    ];
+    CLIENT_FILES.forEach(function(file) {
+        RED.httpAdmin.get('/llm-plugin/src/' + file, function(req, res) {
+            serveFile(res, path.join(__dirname, file), 'application/javascript; charset=utf-8');
+        });
     });
 
     RED.log.info("[LLM Plugin] Server initialized successfully");

@@ -19,6 +19,12 @@
     color: #333;
     font-size: 16px;
 }
+.llm-plugin-heading {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
 .header-buttons {
     display: flex;
     gap: 5px;
@@ -34,6 +40,21 @@
 }
 .header-btn:hover {
     background: #005a9c;
+}
+/* Quiet by design: a way out to the docs, not a fifth control. It sits by
+   the title rather than in the button row, which is already close to the
+   sidebar's default width. */
+.header-link {
+    display: flex;
+    align-items: center;
+    padding: 0 2px;
+    color: #999;
+    font-size: 15px;
+    text-decoration: none;
+}
+.header-link:hover {
+    color: #333;
+    text-decoration: none;
 }
 .chat-modal {
     position: fixed;
@@ -199,7 +220,7 @@
     box-shadow: 0 1px 2px rgba(0,0,0,0.08);
     margin-left: 4px;
 }
-.retry-btn i.fa-redo {
+.retry-btn i.fa-refresh {
     color: #222;
     font-size: 16px;
     margin: 0;
@@ -208,6 +229,20 @@
     background: #f0f0f0;
     border: 1px solid #888;
     color: #222;
+}
+.llm-plugin-notice {
+    margin: 4px 0;
+    padding: 4px 8px;
+    border-left: 3px solid #d58a00;
+    font-size: 12px;
+    color: #6b4a00;
+    background: #fff8e6;
+    word-wrap: break-word;
+}
+.llm-plugin-notice.notice-error {
+    border-left-color: #c9302c;
+    color: #8a1f1b;
+    background: #fdecea;
 }
 .loading-message {
     opacity: 0.7;
@@ -231,7 +266,6 @@
     border: 1px solid #b6d8f2;
     text-decoration: none;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
-    user-select: none;
 }
 .message-content code.llm-node-ref::before {
     content: "\f0c1";
@@ -252,16 +286,13 @@
 .message-content code.llm-node-ref:active {
     background: #084178;
 }
-.message-content pre,
-.json-block {
+.message-content pre {
     background: #2d3748;
     color: #e2e8f0;
     padding: 10px;
     border-radius: 5px;
     margin: 10px 0;
     overflow-x: auto;
-}
-.message-content pre {
     white-space: pre-wrap;
 }
 .message-content strong {
@@ -297,23 +328,93 @@
     cursor: pointer;
     font-size: 12px;
 }
+/* Above the message rather than below it, so the two margins swap. */
+.pre-chat-actions {
+    margin-top: 0;
+    margin-bottom: 10px;
+    /* Above the prompt and on the prompt's side: the user's own messages are
+       right-aligned, and this button undoes what one of them led to. */
+    text-align: right;
+}
+.pre-chat-actions .restore-btn {
+    margin-right: 0;
+}
 .restore-btn:hover {
     background: #d97706;
 }
-.raw-json {
-    background: #2d3748;
-    color: #e2e8f0;
-    padding: 10px;
-    border-radius: 5px;
-    margin: 10px 0;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    border: none;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
+/* Rides on the schema block's own header, so the control that applies a
+   proposal sits with the proposal. Floated: the summary keeps its disclosure
+   triangle and its label on the left. */
+.json-collapsible > summary .reapply-btn {
+    float: right;
+    margin: -2px 0 0 8px;
+    padding: 2px 8px;
 }
-
+.reapply-btn {
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-right: 5px;
+    cursor: pointer;
+    font-size: 12px;
+}
+/* One choice taken in either direction, so one colour — declared together so
+   it cannot drift. It has to be said here because `.flow-actions button`
+   above already colours the Restore bar, and that rule never reaches Apply
+   Again, which sits in a <summary>. The Restore Points dialog keeps the plain
+   `.restore-btn` colour: different surface, different question. */
+.pre-chat-actions .restore-btn,
+.reapply-btn {
+    background: #28a745;
+}
+.pre-chat-actions .restore-btn:hover,
+.reapply-btn:hover {
+    background: #218838;
+}
+/* Restore-point browser */
+.checkpoint-filter {
+    display: flex;
+    gap: 12px;
+    padding: 8px 4px;
+    font-size: 12px;
+    color: #555;
+    border-bottom: 1px solid #eee;
+}
+.checkpoint-filter label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+/* Which producer a restore point came from. Node-driven ones accumulate
+   unattended, so the badge is what tells them apart at a glance. */
+.checkpoint-source {
+    display: inline-block;
+    font-size: 10px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
+    color: #fff;
+    background: #6c757d;
+}
+.checkpoint-source.source-node-apply { background: #7048e8; }
+.checkpoint-source.source-pre-import { background: #1c7ed6; }
+.checkpoint-empty {
+    padding: 12px 4px;
+    color: #777;
+    font-size: 12px;
+}
 /* Collapsible JSON blocks */
+/* A bubble holding one is as wide as it will be once the block is open, so
+   the header — and the button sitting on it — does not move when it is
+   expanded. The block scrolls inside that width rather than widening it. */
+.assistant-message .message-content.has-json-block {
+    width: 100%;
+    box-sizing: border-box;
+}
 .json-collapsible {
     margin: 10px 0;
     border: 1px solid #4a5568;
@@ -352,7 +453,7 @@
     border-radius: 0;
     border-top: 1px solid #4a5568;
     max-height: 400px;
-    overflow-y: auto;
+    overflow: auto;
 }
 .llm-plugin-input {
     border-top: 1px solid #ddd;
@@ -431,6 +532,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.flow-selector-all {
+    font-weight: 600;
+    border-bottom: 1px solid #ddd;
+    margin-bottom: 2px;
+    padding-bottom: 5px;
+}
 .flow-selector-current {
     font-weight: 600;
 }
@@ -443,6 +550,26 @@
     padding: 6px 8px;
     color: #999;
     font-style: italic;
+}
+/* Mode + model on one line, two when the sidebar is narrow. The model input
+   is the flexible half — it is the one whose text runs long — and its basis
+   is what decides when the row breaks. */
+.session-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.session-row .agent-mode-row {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+}
+.session-row .model-input {
+    flex: 1 1 180px;
+    min-width: 140px;
+    width: auto;
+    margin-bottom: 0;
 }
 .agent-mode-row {
     display: flex;
@@ -457,14 +584,6 @@
     color: #666;
 }
 .mode-select {
-    border: 1px solid #ccc;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-size: 12px;
-    background: #fff;
-}
-.agent-checks-input {
-    width: 62px;
     border: 1px solid #ccc;
     border-radius: 3px;
     padding: 4px 6px;

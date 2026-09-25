@@ -2,97 +2,112 @@
 // Handles message rendering, flow context export, and retry logic.
 (function(){
     let UI = {};
+    // client.js loads these before this file.
+    let Common = window.LLMPlugin.Common;
+    let Converter = window.LLMPlugin.FlowConverterCore;
+    let Parser = window.LLMPlugin.LLMJsonParser;
+    let escapeHtml = Common.escapeHtml;
 
-    // Escape HTML special characters to prevent XSS
-    function escapeHtml(str) {
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    // Messages render inside the editor, which holds admin privileges. URLs
+    // are resolved through the DOM, not matched by regex — entity encoding
+    // defeats a regex. See docs/{en,jp}/architecture.md — Security measures.
+    let SAFE_URL_SCHEMES = { 'http:': 1, 'https:': 1, 'mailto:': 1, 'tel:': 1 };
+    function sanitizeRenderedHtml(html) {
+        // Inert document, not innerHTML on a live element: the allowlist below
+        // must run before anything can be fetched. There is deliberately no
+        // fallback — the only one available is the very thing this avoids.
+        let holder = new DOMParser().parseFromString(html, 'text/html').body;
+        // A Markdown image becomes a link: rendering it would fetch the URL,
+        // and a reply steered by text in the flow can put the flow's contents
+        // in that URL. A link sends nothing until it is clicked.
+        holder.querySelectorAll('img').forEach(function(img) {
+            let a = holder.ownerDocument.createElement('a');
+            let src = img.getAttribute('src') || '';
+            a.textContent = img.getAttribute('alt') || src;
+            a.setAttribute('href', src);
+            img.replaceWith(a);
+        });
+        // Anchors: keep the text, drop an unsafe href (relative/#/http(s)
+        // resolve to http:/https: and are allowed).
+        holder.querySelectorAll('a[href]').forEach(function(a) {
+            let scheme = '';
+            try { scheme = (a.protocol || '').toLowerCase(); } catch (e) { scheme = ''; }
+            if (!SAFE_URL_SCHEMES[scheme]) a.removeAttribute('href');
+            a.setAttribute('rel', 'noopener noreferrer');
+        });
+        // Nothing else Markdown produces loads a resource.
+        holder.querySelectorAll('[src]').forEach(function(el) { el.removeAttribute('src'); });
+        return holder.innerHTML;
+    }
+
+    // Raw HTML in a reply is text, not markup. Escaping it here rather than in
+    // the source text is what keeps marked's own escaping of code off it: a
+    // pre-escaped `&gt;` came back out of a code block as a visible `&gt;`.
+    let _renderer = null;
+    function markdownRenderer() {
+        if (_renderer || typeof marked.Renderer !== 'function') return _renderer;
+        _renderer = new marked.Renderer();
+        _renderer.html = function(token) {
+            return escapeHtml((token && token.text) || '');
+        };
+        return _renderer;
     }
 
     function formatMessage(text) {
         // Run with marked.js (assumed present in modern Node-RED environments)
         if (typeof marked !== 'undefined' && marked.parse) {
             let raw = String(text || '').trim();
-            if (raw && (raw.charAt(0) === '{' || raw.charAt(0) === '[')) {
-                try {
-                    let parsedRaw = JSON.parse(raw);
-                    if (parsedRaw && typeof parsedRaw === 'object') {
-                        let descHtml = '';
-                        let displayObj = parsedRaw;
-                        if (parsedRaw.nodes && parsedRaw.connections &&
-                            parsedRaw.description && typeof parsedRaw.description === 'string') {
-                            descHtml = '<p>' + escapeHtml(parsedRaw.description) + '</p>';
-                            displayObj = JSON.parse(JSON.stringify(parsedRaw));
-                            delete displayObj.description;
-                        }
-                        return descHtml + '<pre><code class="language-json">' +
-                            escapeHtml(JSON.stringify(displayObj, null, 2)) +
-                            '</code></pre>';
-                    }
-                } catch (e) { /* not raw JSON */ }
+            // A reply that is nothing but JSON: its indented lines are not
+            // prose, so it goes to collapseJsonBlocks as one block instead.
+            if (raw.charAt(0) === '{' || raw.charAt(0) === '[') {
+                let read = Parser.parseJsonBlock(raw);
+                if (read && read.value && typeof read.value === 'object') {
+                    return '<pre><code class="language-json">' +
+                        escapeHtml(raw) + '</code></pre>';
+                }
             }
 
-            let safeText = String(text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            let html = marked.parse(safeText);
-            return html.replace(/href\s*=\s*(["'])\s*javascript:/gi, 'href=$1#blocked:');
+            let renderer = markdownRenderer();
+            let html = renderer ? marked.parse(raw, { renderer: renderer })
+                                : marked.parse(raw.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+            return sanitizeRenderedHtml(html);
         }
 
         return escapeHtml(text);
     }
 
-    // Focus on a node — mirrors Node-RED's Debug sidebar exactly
-    // (editor-client/src/js/ui/debug.js → showMessageNode):
-    //
-    //   if (n.z)           { RED.workspaces.show(n.z); }
-    //   n.highlighted = true; n.dirty = true;
-    //   RED.view.reveal(n.id);
-    //   ... clear highlighted after ~10 s
-    //
-    // Config nodes have no canvas position, so they open their edit
-    // dialog (RED.editor.editConfig) instead.
+    // Focus a node the way the Debug sidebar does; config nodes have no
+    // position, so they open their dialog instead. Best effort throughout.
     function focusCanvasNode(nodeId) {
         try {
-            if (!nodeId || typeof RED === 'undefined' || !RED.nodes) return;
+            if (!nodeId) return;
             let node = RED.nodes.node(nodeId);
             if (!node) {
-                if (RED.notify) RED.notify('Node no longer exists', 'warning');
+                Common.notice('Node no longer exists', 'warning');
                 return;
             }
 
-            let hasCanvasPos = typeof node.x === 'number' && typeof node.y === 'number';
-            if (!hasCanvasPos) {
-                if (RED.editor && typeof RED.editor.editConfig === 'function') {
-                    try { RED.editor.editConfig('', node.type, node.id); return; } catch (e) {}
-                }
-                if (RED.editor && typeof RED.editor.edit === 'function') {
-                    try { RED.editor.edit(node); return; } catch (e) {}
-                }
-                if (RED.notify) RED.notify('Cannot focus config "' + (node.name || node.id) + '"', 'warning');
+            // Config nodes have no canvas position — open their editor instead.
+            if (typeof node.x !== 'number' || typeof node.y !== 'number') {
+                RED.editor.editConfig('', node.type, node.id);
                 return;
             }
 
-            if (node.z && RED.workspaces && typeof RED.workspaces.show === 'function') {
-                try { RED.workspaces.show(node.z); } catch (e) {}
-            }
-            try { node.highlighted = true; node.dirty = true; } catch (e) {}
+            if (node.z) RED.workspaces.show(node.z);
+            node.highlighted = true;
+            node.dirty = true;
+            RED.view.reveal(node.id);
+            RED.view.redraw();
 
-            if (RED.view && typeof RED.view.reveal === 'function') {
-                try { RED.view.reveal(node.id); } catch (e) {}
-            }
-            if (RED.view && typeof RED.view.redraw === 'function') {
-                try { RED.view.redraw(); } catch (e) {}
-            }
             setTimeout(function() {
-                try {
-                    let live = RED.nodes.node(nodeId);
-                    if (live) {
-                        live.highlighted = false;
-                        live.dirty = true;
-                        if (RED.view && RED.view.redraw) RED.view.redraw();
-                    }
-                } catch (e) {}
+                let live = RED.nodes.node(nodeId);
+                if (!live) return;
+                live.highlighted = false;
+                live.dirty = true;
+                RED.view.redraw();
             }, 2500);
         } catch (e) {
-            // Swallow silently — focus is a best-effort UX affordance.
+            console.warn('[LLM Plugin] Could not focus node', nodeId, e);
         }
     }
 
@@ -108,57 +123,27 @@
         });
     }
 
-    // Pass 1: walk inline <code> elements (skipping <pre>) and resolve
-    // each one against the live canvas via buildFlowLookup. Catches
-    // explicit references like `inject_sensor`.
-    //
-    // Pass 2: walk text nodes (skipping <code>, <pre>, <a>, <script>,
-    // <style>) and replace any token that exactly matches a known node
-    // alias with a clickable inline code. The system prompt instructs
-    // the LLM to backtick-quote node references; this scan is the
-    // safety net for when it forgets.
-    //
-    // Alias → ID determinism:
-    //   FlowConverterCore.toIntermediate (which buildFlowLookup wraps)
-    //   numbers duplicate aliases by iteration order — the first
-    //   `change`-typed unnamed node gets `change`, the next gets
-    //   `change_2`, etc. So an alias like `change_2` only resolves to
-    //   the same node IFF the alias map is built from the same node
-    //   list in the same order the LLM saw. When `targetFlowIds` is
-    //   provided we therefore reuse UI.getFlowsByIds, which is the
-    //   exact function that produced the LLM's context — same nodes,
-    //   same per-tab grouping, same config-collection logic — making
-    //   the alias→ID map bit-for-bit identical to what was sent.
-    //   Unscoped (legacy) messages fall back to scanning every node.
-    //   Every subsequent operation (Pass 1 resolve, Pass 2 lookup,
-    //   click handler, focusCanvasNode) keys off the resolved ID, not
-    //   the alias.
+    // Node references -> clickable: pass 1 over inline <code>, pass 2 over
+    // plain text. The alias map must come from the same node list the model
+    // saw, or a numbered alias points at a different node.
     function annotateNodeReferences(rootEl, targetFlowIds) {
         if (!rootEl) return;
-        if (typeof RED === 'undefined' || !RED.nodes || typeof RED.nodes.eachNode !== 'function') return;
-        if (!window.LLMPlugin || !LLMPlugin.LLMJsonParser ||
-            typeof LLMPlugin.LLMJsonParser.buildFlowLookup !== 'function') return;
 
         let scoped = Array.isArray(targetFlowIds) && targetFlowIds.length > 0;
         let allNodes = null;
-        if (scoped && typeof UI.getFlowsByIds === 'function') {
+        if (scoped) {
             try { allNodes = UI.getFlowsByIds(targetFlowIds); } catch (e) { allNodes = null; }
         }
         if (!Array.isArray(allNodes) || allNodes.length === 0) {
             allNodes = [];
-            try {
-                RED.nodes.eachNode(function(n) { if (n) allNodes.push(n); });
-                if (typeof RED.nodes.eachConfig === 'function') {
-                    RED.nodes.eachConfig(function(n) { if (n) allNodes.push(n); });
-                }
-            } catch (e) { return; }
+            RED.nodes.eachNode(function(n) { allNodes.push(n); });
+            RED.nodes.eachConfig(function(n) { allNodes.push(n); });
         }
         if (allNodes.length === 0) return;
 
-        let cfg = LLMPlugin.FlowConverterCore || null;
         let lookup;
         try {
-            lookup = LLMPlugin.LLMJsonParser.buildFlowLookup(allNodes, cfg);
+            lookup = Parser.buildFlowLookup(allNodes, Converter);
         } catch (e) { return; }
 
         function isFocusable(id) {
@@ -189,26 +174,18 @@
 
         // --- Pass 2: plain-text alias scan ---------------------------
         let aliasToId = lookup.aliasToId || {};
-        // Any alias that maps to a focusable node is eligible. We sort
-        // longest-first so compound aliases (`change_temperature_series`)
-        // win over their bare-type prefix (`change`) when both would
-        // match the same span. Aliases shorter than 3 chars are skipped
-        // — they're nearly always noise. Single-word aliases like
-        // `inject` are kept because users frequently leave inject /
-        // debug / function nodes unnamed.
+        // Longest-first so compound aliases win over their bare-type prefix;
+        // aliases under 3 chars are skipped as noise.
         let aliases = Object.keys(aliasToId).filter(function(a) {
             return a.length >= 3 && isFocusable(aliasToId[a]);
         });
         if (aliases.length === 0) return;
         aliases.sort(function(a, b) { return b.length - a.length; });
-        function escapeRe(s) { return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'); }
         let pattern;
         try {
-            pattern = new RegExp('\\b(' + aliases.map(escapeRe).join('|') + ')\\b', 'g');
+            pattern = new RegExp('\\b(' + aliases.map(Common.escapeRegExp).join('|') + ')\\b', 'g');
         } catch (e) { return; }
 
-        let TreeWalker = window.NodeFilter && document.createTreeWalker;
-        if (!TreeWalker) return;
         let walker = document.createTreeWalker(
             rootEl,
             NodeFilter.SHOW_TEXT,
@@ -217,8 +194,10 @@
                     let p = node.parentNode;
                     while (p && p !== rootEl) {
                         let tag = p.tagName;
+                        // SUMMARY too: a node ref found in a fold's label would
+                        // swallow the click that opens it.
                         if (tag === 'CODE' || tag === 'PRE' || tag === 'A' ||
-                            tag === 'SCRIPT' || tag === 'STYLE') {
+                            tag === 'SUMMARY' || tag === 'SCRIPT' || tag === 'STYLE') {
                             return NodeFilter.FILTER_REJECT;
                         }
                         p = p.parentNode;
@@ -265,13 +244,8 @@
         });
     }
 
-    // Re-annotate every assistant message in the chat panel. The chat
-    // panel can render historical messages BEFORE Node-RED finishes
-    // populating RED.nodes (the side panel initializes early in the
-    // editor's bootstrap), in which case the initial
-    // annotateNodeReferences call finds an empty alias map and skips
-    // silently. Hooking RED.events lets us catch up once nodes arrive,
-    // and keeps existing badges in sync when the user edits / deploys.
+    // Historical messages can render before RED.nodes is populated, so the
+    // editor's events catch up and keep annotations in sync.
     let _reannotateDebounce = null;
     function reannotateAllAssistantMessages() {
         let chatArea = document.getElementById('llm-plugin-chat');
@@ -299,10 +273,8 @@
             setTimeout(registerFlowsReadyHook, 200);
             return;
         }
-        // flows:loaded fires once after initial flow load. The node-level
-        // events keep annotations fresh as the user edits / deploys.
-        // workspace:change picks up tab switches that bring config nodes
-        // for newly-visited subflows into RED.nodes.
+        // flows:loaded fires once; the rest keep annotations fresh as the
+        // user edits, deploys and visits tabs.
         let events = ['flows:loaded', 'deploy', 'workspace:change',
                       'nodes:add', 'nodes:remove', 'nodes:change'];
         events.forEach(function(ev) {
@@ -314,26 +286,22 @@
     })();
 
     function createRestoreCheckpointButton(checkpointId) {
-        let btn = document.createElement('button');
-        btn.className = 'restore-btn';
-        btn.textContent = 'Restore Checkpoint';
+        let btn = Common.cloneTemplate('llm-plugin-restore-btn-template');
         btn.dataset.checkpointId = checkpointId;
         btn.addEventListener('click', function() {
             let cpId = btn.dataset.checkpointId;
-            if (!cpId || !LLMPlugin.Importer) return;
+            if (!cpId) return;
             let ok = confirm('Restore the flow from this checkpoint? Current flow will be replaced.');
             if (!ok) return;
             btn.disabled = true;
             LLMPlugin.Importer.restoreCheckpoint(cpId)
                 .then(function(result) {
-                    if (result && result.ok) {
-                        if (window.RED && RED.notify) RED.notify('Checkpoint restored', 'success');
-                    } else if (window.RED && RED.notify) {
-                        RED.notify((result && result.error) || 'Failed to restore checkpoint', 'error');
+                    if (!result || !result.ok) {
+                        Common.notice((result && result.error) || 'Failed to restore checkpoint', 'error');
                     }
                 })
                 .catch(function(err) {
-                    if (window.RED && RED.notify) RED.notify((err && err.message) || 'Failed to restore checkpoint', 'error');
+                    Common.notice((err && err.message) || 'Failed to restore checkpoint', 'error');
                 })
                 .finally(function() {
                     btn.disabled = false;
@@ -342,21 +310,250 @@
         return btn;
     }
 
-    UI.addMessageToUI = function(content, isUser, showActions, messageMeta) {
+    // A stored chat message keeps its per-turn facts under `.meta`; every
+    // read has to survive a message saved before the field existed.
+    function metaOf(messageMeta) {
+        return (messageMeta && messageMeta.meta) ? messageMeta.meta : {};
+    }
+
+    function targetFlowIdsOf(messageMeta) {
+        let ids = metaOf(messageMeta).targetFlowIds;
+        return Array.isArray(ids) ? ids : null;
+    }
+
+    function jsonBlockSummary(parsed, repaired) {
+        let label = 'JSON';
+        if (Converter.isVibeSchema(parsed)) label = 'Vibe Schema JSON';
+        else if (Array.isArray(parsed)) label = 'Flow JSON (' + parsed.length + ' nodes)';
+        // Say so: the block below is then the repaired reading, not the text
+        // the model sent, and that is what the import will use.
+        return repaired ? label + ' (repaired)' : label;
+    }
+
+    // Fold a JSON block into <details> so the prose around it stays readable.
+    // It folds on the same reading the importer uses, repairs included — a
+    // block the model broke is the one a reader most needs to get out of the
+    // way, so a `json` block that cannot be read at all folds too.
+    function foldJsonBlock(pre) {
+        let codeEl = pre.querySelector('code') || pre;
+        let text = codeEl.textContent || '';
+        let labelled = codeEl.classList && codeEl.classList.contains('language-json');
+        if (!labelled && !/^\s*[[{]/.test(text)) return;
+
+        let read = Parser.parseJsonBlock(text);
+        let parsed = read && read.value;
+        let summaryText;
+        if (parsed && typeof parsed === 'object') {
+            let display = parsed;
+            // A description inside the JSON is prose, so lift it out of the
+            // block the reader would have to expand to find it.
+            if (Converter.isVibeSchema(parsed) && typeof parsed.description === 'string') {
+                let descPara = document.createElement('p');
+                descPara.textContent = parsed.description;
+                pre.parentNode.insertBefore(descPara, pre);
+                display = JSON.parse(JSON.stringify(parsed));
+                delete display.description;
+            }
+            codeEl.textContent = JSON.stringify(display, null, 2);
+            summaryText = jsonBlockSummary(parsed, read.repaired);
+        } else {
+            if (!labelled) return;
+            summaryText = 'JSON (could not be read)';
+        }
+
+        let summary = document.createElement('summary');
+        summary.textContent = summaryText;
+        let details = document.createElement('details');
+        details.className = 'json-collapsible';
+        // The Apply Again button hangs off THIS block, so the control that
+        // applies the proposal sits with the proposal itself.
+        if (parsed && Converter.isVibeSchema(parsed)) details.dataset.vibeSchema = 'true';
+        pre.parentNode.insertBefore(details, pre);
+        details.appendChild(summary);
+        details.appendChild(pre);
+    }
+
+    function collapseJsonBlocks(container) {
+        let codeBlocks = container.querySelectorAll('pre');
+        for (let i = 0; i < codeBlocks.length; i++) {
+            if (codeBlocks[i].parentNode) foldJsonBlock(codeBlocks[i]);
+        }
+        // The bubble takes the width the open block will need, so expanding
+        // one does not reflow the header it is expanded from.
+        if (container.querySelector('.json-collapsible')) {
+            container.classList.add('has-json-block');
+        }
+    }
+
+    // `ask / gpt-4o / → Flow 1 / 1.5s` under an assistant reply. The mode and
+    // model are worth keeping visible after a mid-conversation switch.
+    function buildElapsedBadge(meta) {
+        if (typeof meta.elapsedMs !== 'number' || !isFinite(meta.elapsedMs)) return null;
+
+        let parts = [];
+        if (meta.mode === 'ask' || meta.mode === 'agent') parts.push(meta.mode);
+        if (meta.model && typeof meta.model === 'string') parts.push(meta.model);
+        if (meta.targetFlowName && typeof meta.targetFlowName === 'string') {
+            parts.push('→ ' + meta.targetFlowName);
+        }
+        parts.push((meta.elapsedMs / 1000).toFixed(1) + 's');
+
+        let elapsed = document.createElement('div');
+        elapsed.className = 'message-elapsed';
+        elapsed.textContent = parts.join(' / ');
+        return elapsed;
+    }
+
+    // The two halves of the same choice, each placed where it acts: Restore
+    // goes above the PROMPT, so everything below it is what gets rewound, and
+    // Apply Again rides on the schema block, so the control that applies a
+    // proposal sits with the proposal. In Agent mode the Import button below
+    // the message is hidden, which makes Apply Again the only way back to a
+    // proposal once it has been rewound.
+    function showPostImportActions(message, checkpointId, content, messageMeta) {
+        placeRestoreAboveThePrompt(message, checkpointId, messageMeta);
+        placeReapplyOnTheSchema(message, content, messageMeta);
+    }
+
+    // The prompt this reply answered — the first user message above it. Two
+    // replies in a row (a retry) have no prompt between them, so the walk
+    // stops at the previous reply rather than claiming an older prompt.
+    function promptAbove(message) {
+        let prev = message.previousElementSibling;
+        while (prev && prev.classList) {
+            if (prev.classList.contains('user-message')) return prev;
+            if (prev.classList.contains('assistant-message')) return null;
+            prev = prev.previousElementSibling;
+        }
+        return null;
+    }
+
+    function placeRestoreAboveThePrompt(message, checkpointId, messageMeta) {
+        let messageId = (messageMeta && messageMeta.id) || '';
+        let anchor = promptAbove(message) || message;
+        let parent = anchor.parentNode;
+        if (!parent) return;
+
+        // One bar per reply, wherever it was last put.
+        let selector = messageId
+            ? '.pre-chat-actions[data-restore-for="' + messageId + '"]'
+            : null;
+        if (selector && parent.querySelectorAll) {
+            parent.querySelectorAll(selector).forEach(function(b) { b.remove(); });
+        }
+        message.querySelectorAll('.pre-chat-actions').forEach(function(b) { b.remove(); });
+
+        let bar = Common.cloneTemplate('llm-plugin-pre-chat-actions-template');
+        if (messageId) bar.dataset.restoreFor = messageId;
+        bar.appendChild(createRestoreCheckpointButton(checkpointId));
+        parent.insertBefore(bar, anchor);
+    }
+
+    function placeReapplyOnTheSchema(message, content, messageMeta) {
+        message.querySelectorAll('.reapply-btn').forEach(function(b) { b.remove(); });
+        let summary = message.querySelector('.json-collapsible[data-vibe-schema] > summary');
+        // No schema block to hang it on (a reply carrying only directives, or
+        // one whose JSON could not be read): the actions row below keeps it
+        // reachable.
+        let host = summary || message.querySelector('.flow-actions:not(.pre-chat-actions)');
+        if (!host) return;
+        host.appendChild(createReapplyButton(message, content, messageMeta));
+    }
+
+    function createReapplyButton(message, content, messageMeta) {
+        let btn = Common.cloneTemplate('llm-plugin-reapply-btn-template');
+        btn.addEventListener('click', function(e) {
+            // Inside a <summary>, a click is the disclosure toggle unless it
+            // is stopped here.
+            e.preventDefault();
+            e.stopPropagation();
+            btn.disabled = true;
+            runImport(message, content, messageMeta)
+                .catch(function(err) {
+                    Common.notice('Import failed: ' + ((err && err.message) || err), 'error');
+                })
+                .finally(function() { btn.disabled = false; });
+        });
+        return btn;
+    }
+
+    // One import turn: a checkpoint of the flows it may write, then the
+    // import.
+    function applyImport(message, content, messageMeta, chatId) {
+        let targetFlowIds = targetFlowIdsOf(messageMeta);
+        return LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
+            .then(function(checkpointId) {
+                return LLMPlugin.Importer.importFlowFromMessage(content, {
+                    chatId: chatId,
+                    mode: metaOf(messageMeta).mode || 'ask',
+                    // The same set the checkpoint covers, so Restore can
+                    // always undo what the import did.
+                    allowedWorkspaceIds: targetFlowIds
+                }).then(function(result) {
+                    if (result && result.ok && checkpointId) {
+                        showPostImportActions(message, checkpointId, content, messageMeta);
+                        if (messageMeta && messageMeta.id) {
+                            LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
+                                pluginEdited: true,
+                                checkpointId: checkpointId
+                            });
+                        }
+                    }
+                    return result;
+                });
+            });
+    }
+
+    // The chat id is read at click time: the checkpoint belongs to the chat
+    // the reply is in, whichever chat is open when the apply finishes.
+    function runImport(message, content, messageMeta) {
+        let chatId = LLMPlugin.ChatManager.getCurrentChatId();
+        return applyImport(message, content, messageMeta, chatId);
+    }
+
+    function appendFlowActions(message, content, messageMeta) {
+        let flowNodes = LLMPlugin.Importer.extractFlowNodes(content);
+        let carriesFlow = (flowNodes && flowNodes.length > 0) ||
+            LLMPlugin.Importer.hasFlowDirectives(content);
+        if (!carriesFlow) return;
+
+        let flowActions = Common.cloneTemplate('llm-plugin-flow-actions-template');
+        let importBtn = flowActions.querySelector('.import-btn');
+        // Agent mode clicks this button itself, so showing it would only
+        // invite a second apply of the same reply.
+        if (metaOf(messageMeta).mode === 'agent') importBtn.style.display = 'none';
+
+        importBtn.addEventListener('click', function() {
+            importBtn.disabled = true;
+            runImport(message, content, messageMeta)
+                .catch(function(err) {
+                    Common.notice('Import failed: ' + ((err && err.message) || err), 'error');
+                })
+                .finally(function() { importBtn.disabled = false; });
+        });
+
+        // A message whose import already ran keeps both: rewind, or apply it
+        // again. Restored on reload from the stored meta, so the pair survives
+        // a chat being re-opened.
+        let meta = metaOf(messageMeta);
+        if (meta.pluginEdited && meta.checkpointId) {
+            showPostImportActions(message, meta.checkpointId, content, messageMeta);
+        }
+        message.appendChild(flowActions);
+    }
+
+    UI.addMessageToUI = function(content, isUser, messageMeta) {
         let chatArea = document.getElementById('llm-plugin-chat');
         if (!chatArea) return null;
 
         let message = document.createElement('div');
         message.className = 'llm-plugin-message ' + (isUser ? 'user-message' : 'assistant-message');
-        if (messageMeta && messageMeta.id) {
-            message.dataset.messageId = messageMeta.id;
-        }
-        // Persist the flow IDs that were sent as LLM context with this
-        // message, so reannotateAllAssistantMessages can rescope alias
-        // resolution after later events (flows:loaded, deploy, etc.).
-        let targetFlowIds = (messageMeta && messageMeta.meta &&
-                             Array.isArray(messageMeta.meta.targetFlowIds))
-            ? messageMeta.meta.targetFlowIds : null;
+        if (messageMeta && messageMeta.id) message.dataset.messageId = messageMeta.id;
+
+        // Keep the flow IDs sent as LLM context with this message, so
+        // reannotateAllAssistantMessages can rescope alias resolution after
+        // later events (flows:loaded, deploy, etc.).
+        let targetFlowIds = targetFlowIdsOf(messageMeta);
         if (targetFlowIds && targetFlowIds.length > 0) {
             try { message.dataset.targetFlowIds = JSON.stringify(targetFlowIds); } catch (e) {}
         }
@@ -364,238 +561,118 @@
         let messageContent = document.createElement('div');
         messageContent.className = 'message-content';
         messageContent.innerHTML = formatMessage(content);
-
-        // Wrap JSON / Vibe-Schema code blocks in a collapsible <details> element
-        let codeBlocks = messageContent.querySelectorAll('pre');
-        for (let i = 0; i < codeBlocks.length; i++) {
-            let pre = codeBlocks[i];
-            let codeEl = pre.querySelector('code') || pre;
-            try {
-                let text = codeEl.textContent || '';
-                let parsed = JSON.parse(text);
-                if (parsed && typeof parsed === 'object') {
-                    let details = document.createElement('details');
-                    details.className = 'json-collapsible';
-                    let summary = document.createElement('summary');
-
-                    // Mirror FlowConverterCore.isVibeSchema: `nodes` OR
-                    // `connections` alone is valid (e.g. a node-prop-only
-                    // edit omits connections, a wiring tweak omits nodes).
-                    let hasNodesObj = parsed.nodes && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes);
-                    let hasConnectionsArr = Array.isArray(parsed.connections);
-                    let isVibeSchema = hasNodesObj || hasConnectionsArr;
-                    if (isVibeSchema) {
-                        summary.textContent = 'Vibe Schema JSON';
-                        // If the LLM included a description inside the JSON,
-                        // show it as a text paragraph and strip from the JSON display.
-                        if (parsed.description && typeof parsed.description === 'string') {
-                            let descPara = document.createElement('p');
-                            descPara.textContent = parsed.description;
-                            pre.parentNode.insertBefore(descPara, pre);
-                            // Re-render the code block without the description field
-                            let display = JSON.parse(JSON.stringify(parsed));
-                            delete display.description;
-                            codeEl.textContent = JSON.stringify(display, null, 2);
-                        }
-                    } else if (Array.isArray(parsed)) {
-                        summary.textContent = 'Flow JSON (' + parsed.length + ' nodes)';
-                    } else {
-                        summary.textContent = 'JSON';
-                    }
-                    pre.parentNode.insertBefore(details, pre);
-                    details.appendChild(summary);
-                    details.appendChild(pre);
-                }
-            } catch (e) { /* not JSON — leave as-is */ }
-        }
-
-        // Make inline code that names a current canvas node clickable -
-        // mirrors Node-RED's debug-node "jump to node" behaviour. The
-        // immediate call wins when RED.nodes is already populated; the
-        // flows-loaded hook (registered once at module load) catches
-        // the cold-start race where this runs before flows finish
-        // loading.
-        if (!isUser) {
-            try { annotateNodeReferences(messageContent, targetFlowIds); } catch (e) {}
-        }
-
+        collapseJsonBlocks(messageContent);
         message.appendChild(messageContent);
 
         if (!isUser) {
-            let meta = messageMeta && messageMeta.meta ? messageMeta.meta : null;
-            if (meta && typeof meta.elapsedMs === 'number' && isFinite(meta.elapsedMs)) {
-                let elapsed = document.createElement('div');
-                elapsed.className = 'message-elapsed';
-                let parts = [];
-                // Show the turn's mode (ask / agent) so the user can tell at a
-                // glance which mode produced this response - especially useful
-                // after switching modes mid-conversation.
-                if (meta.mode === 'ask' || meta.mode === 'agent') {
-                    parts.push(meta.mode);
-                }
-                if (meta.model && typeof meta.model === 'string') {
-                    parts.push(meta.model);
-                }
-                parts.push((meta.elapsedMs / 1000).toFixed(1) + 's');
-                elapsed.textContent = parts.join(' / ');
-                message.appendChild(elapsed);
-            }
+            // The immediate call wins once RED.nodes is populated; the
+            // flows-loaded hook covers the cold-start race.
+            try { annotateNodeReferences(messageContent, targetFlowIds); } catch (e) {}
+
+            let badge = buildElapsedBadge(metaOf(messageMeta));
+            if (badge) message.appendChild(badge);
         }
 
-        if (!isUser && showActions) {
-            let messageActions = document.createElement('div');
-            messageActions.className = 'message-actions';
-            let retryBtn = document.createElement('button');
-            retryBtn.className = 'retry-btn';
-            let retryIcon = document.createElement('i');
-            retryIcon.className = 'fa fa-redo';
-            retryIcon.setAttribute('aria-hidden', 'true');
-            retryIcon.style.color = '#222';
-            retryBtn.appendChild(retryIcon);
-            retryBtn.title = 'Retry message';
-            retryBtn.addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
-            messageActions.appendChild(retryBtn);
-            message.appendChild(messageActions);
-        }
+        chatArea.appendChild(message);
 
+        // After the message is in the chat, not before: the Restore bar goes
+        // above the PROMPT, which means reaching the message's neighbours.
         if (!isUser) {
             try {
-                let flowNodes = LLMPlugin.Importer ? LLMPlugin.Importer.extractFlowNodes(content) : null;
-                let hasDirectivesOnly = !flowNodes || flowNodes.length === 0
-                    ? !!(LLMPlugin.Importer && LLMPlugin.Importer.hasFlowDirectives(content))
-                    : false;
-                if ((flowNodes && flowNodes.length > 0) || hasDirectivesOnly) {
-                    let flowActions = document.createElement('div');
-                    flowActions.className = 'flow-actions';
-                    let importBtn = document.createElement('button');
-                    importBtn.className = 'import-btn';
-                    importBtn.textContent = 'Import Flow';
-                    
-                    let isAgent = messageMeta && messageMeta.meta && messageMeta.meta.mode === 'agent';
-                    if (isAgent) importBtn.style.display = 'none';
-
-                    importBtn.addEventListener('click', function() {
-                        if (!LLMPlugin.Importer) return;
-                        importBtn.disabled = true;
-                        let chatId = LLMPlugin.ChatManager ? LLMPlugin.ChatManager.getCurrentChatId() : null;
-                        let targetFlowIds = (messageMeta && messageMeta.meta && Array.isArray(messageMeta.meta.targetFlowIds))
-                            ? messageMeta.meta.targetFlowIds
-                            : null;
-
-                        // Capture the checkpoint immediately before the
-                        // import so the Restore button always points at the
-                        // true pre-edit state. If the save fails we still
-                        // run the import (just with no Restore button).
-                        let checkpointPromise = (LLMPlugin.ChatManager && LLMPlugin.ChatManager.saveImportCheckpoint)
-                            ? LLMPlugin.ChatManager.saveImportCheckpoint(chatId, targetFlowIds)
-                            : Promise.resolve(null);
-
-                        checkpointPromise.then(function(checkpointId) {
-                            return LLMPlugin.Importer.importFlowFromMessage(content, {
-                                chatId: chatId,
-                                mode: (messageMeta && messageMeta.meta && messageMeta.meta.mode) ? messageMeta.meta.mode : 'ask'
-                            }).then(function(result) {
-                                return { result: result, checkpointId: checkpointId };
-                            });
-                        })
-                        .then(function(combined) {
-                            let result = combined.result;
-                            let checkpointId = combined.checkpointId;
-                            if (!result || !result.ok) return;
-                            if (checkpointId) {
-                                let preChatActions = message.querySelector('.pre-chat-actions');
-                                if (!preChatActions) {
-                                    preChatActions = document.createElement('div');
-                                    preChatActions.className = 'flow-actions pre-chat-actions';
-                                    preChatActions.style.marginTop = '0';
-                                    preChatActions.style.marginBottom = '10px';
-                                    message.insertBefore(preChatActions, message.firstChild);
-                                }
-                                preChatActions.querySelectorAll('.restore-btn').forEach(function(b) { b.remove(); });
-                                preChatActions.appendChild(createRestoreCheckpointButton(checkpointId));
-                                if (messageMeta && messageMeta.id && LLMPlugin.ChatManager) {
-                                    LLMPlugin.ChatManager.updateMessageMeta(messageMeta.id, {
-                                        pluginEdited: true,
-                                        checkpointId: checkpointId
-                                    });
-                                }
-                            }
-                        })
-                        .catch(function() { /* import errors already surfaced */ })
-                        .finally(function() {
-                            importBtn.disabled = false;
-                        });
-                    });
-                    flowActions.appendChild(importBtn);
-
-                    // Rebuild restore button for previously edited plugin messages.
-                    let existingCheckpointId = messageMeta && messageMeta.meta && messageMeta.meta.pluginEdited
-                        ? messageMeta.meta.checkpointId
-                        : null;
-                    if (existingCheckpointId) {
-                        let preChatActions = document.createElement('div');
-                        preChatActions.className = 'flow-actions pre-chat-actions';
-                        preChatActions.style.marginTop = '0';
-                        preChatActions.style.marginBottom = '10px';
-                        preChatActions.appendChild(createRestoreCheckpointButton(existingCheckpointId));
-                        message.insertBefore(preChatActions, message.firstChild);
-                    }
-
-                    message.appendChild(flowActions);
-                }
-            } catch (e) {}
+                appendFlowActions(message, content, messageMeta);
+            } catch (e) {
+                // A malformed reply may legitimately fail to parse, but a
+                // missing template throws here too and must not vanish.
+                if (window.console) console.error('[LLM Plugin] flow actions not rendered:', e);
+            }
         }
+        UI.refreshRetryButton();
+        chatArea.scrollTop = chatArea.scrollHeight;
+        return message;
+    };
 
-          chatArea.appendChild(message);
-          chatArea.scrollTop = chatArea.scrollHeight;
-          return message;
-      };
+    function findChatMessage(messageId) {
+        if (!messageId) return null;
+        try {
+            let history = LLMPlugin.ChatManager.getChatHistory();
+            let chat = history[LLMPlugin.ChatManager.getCurrentChatId()];
+            if (!chat || !chat.messages) return null;
+            for (let i = chat.messages.length - 1; i >= 0; i--) {
+                if (chat.messages[i].id === messageId) return chat.messages[i];
+            }
+        } catch (e) {}
+        return null;
+    }
 
-      UI.formatMessage = formatMessage;
-      UI.focusCanvasNode = focusCanvasNode;
-      UI.annotateNodeReferences = annotateNodeReferences;
-      UI.reannotateAllAssistantMessages = reannotateAllAssistantMessages;
+    // Retry re-sends the last user prompt, so only the last message can
+    // carry the button. Placed here rather than at render time so a
+    // reloaded history, a failed turn and a cancelled one get it too.
+    UI.refreshRetryButton = function() {
+        let chatArea = document.getElementById('llm-plugin-chat');
+        if (!chatArea) return;
+        chatArea.querySelectorAll('.message-actions').forEach(function(el) { el.remove(); });
 
+        let messages = chatArea.querySelectorAll('.llm-plugin-message');
+        let last = messages.length > 0 ? messages[messages.length - 1] : null;
+        if (!last || last.classList.contains('loading-message')) return;
+
+        let messageMeta = findChatMessage(last.dataset.messageId);
+        let messageActions = Common.cloneTemplate('llm-plugin-message-actions-template');
+        messageActions.querySelector('.retry-btn')
+            .addEventListener('click', function() { UI.retryLastUserMessage(messageMeta); });
+
+        // Above the Import button, where it has always sat.
+        let flowActions = last.querySelector('.flow-actions:not(.pre-chat-actions)');
+        if (flowActions) last.insertBefore(messageActions, flowActions);
+        else last.appendChild(messageActions);
+    };
+
+    // The prompt a reply answered: the user message before it, not merely the
+    // newest one — a retry of an earlier turn must re-ask ITS question.
+    function promptForReply(messageMeta) {
+        let chat = LLMPlugin.ChatManager.getChatHistory()[LLMPlugin.ChatManager.getCurrentChatId()];
+        let msgs = (chat && Array.isArray(chat.messages)) ? chat.messages : [];
+        let from = msgs.length - 1;
+        if (messageMeta && messageMeta.id) {
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i] && msgs[i].id === messageMeta.id) { from = i - 1; break; }
+            }
+        }
+        for (let i = from; i >= 0; i--) {
+            if (msgs[i] && msgs[i].isUser) return msgs[i].content;
+        }
+        return null;
+    }
+
+    // Retry is two ordinary things in order: rewind to the checkpoint this
+    // reply was applied over, then send its prompt again down the SAME path
+    // the Send button uses. Nothing about the turn that follows is special —
+    // it applies, checkpoints and grows its own Restore / Apply Again exactly
+    // as a typed prompt would.
     UI.retryLastUserMessage = function(messageMeta) {
         try {
-            if (!LLMPlugin.ChatManager) return;
-            let chatId = LLMPlugin.ChatManager.getCurrentChatId();
-            let history = LLMPlugin.ChatManager.getChatHistory ? LLMPlugin.ChatManager.getChatHistory() : {};
-            let chat = history[chatId];
-            if (!chat || !chat.messages) return;
-            let userMessages = chat.messages.filter(function(msg) { return msg.isUser; });
-            if (userMessages.length === 0) return;
-            let lastUserMsg = userMessages[userMessages.length - 1];
-            let promptInput = document.getElementById('llm-plugin-prompt');
-            let generateBtn = document.getElementById('llm-plugin-generate');
-            if (!promptInput || !generateBtn) return;
+            let send = LLMPlugin.sendPrompt;
+            let prompt = promptForReply(messageMeta);
+            if (typeof send !== 'function' || !prompt) return;
 
-            // Restore the checkpoint attached to the retried assistant
-            // message so the next request sees the pre-edit flow. Without
-            // this the LLM would resend against the already-edited state.
-            let checkpointId = messageMeta && messageMeta.meta && messageMeta.meta.checkpointId;
+            let checkpointId = metaOf(messageMeta).checkpointId;
+            if (!checkpointId) { send(prompt); return; }
 
-            function doSend() {
-                promptInput.value = lastUserMsg.content;
-                generateBtn.click();
-            }
-
-            if (checkpointId && LLMPlugin.Importer && typeof LLMPlugin.Importer.restoreCheckpoint === 'function') {
-                LLMPlugin.Importer.restoreCheckpoint(checkpointId)
-                    .then(doSend)
-                    .catch(function(err) {
-                        console.warn('[LLM Plugin] Retry restore failed; sending with current flow:', err);
-                        doSend();
-                    });
-            } else {
-                doSend();
-            }
+            LLMPlugin.Importer.restoreCheckpoint(checkpointId)
+                .catch(function(err) {
+                    // The rewind is the best-effort half: better to ask again
+                    // against the edited flow than not to ask at all.
+                    if (window.console) {
+                        console.warn('[LLM Plugin] retry: restore failed, asking against the current flow:', err);
+                    }
+                })
+                .then(function() { send(prompt); });
         } catch (e) {
-            console.error('Error retrying message:', e);
+            if (window.console) console.error('[LLM Plugin] retry failed:', e);
         }
     };
 
-    UI.getFlowsByIds = function(flowIds) {
+    UI.getFlowsByIds = function(flowIds, opts) {
         try {
             if (!window.RED || !RED.nodes) return null;
             let ids = Array.isArray(flowIds) ? flowIds.filter(Boolean) : [];
@@ -622,9 +699,29 @@
                     }
                 });
             });
+
+            // filterNodes returns neither junctions nor groups, so a caller
+            // has to opt in. Neither shifts a node alias: the converter drops
+            // groups and reads a wire through a junction as a connection to
+            // where it leads. See docs/{en,jp}/vibe-schema.md.
+            if (opts && opts.includeCanvasExtras) {
+                ids.forEach(function(zid) {
+                    let extras = (RED.nodes.junctions(zid) || []).concat(RED.nodes.groups(zid) || []);
+                    extras.forEach(function(node) {
+                        if (node && node.id && !seenIds[node.id]) {
+                            seenIds[node.id] = true;
+                            nodes.push(node);
+                        }
+                    });
+                });
+            }
             if (nodes.length === 0) return null;
 
-            let configNodes = collectReferencedConfigs(nodes, seenIds);
+            // In id order, as the runtime's flowContextFor has them: the
+            // alias numbering has to come out the same on both sides.
+            let configNodes = collectReferencedConfigs(nodes, seenIds).sort(function(a, b) {
+                return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+            });
             let allNodes = nodes.concat(configNodes);
 
             return RED.nodes.createExportableNodeSet(allNodes);
@@ -634,27 +731,49 @@
         }
     };
 
+    // By reference only — the flow selection is the user's statement of what
+    // may leave the machine. References are followed transitively (broker →
+    // tls-config) and through array properties, matching `flowContextFor` in
+    // node/llm-request/llm-request.js.
     function collectReferencedConfigs(nodes, seenIds) {
-        let configNodes = [];
-        let referencedIds = {};
-
-        // Find which config node IDs are actually referenced by the targeted canvas nodes
-        nodes.forEach(function(n) {
-            Object.keys(n).forEach(function(k) {
-                if (k === 'id' || k === 'z' || k === 'type' || k === 'wires' || k === 'x' || k === 'y') return;
-                if (typeof n[k] === 'string' && n[k].length > 5) {
-                    referencedIds[n[k]] = true;
-                }
-            });
+        let configById = {};
+        RED.nodes.eachConfig(function(cn) {
+            if (cn && cn.id) configById[cn.id] = cn;
         });
 
-        if (RED.nodes.eachConfig) {
-            RED.nodes.eachConfig(function(cn) {
-                // Include config nodes ONLY if they are explicitly referenced
-                if (cn && (!seenIds || !seenIds[cn.id]) && referencedIds[cn.id]) {
-                    configNodes.push(cn);
-                    seenIds[cn.id] = true;
-                }
+        let SKIP_KEYS = { id: 1, z: 1, type: 1, wires: 1, x: 1, y: 1, g: 1 };
+        function referencedConfigIds(node) {
+            let out = [];
+            Object.keys(node).forEach(function(k) {
+                if (SKIP_KEYS[k]) return;
+                let value = node[k];
+                let candidates = Array.isArray(value) ? value : [value];
+                candidates.forEach(function(v) {
+                    if (typeof v === 'string' && configById[v]) out.push(v);
+                });
+            });
+            return out;
+        }
+
+        // `visited` is local so a reference cycle between two config nodes
+        // terminates even when the caller passes no `seenIds`.
+        let visited = {};
+        let configNodes = [];
+        let queue = nodes.slice();
+        while (queue.length > 0) {
+            let node = queue.pop();
+            if (!node) continue;
+            referencedConfigIds(node).forEach(function(id) {
+                if (visited[id]) return;
+                visited[id] = true;
+                let cn = configById[id];
+                if (!cn) return;
+                // A config node may itself reference another one, so it is
+                // queued whether or not the export set already holds it.
+                queue.push(cn);
+                if (seenIds && seenIds[id]) return;
+                if (seenIds) seenIds[id] = true;
+                configNodes.push(cn);
             });
         }
         return configNodes;
@@ -687,7 +806,7 @@
      * Gets the full JSON configuration for the specified tab workspaces (or the active tab if omitted),
      * including nodes, subflows, and config nodes that are referenced by nodes on these tabs.
      */
-    UI.getCurrentFlow = function(flowIds) {
+    UI.getCurrentFlow = function(flowIds, opts) {
         let active = UI.getActiveWorkspaceId();
         let targetIds = [];
         if (flowIds && Array.isArray(flowIds) && flowIds.length > 0) {
@@ -697,10 +816,8 @@
         } else if (active) {
             targetIds = [active];
         }
-        return targetIds.length > 0 ? UI.getFlowsByIds(targetIds) : null;
+        return targetIds.length > 0 ? UI.getFlowsByIds(targetIds, opts) : null;
     };
-
-    UI.createRestoreCheckpointButton = createRestoreCheckpointButton;
 
     window.LLMPlugin = window.LLMPlugin || {};
     window.LLMPlugin.UI = UI;

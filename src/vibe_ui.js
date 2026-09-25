@@ -1,70 +1,41 @@
 // Main sidebar UI module — vanilla JS (no jQuery).
 // Builds the plugin sidebar, settings dialog, and generation workflow.
 (function(){
+    let Common = window.LLMPlugin.Common;
 
     /**
-     * Build the sidebar DOM tree and return a raw DOM element.
+     * Build the sidebar DOM from the templates in llm_plugin.html.
      * Node-RED's sidebar.addTab accepts DOM elements for its `content` property.
      */
+    function fromTemplate(el, templateId, missingText) {
+        let tpl = document.getElementById(templateId);
+        el.innerHTML = tpl ? tpl.innerHTML
+            : '<div class="llm-settings-missing">' + missingText + '</div>';
+    }
+
+
     function createLLMPluginUI() {
         let container = document.createElement('div');
         container.className = 'llm-plugin-container';
-        container.innerHTML =
-            '<div class="llm-plugin-header">' +
-                '<h3 class="llm-plugin-title">LLM Plugin Chat</h3>' +
-                '<div class="header-buttons">' +
-                    '<button class="header-btn" data-action="new-chat">New Chat</button>' +
-                    '<button class="header-btn" data-action="chat-list">Chats</button>' +
-                    '<button class="header-btn" id="llm-plugin-settings-button"><i class="fa fa-cog"></i></button>' +
-                '</div>' +
-            '</div>' +
-            '<div class="llm-plugin-chat" id="llm-plugin-chat"></div>' +
-            '<div class="llm-plugin-input">' +
-                '<details class="llm-session-config" open><summary style="font-size: 12px; cursor: pointer; color: #666; margin-bottom: 8px; font-weight: bold;">Session Options</summary><div class="flow-selector" id="llm-plugin-flow-selector">' +
-                    '<button type="button" class="flow-selector-toggle" id="llm-plugin-flow-toggle" aria-haspopup="listbox" aria-expanded="false">' +
-                        '<span class="flow-selector-label" id="llm-plugin-flow-label">Current Open Flow</span>' +
-                        '<i class="fa fa-caret-down flow-selector-caret" aria-hidden="true"></i>' +
-                    '</button>' +
-                    '<div class="flow-selector-panel" id="llm-plugin-flow-panel" role="listbox"></div>' +
-                '</div>' +
-                '<div class="agent-mode-row">' +
-                    '<label for="llm-plugin-mode">Mode</label>' +
-                    '<select id="llm-plugin-mode" class="mode-select">' +
-                        '<option value="ask" selected>Ask</option>' +
-                        '<option value="agent">Agent</option>' +
-                    '</select>' +
-                '</div>' +
-                '<input type="text" id="llm-plugin-model" class="model-input" placeholder="Model (e.g., llama3.2:latest)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></details>' +
-                '<div class="prompt-input-group">' +
-                    '<textarea id="llm-plugin-prompt" class="prompt-input" placeholder="Ask something or request a flow..."></textarea>' +
-                    '<button id="llm-plugin-generate" class="generate-btn">Send</button>' +
-                '</div>' +
-            '</div>' +
-            '<div id="llm-plugin-settings-overlay" class="llm-settings-overlay" role="dialog" aria-modal="true" aria-hidden="true">' +
-                '<div id="llm-plugin-settings-dialog" class="llm-settings-dialog"></div>' +
-            '</div>';
+        fromTemplate(container, 'llm-plugin-sidebar-template', 'Sidebar template not found.');
 
-        // Inject settings form from the <script> template defined in llm_plugin.html
         let settingsDialog = container.querySelector('#llm-plugin-settings-dialog');
-        let templateEl = document.getElementById('llm-plugin-settings-template');
-        settingsDialog.innerHTML = templateEl
-            ? templateEl.innerHTML
-            : '<div class="llm-settings-missing">Settings template not found.</div>';
-        settingsDialog.insertAdjacentHTML('beforeend',
-            '<div class="llm-settings-actions">' +
-                '<button type="button" id="llm-plugin-settings-cancel" class="llm-settings-btn secondary">Cancel</button>' +
-                '<button type="button" id="llm-plugin-settings-save" class="llm-settings-btn primary">Save</button>' +
-            '</div>');
+        if (settingsDialog) {
+            fromTemplate(settingsDialog, 'llm-plugin-settings-template', 'Settings template not found.');
+        }
 
         // Header buttons
         container.querySelector('[data-action="new-chat"]').addEventListener('click', function() {
-            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.startNewChat();
+            LLMPlugin.ChatManager.startNewChat();
         });
         container.querySelector('[data-action="chat-list"]').addEventListener('click', function() {
-            if (window.LLMPlugin && LLMPlugin.ChatManager) LLMPlugin.ChatManager.showChatList();
+            LLMPlugin.ChatManager.showChatList();
+        });
+        container.querySelector('[data-action="restore-points"]').addEventListener('click', function() {
+            LLMPlugin.ChatManager.showCheckpointList();
         });
 
-        // Settings manager (accepts raw DOM element after settings.js refactor)
+        // Settings manager (dialog controller defined in client.js)
         let settingsManager = null;
         if (window.createLLMPluginSettings) {
             settingsManager = window.createLLMPluginSettings(settingsDialog);
@@ -81,7 +52,7 @@
 
     /**
      * Wire up all interactive behaviour once the DOM is in place.
-     * @param {Object|null} settingsManager  load/save/updateVisibility
+     * @param {Object|null} settingsManager  load/save
      */
     function initializeClientApp(settingsManager) {
         let generateBtn       = document.getElementById('llm-plugin-generate');
@@ -131,14 +102,12 @@
         let selectionInitialized = false;
 
         // --- Chat history bootstrap ---
-        if (window.LLMPlugin && LLMPlugin.ChatManager) {
-            LLMPlugin.ChatManager.loadChatHistoriesFromServer();
-        }
+        LLMPlugin.ChatManager.loadChatHistoriesFromServer();
 
         // --- Settings helpers ---
         function fetchSettings(force) {
             if (!force && cachedSettings) return Promise.resolve(cachedSettings);
-            return fetch('llm-plugin/settings')
+            return Common.apiFetch('llm-plugin/settings')
                 .then(function(res) { return res.json(); })
                 .then(function(data) { cachedSettings = data || {}; return cachedSettings; })
                 .catch(function()    { cachedSettings = cachedSettings || {}; return cachedSettings; });
@@ -187,7 +156,7 @@
             settingsSaving = true;
             saveSettingsBtn.disabled = true;
             saveSettingsBtn.classList.add('saving');
-            fetch('llm-plugin/settings', {
+            Common.apiFetch('llm-plugin/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -195,11 +164,10 @@
             .then(function(res) {
                 if (!res.ok) return res.json().then(function(d) { throw new Error(d.error || 'Failed to save settings'); });
                 cachedSettings = null;
-                if (window.RED && RED.notify) RED.notify('LLM Plugin settings saved.', 'success');
                 closeSettingsDialog();
             })
             .catch(function(err) {
-                if (window.RED && RED.notify) RED.notify(err.message || 'Failed to save settings', 'error');
+                Common.notice(err.message || 'Failed to save settings', 'error');
             })
             .finally(function() {
                 settingsSaving = false;
@@ -213,38 +181,59 @@
         initFlowSelector();
 
         // --- Generate / Stop toggle (single handler) ---
+        function isGenerating() {
+            return generateBtn.classList.contains('stop-btn');
+        }
+        function stopGeneration() {
+            if (!isGenerating() || !currentAbortController) return false;
+            currentAbortController.abort();
+            let loadingMsg = chatArea.querySelector('.loading-message');
+            if (loadingMsg) loadingMsg.remove();
+            resetGenerateBtn();
+            currentAbortController = null;
+            return true;
+        }
+
         generateBtn.addEventListener('click', function() {
-            if (generateBtn.classList.contains('stop-btn')) {
-                if (currentAbortController) {
-                    currentAbortController.abort();
-                    let loadingMsg = chatArea.querySelector('.loading-message');
-                    if (loadingMsg) loadingMsg.remove();
-                    resetGenerateBtn();
-                    currentAbortController = null;
-                }
-            } else {
-                handleGenerate();
-            }
+            if (isGenerating()) stopGeneration();
+            else handleGenerate();
         });
+
+        // The Send path itself. The retry button drives this rather than
+        // clicking the button, so there is one way a prompt is sent.
+        LLMPlugin.sendPrompt = function(prompt) { handleGenerate(prompt); };
 
         promptInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) handleGenerate();
+            if (e.key === 'Escape') {
+                if (stopGeneration()) e.preventDefault();
+                return;
+            }
+            if (e.key !== 'Enter') return;
+            // Shift+Enter is the newline. An Enter that is still closing an
+            // IME conversion is that conversion, not a send — without this
+            // guard every Japanese phrase sends the message it was confirming.
+            if (e.shiftKey || e.isComposing || e.keyCode === 229) return;
+            e.preventDefault();
+            handleGenerate();
         });
 
-        // --- Shell-style chat history navigation (Up / Down arrows) ---
-        // Up walks backwards through this chat's user messages; Down
-        // walks forward and finally restores whatever the user had
-        // typed before they started navigating. Only triggers when
-        // the cursor sits on the first / last visual line of the
-        // textarea so plain multi-line editing still works.
+        // Esc stops a running request from anywhere in the sidebar, not only
+        // the prompt box. While the settings dialog is open, Esc is that
+        // dialog's — it closes it and nothing else.
+        let sidebarRoot = generateBtn.closest('.llm-plugin-container') || document;
+        sidebarRoot.addEventListener('keydown', function(e) {
+            if (e.key !== 'Escape' || e.target === promptInput) return;
+            if (settingsOverlay && settingsOverlay.classList.contains('visible')) return;
+            if (stopGeneration()) e.preventDefault();
+        });
+
+        // --- Shell-style history: Up/Down through this chat's user
+        // messages, only on the textarea's first/last line.
         let historyIndex = null;        // null when not navigating
         let draftBeforeHistory = '';
 
         function getUserMessageHistory() {
-            if (!window.LLMPlugin || !LLMPlugin.ChatManager) return [];
-            let id = LLMPlugin.ChatManager.getCurrentChatId();
-            let hist = LLMPlugin.ChatManager.getChatHistory && LLMPlugin.ChatManager.getChatHistory();
-            let chat = hist && id ? hist[id] : null;
+            let chat = LLMPlugin.ChatManager.getChatHistory()[LLMPlugin.ChatManager.getCurrentChatId()];
             if (!chat || !Array.isArray(chat.messages)) return [];
             return chat.messages.filter(function(m) { return m && m.isUser; });
         }
@@ -321,29 +310,22 @@
             modeSelect.addEventListener('change', function() {
                 try { localStorage.setItem('llm-plugin-last-mode', modeSelect.value); }
                 catch (e) { /* ignore localStorage errors */ }
-                if (window.RED && RED.notify) {
-                    RED.notify('LLM Plugin: Mode = ' + modeSelect.value, { type: 'info', timeout: 1500 });
-                }
             });
         }
 
         // --- Flow selector ---
         function listWorkspaces() {
             let out = [];
-            if (window.RED && RED.nodes && typeof RED.nodes.eachWorkspace === 'function') {
-                RED.nodes.eachWorkspace(function(ws) {
-                    if (ws && ws.id && ws.type === 'tab') {
-                        out.push({ id: ws.id, label: ws.label || ws.id });
-                    }
-                });
-            }
+            RED.nodes.eachWorkspace(function(ws) {
+                if (ws && ws.id && ws.type === 'tab') {
+                    out.push({ id: ws.id, label: ws.label || ws.id });
+                }
+            });
             return out;
         }
 
         function getActiveWorkspaceId() {
-            return (window.LLMPlugin && LLMPlugin.UI && typeof LLMPlugin.UI.getActiveWorkspaceId === 'function')
-                ? LLMPlugin.UI.getActiveWorkspaceId()
-                : null;
+            return LLMPlugin.UI.getActiveWorkspaceId();
         }
 
         // Persist the user's flow selection across browser sessions, mirroring
@@ -372,12 +354,9 @@
             } catch (e) { return false; }
         }
 
-        // Default the selection once RED is ready. Priority:
-        //   1. Previously saved selection from localStorage (subject to later
-        //      pruning if any of those flows no longer exist)
-        //   2. The currently active workspace
-        // Only runs on first successful init: after that, the user's explicit
-        // selection (including a deliberately empty one) is preserved.
+        // First-init default: saved localStorage selection, else the active
+        // workspace. After that the user's explicit selection (even empty)
+        // is preserved.
         function ensureDefaultSelection() {
             if (selectionInitialized) return;
             if (loadSelectedFlows()) {
@@ -391,10 +370,8 @@
             }
         }
 
-        // Drop selections that no longer correspond to an existing workspace.
-        // Guarded against the transient "RED not ready yet → 0 workspaces"
-        // state so we don't wipe a freshly-restored selection from
-        // localStorage before the workspaces have actually loaded.
+        // Drop selections whose workspace is gone. Guarded against the
+        // transient "RED not ready yet" state, which reports no workspaces.
         function pruneSelectedFlows(workspaces) {
             let ws = workspaces || listWorkspaces();
             if (ws.length === 0) return;
@@ -410,10 +387,8 @@
             if (changed) saveSelectedFlows();
         }
 
-        // Re-sync the selector with current workspace state: prune deleted
-        // flows, then refresh the label and (if open) the panel. The user's
-        // explicit selection is preserved - we never re-add an active flow
-        // here, only remove flows that no longer exist.
+        // Prune, then refresh the label and panel. Only removes: the user's
+        // explicit selection is never added back to.
         function refreshFlowSelector() {
             let workspaces = listWorkspaces();
             pruneSelectedFlows(workspaces);
@@ -456,7 +431,37 @@
             }
 
             let active = getActiveWorkspaceId();
-            workspaces.forEach(function(ws) {
+
+            // Select-all / clear-all. Its own state mirrors the list, so it
+            // doubles as "how much of this is selected" at a glance: checked
+            // when everything is, indeterminate when only some of it is.
+            let masterRow = buildFlowOption({
+                label: 'All flows',
+                checked: isEverySelected(workspaces),
+                indeterminate: isSomeSelected(workspaces) && !isEverySelected(workspaces),
+                onToggle: function(checked) {
+                    Object.keys(selectedFlowIds).forEach(function(id) {
+                        delete selectedFlowIds[id];
+                    });
+                    if (checked) {
+                        workspaces.forEach(function(ws) { selectedFlowIds[ws.id] = true; });
+                    }
+                    selectionInitialized = true;
+                    saveSelectedFlows();
+                    renderFlowPanel();
+                    updateFlowLabel(workspaces);
+                }
+            });
+            masterRow.classList.add('flow-selector-all');
+            flowPanel.appendChild(masterRow);
+            let masterCb = masterRow.querySelector('input');
+
+            // The open flow first; the rest keep tab order, so nothing else
+            // moves between openings.
+            let ordered = workspaces.filter(function(ws) { return ws.id === active; })
+                .concat(workspaces.filter(function(ws) { return ws.id !== active; }));
+
+            ordered.forEach(function(ws) {
                 let row = buildFlowOption({
                     label: ws.label,
                     checked: !!selectedFlowIds[ws.id],
@@ -464,12 +469,32 @@
                     onToggle: function(checked) {
                         if (checked) selectedFlowIds[ws.id] = true;
                         else delete selectedFlowIds[ws.id];
+                        selectionInitialized = true;
                         saveSelectedFlows();
+                        syncMasterCheckbox(masterCb, workspaces);
                         updateFlowLabel(workspaces);
                     }
                 });
                 flowPanel.appendChild(row);
             });
+        }
+
+        function isEverySelected(workspaces) {
+            return workspaces.length > 0 && workspaces.every(function(ws) {
+                return !!selectedFlowIds[ws.id];
+            });
+        }
+
+        function isSomeSelected(workspaces) {
+            return workspaces.some(function(ws) { return !!selectedFlowIds[ws.id]; });
+        }
+
+        // One flow click changes one other thing, so it is patched in place;
+        // the all-flows row re-renders, because every row changed.
+        function syncMasterCheckbox(masterCb, workspaces) {
+            if (!masterCb) return;
+            masterCb.checked = isEverySelected(workspaces);
+            masterCb.indeterminate = isSomeSelected(workspaces) && !masterCb.checked;
         }
 
         function buildFlowOption(opts) {
@@ -479,6 +504,8 @@
             let cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.checked = !!opts.checked;
+            // Property, not attribute: there is no HTML for "indeterminate".
+            cb.indeterminate = !!opts.indeterminate;
             cb.addEventListener('change', function() { opts.onToggle(cb.checked); });
             let span = document.createElement('span');
             span.textContent = opts.label;
@@ -535,9 +562,25 @@
             window.removeEventListener('scroll', repositionOnScroll, true);
         }
 
+        // Back to just the open flow: the selection is the scope every edit
+        // and checkpoint is confined to. See docs/{en,jp}/architecture.md.
+        function selectActiveFlowOnly() {
+            Object.keys(selectedFlowIds).forEach(function(id) {
+                delete selectedFlowIds[id];
+            });
+            let active = getActiveWorkspaceId();
+            if (active) selectedFlowIds[active] = true;
+            selectionInitialized = true;
+            saveSelectedFlows();
+            refreshFlowSelector();
+        }
+
         function initFlowSelector() {
             ensureDefaultSelection();
             updateFlowLabel();
+            if (typeof LLMPlugin.ChatManager.onNewChat === 'function') {
+                LLMPlugin.ChatManager.onNewChat(selectActiveFlowOnly);
+            }
             flowToggleBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 if (isPanelOpen()) closeFlowPanel(); else openFlowPanel();
@@ -563,12 +606,17 @@
         }
 
         // --- Core generation flow ---
-        function handleGenerate() {
-            // Block Ctrl+Enter while a request is in flight (Send is Stop).
-            if (generateBtn.classList.contains('stop-btn')) return;
+        // `promptOverride` is how anything else sends: the retry button hands
+        // back the prompt it wants re-asked, and everything after it — the
+        // apply, the checkpoint, the buttons on the reply — happens exactly
+        // as it does for a prompt typed here.
+        function handleGenerate(promptOverride) {
+            // A request is already in flight (Send is Stop).
+            if (isGenerating()) return;
 
             let model  = modelInput.value.trim();
-            let prompt = promptInput.value.trim();
+            let prompt = (typeof promptOverride === 'string' ? promptOverride
+                                                            : promptInput.value).trim();
             
             // Save model to localStorage
             try {
@@ -577,15 +625,13 @@
 
             let mode = (modeSelect && modeSelect.value) ? modeSelect.value : 'ask';
             if (!model || !prompt) {
-                if (window.RED && RED.notify) RED.notify('Please enter both model and prompt', 'warning');
+                Common.notice('Please enter both model and prompt', 'warning');
                 return;
             }
 
             let flowIdsToSend = getSelectedFlowIds();
 
-            if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode }, flowIdsToSend);
-            }
+            LLMPlugin.ChatManager.addMessage(prompt, true, { mode: mode });
             promptInput.value = '';
             if (typeof promptInput._llmPluginResetHistoryNav === 'function') {
                 promptInput._llmPluginResetHistoryNav();
@@ -594,10 +640,10 @@
             // Checkpoints are captured at import time (right before a flow
             // edit is applied), not here — chat sends that don't end up
             // modifying the flow no longer consume a checkpoint slot.
-            let loadingMsg = (window.LLMPlugin && LLMPlugin.UI)
-                ? LLMPlugin.UI.addMessageToUI('Generating...', false, false)
-                : null;
+            let loadingMsg = LLMPlugin.UI.addMessageToUI('Generating...', false);
             if (loadingMsg) loadingMsg.classList.add('loading-message');
+            // The placeholder is last now, and it is not retryable.
+            LLMPlugin.UI.refreshRetryButton();
 
             generateBtn.disabled = false;
             generateBtn.classList.add('stop-btn');
@@ -606,19 +652,20 @@
             // dropdown so mid-flight switches obviously target only the next Send.
             if (modeSelect) modeSelect.disabled = true;
 
-            let currentFlow = null;
-            if (flowIdsToSend.length > 0 && window.LLMPlugin && LLMPlugin.UI && 
-                typeof LLMPlugin.UI.getCurrentFlow === 'function') {
-                currentFlow = LLMPlugin.UI.getCurrentFlow(flowIdsToSend);
-            }
+            // With the canvas extras, so the model sees where a wire through
+            // a junction leads.
+            let currentFlow = (flowIdsToSend.length > 0)
+                ? LLMPlugin.UI.getCurrentFlow(flowIdsToSend, { includeCanvasExtras: true })
+                : null;
 
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();
 
-            let endpoint = mode === 'agent' ? 'llm-plugin/agent-generate' : 'llm-plugin/generate';
+            // One endpoint for both modes: the server-side request is
+            // identical; Agent only differs client-side (auto-import below).
             let fetchStart = Date.now();
 
-            fetch(endpoint, {
+            Common.apiFetch('llm-plugin/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -626,6 +673,9 @@
                     prompt: prompt,
                     currentFlow: currentFlow,
                     activeWorkspaceId: getActiveWorkspaceId(),
+                    // Ask and Agent are different questions, not the same one
+                    // handled differently afterwards: the server picks the
+                    // instructions from this.
                     mode: mode
                 }),
                 signal: currentAbortController.signal
@@ -647,17 +697,15 @@
                 let totalElapsed = (data.elapsed != null) ? data.elapsed : (Date.now() - fetchStart);
                 let msgEl = null;
                 let usedModel = (data && data.model) ? data.model : model;
+                let targetFlowName = Common.flowLabels(flowIdsToSend);
                 let metaOpts = {
                     mode: mode,
                     elapsedMs: totalElapsed,
                     model: usedModel,
-                    targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null
+                    targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null,
+                    targetFlowName: targetFlowName
                 };
-                if (window.LLMPlugin && LLMPlugin.ChatManager) {
-                    msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
-                } else if (window.LLMPlugin && LLMPlugin.UI) {
-                    msgEl = LLMPlugin.UI.addMessageToUI(data.response, false, true, { meta: metaOpts });
-                }
+                msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
 
                 if (mode === 'agent' && msgEl) {
                     let importBtn = msgEl.querySelector('.import-btn');
@@ -676,11 +724,13 @@
                 if (err && err.status === 404) {
                     errorMsg = 'LLM Plugin endpoint not found. Check plugin installation.';
                 }
-                if (window.LLMPlugin && LLMPlugin.UI) LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false, false);
+                LLMPlugin.UI.addMessageToUI('Error: ' + errorMsg, false);
             })
             .finally(function() {
                 resetGenerateBtn();
                 currentAbortController = null;
+                // Stop leaves the user message last, with no reply after it.
+                LLMPlugin.UI.refreshRetryButton();
             });
         }
     }
@@ -690,13 +740,8 @@
         if (typeof RED !== 'undefined' && RED.sidebar) {
             // Wire runtime type info into FlowConverterCore so community
             // nodes are handled correctly (config detection, input checks).
-            let cfg = window.LLMPlugin && window.LLMPlugin.Configurator;
-            if (cfg && typeof cfg.setRuntimeGetType === 'function' &&
-                RED.nodes && typeof RED.nodes.getType === 'function') {
-                cfg.setRuntimeGetType(function(type) {
-                    try { return RED.nodes.getType(type) || null; } catch(e) { return null; }
-                });
-            }
+            let cfg = LLMPlugin.FlowConverterCore;
+            cfg.setRuntimeGetType(function(type) { return RED.nodes.getType(type) || null; });
             // `closeable` is undocumented but matches Node-RED's own
             // debug/info tabs (close-X + re-open from the overflow menu).
             RED.sidebar.addTab({
@@ -712,13 +757,8 @@
         }
     }
 
-    // Expose minimal surface
-    window.LLMPlugin = window.LLMPlugin || {};
-    window.LLMPlugin.UI = window.LLMPlugin.UI || {};
-    window.LLMPlugin.UI.createLLMPluginUI = createLLMPluginUI;
-    window.LLMPlugin.initialize = initializeWhenReady;
-
-    // Auto-init
+    // Auto-init: this module owns the sidebar tab; nothing outside it
+    // needs a handle on the builder.
     initializeWhenReady();
 
 })();

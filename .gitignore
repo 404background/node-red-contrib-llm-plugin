@@ -1,5 +1,15 @@
 .logs/
-test/
+
+# Keep the regression tests (run by `npm test`), their runner, their shared
+# scaffolding, the live-test template and their documentation tracked; ignore
+# any other scratch files dropped into test/ — including `llm-test-config.json`
+# itself, which is machine-specific (endpoint + model for `npm run test:llm`).
+test/*
+!test/*.test.js
+!test/run_all.js
+!test/helpers.js
+!test/llm-test-config.example.json
+!test/README.md
 .claude/
 temp/
 *.pdf

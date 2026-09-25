@@ -1,16 +1,6 @@
-// LLM JSON Parser Core: utilities for parsing structured data from LLM output.
-//
-// Handles the ambiguity that LLMs produce when generating JSON:
-//  - JS-style comments in JSON, unescaped quotes inside string values
-//  - JSON embedded in markdown code fences or free-form prose
-//  - Fuzzy token matching for node aliases and names
-//  - Vibe Schema extraction, connection hints, and flow directives
-//  - Flow lookup tables for alias/name/ID resolution
-//  - Partial schema merging and flow node extraction
-//
-// Works as both a CommonJS module (server/tests) and a browser global.
-// Has NO dependency on plugin globals — pass `cfg` (Configurator) explicitly
-// to any function that needs Vibe Schema conversion.
+// LLM JSON Parser Core: absorbs the ways LLM output is not quite JSON —
+// comments, unescaped quotes, JSON buried in prose, inexact alias references.
+// No plugin globals; `cfg` (FlowConverterCore) is passed in.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -58,15 +48,9 @@
         if (mapObj[token] !== id) mapObj[token] = null;
     }
 
-    /**
-     * Fuzzy resolver: returns a match only when exactly one plausible candidate
-     * exists (boundary/prefix overlap). Short tokens are rejected via `minLen`.
-     *
-     * @param {Object} mapObj   Token→value map (nulls = ambiguous, skipped).
-     * @param {string} token    Normalized token to look up.
-     * @param {number} [minLen] Minimum token length to attempt fuzzy matching (default 8).
-     * @returns {*|null}
-     */
+    // Boundary/prefix match, but only when exactly ONE candidate qualifies —
+    // an ambiguous token resolves to nothing rather than to a guess. Tokens
+    // shorter than `minLen` (default 8) are not matched at all.
     function resolveUniqueApprox(mapObj, token, minLen) {
         let source = mapObj || {};
         let k = normalizeToken(token);
@@ -140,27 +124,118 @@
         return out.join('');
     }
 
-    /**
-     * Repair unescaped double quotes inside JSON string values.
-     * LLMs often embed Python f-strings like f"text {var}" or inline
-     * code snippets that break standard JSON.parse.
-     */
-    function repairJsonQuotes(text) {
+    // In JSONata a string literal is glued to what surrounds it by an
+    // operator, so the code between two literals both starts and ends with
+    // one. That is what tells the two readings of a repaired value apart.
+    let OPERATOR_AFTER  = /^\s*(&|\+|-|\*|\/|%|!=|<=|>=|=|<|>|\?|:|,|\)|\]|\}|~>|\.|and\b|or\b|in\b)/;
+    let OPERATOR_BEFORE = /(&|\+|-|\*|\/|%|!=|<=|>=|=|<|>|\?|:|,|\(|\[|\{|~>|\.|\band|\bor|\bin)\s*$/;
+
+    // `segs` are a value's text runs, split at each quote the repair escaped.
+    // `openLiteral` is the reading where the value starts INSIDE a literal
+    // (segs[0] literal, segs[1] code, …); the other one starts outside it.
+    function readingHolds(segs, openLiteral) {
+        for (let i = openLiteral ? 1 : 0; i < segs.length; i += 2) {
+            let seg = segs[i];
+            let literalLeft  = i > 0;
+            let literalRight = i < segs.length - 1;
+            if (!seg.trim()) {
+                // Two literals with nothing between them is not an expression;
+                // at either end it is a value that begins or ends with one.
+                if (literalLeft && literalRight) return false;
+                continue;
+            }
+            if (literalLeft && !OPERATOR_AFTER.test(seg)) return false;
+            if (literalRight && !OPERATOR_BEFORE.test(seg)) return false;
+        }
+        return true;
+    }
+
+    // Which of its own quotes an expression lost to the repair, as
+    // { open, close }. Null when neither reading is an expression, or when
+    // the value already reads as one. See docs/{en,jp}/design.md §14.
+    function missingExpressionQuotes(segs) {
+        if (segs.length < 2) return null;
+        let openLiteral;
+        if (readingHolds(segs, false)) openLiteral = false;
+        else if (readingHolds(segs, true)) openLiteral = true;
+        else return null;
+        // The last run is a literal — left unclosed — when its index has the
+        // same parity as the first literal's.
+        let endsInLiteral = ((segs.length - 1) % 2) === (openLiteral ? 0 : 1);
+        if (!openLiteral && !endsInLiteral) return null;
+        return { open: openLiteral, close: endsInLiteral };
+    }
+
+    // Repair unescaped double quotes inside JSON string values: models embed
+    // f"text {var}" and code snippets that JSON.parse rejects.
+    //
+    // `newline` says what to do with a raw newline inside a string, which JSON
+    // forbids and which therefore means the string was never closed. 'keep'
+    // leaves it (and the parse fails), 'close' assumes the closing quote was
+    // dropped at the end of that line, 'escape' assumes the value really is
+    // multi-line. Both readings are real; parseJsonRelaxed tries each in turn.
+    function repairJsonQuotes(text, newline) {
         let result = [];
         let i = 0;
         let len = text.length;
         let inString = false;
         let isValueString = false;
+        let valueStart = -1;        // result index just after the opening quote
+        let escapedQuotes = [];     // result indices of the quotes we escaped
+        // Which container the cursor is in. A string inside an ARRAY is always a
+        // value — there are no keys there — and reading one as a key is how a
+        // `["a", "b"]` came out with its commas swallowed.
+        let containers = [];
+
+        function valueSegments(end) {
+            let segs = [];
+            let from = valueStart;
+            for (let q = 0; q < escapedQuotes.length; q++) {
+                segs.push(result.slice(from, escapedQuotes[q]).join(''));
+                from = escapedQuotes[q] + 1;
+            }
+            segs.push(result.slice(from, end).join(''));
+            return segs;
+        }
+
+        // Give an expression back the delimiters this pass ate. Returns `end`
+        // shifted by what was inserted, so the caller can still close there.
+        function restoreExpressionQuotes(end) {
+            if (!isValueString || escapedQuotes.length === 0) return end;
+            let missing = missingExpressionQuotes(valueSegments(end));
+            if (!missing) return end;
+            let added = 0;
+            if (missing.close) { result.splice(end, 0, '\\"'); added++; }
+            if (missing.open) { result.splice(valueStart, 0, '\\"'); added++; }
+            return end + added;
+        }
+
+        // Close the open string at the end of the line just walked: before a
+        // trailing comma when there is one, since a line ending in a comma
+        // inside an object is a separator, not the last character of a value.
+        function closeAtLineEnd() {
+            let k = result.length - 1;
+            while (k >= 0 && (result[k] === ' ' || result[k] === '\t')) k--;
+            let at = (k >= 0 && result[k] === ',') ? k : k + 1;
+            result.splice(restoreExpressionQuotes(at), 0, '"');
+            inString = false;
+        }
 
         while (i < len) {
             let ch = text[i];
             if (!inString) {
                 result.push(ch);
-                if (ch === '"') {
+                if (ch === '{' || ch === '[') containers.push(ch);
+                else if (ch === '}' || ch === ']') containers.pop();
+                else if (ch === '"') {
                     inString = true;
                     let j = result.length - 2;
                     while (j >= 0 && /\s/.test(result[j])) j--;
-                    isValueString = (j >= 0 && result[j] === ':');
+                    isValueString = (containers[containers.length - 1] === '[')
+                        ? true
+                        : (j >= 0 && result[j] === ':');
+                    valueStart = result.length;
+                    escapedQuotes = [];
                 }
                 i++;
             } else {
@@ -168,25 +243,36 @@
                     result.push(ch, text[i + 1]);
                     i += 2;
                 } else if (ch === '"') {
-                    let rest = text.substring(i + 1);
-                    let trimmed = rest.replace(/^\s+/, '');
+                    let k = i + 1;
+                    while (k < len && /\s/.test(text[k])) k++;
+                    let next = k < len ? text[k] : '';
                     let isEnd;
                     if (isValueString) {
-                        isEnd = trimmed.length === 0 ||
-                                trimmed[0] === ',' ||
-                                trimmed[0] === '}' ||
-                                trimmed[0] === ']';
+                        isEnd = next === '' ||
+                                next === ',' ||
+                                next === '}' ||
+                                next === ']';
                     } else {
-                        isEnd = trimmed.length === 0 || trimmed[0] === ':';
+                        isEnd = next === '' || next === ':';
                     }
                     if (isEnd) {
+                        restoreExpressionQuotes(result.length);
                         result.push('"');
                         inString = false;
                         i++;
                     } else {
+                        if (isValueString) escapedQuotes.push(result.length);
                         result.push('\\"');
                         i++;
                     }
+                } else if (newline && (ch === '\n' || ch === '\r')) {
+                    if (newline === 'escape') {
+                        result.push(ch === '\r' ? '\\r' : '\\n');
+                    } else {
+                        closeAtLineEnd();
+                        result.push(ch);
+                    }
+                    i++;
                 } else {
                     result.push(ch);
                     i++;
@@ -196,19 +282,40 @@
         return result.join('');
     }
 
+    // JSON.parse, then each repair in turn. Ordered from the least assumed to
+    // the most: an unterminated string has two plausible readings and only the
+    // one that parses is taken. Throws the last error when none does.
+    function parseJsonRelaxed(text) {
+        let attempts = [
+            function() { return JSON.parse(text); },
+            function() { return JSON.parse(repairJsonQuotes(text)); },
+            function() { return JSON.parse(repairJsonQuotes(text, 'close')); },
+            function() { return JSON.parse(repairJsonQuotes(text, 'escape')); }
+        ];
+        let lastError = null;
+        for (let i = 0; i < attempts.length; i++) {
+            try { return attempts[i](); } catch (e) { lastError = e; }
+        }
+        throw lastError;
+    }
+
+    // One block of a reply, read the way the importer reads it: strict JSON
+    // first, then the repairs. `repaired` says the text as written was not
+    // valid JSON. Null when even the repairs cannot read it.
+    function parseJsonBlock(text) {
+        let src = stripJsonComments(String(text || ''));
+        try { return { value: JSON.parse(src), repaired: false }; }
+        catch (e) { /* fall through to the repairs */ }
+        try { return { value: parseJsonRelaxed(src), repaired: true }; }
+        catch (e) { return null; }
+    }
+
     // ================================================================== //
     //  Balanced JSON Snippet Extraction                                   //
     // ================================================================== //
 
-    /**
-     * Collect all balanced JSON snippets delimited by openChar/closeChar from text.
-     * Respects string literals so braces inside strings are not counted.
-     *
-     * @param {string} text
-     * @param {string} openChar   e.g. '{' or '['
-     * @param {string} closeChar  e.g. '}' or ']'
-     * @returns {string[]}  All matched balanced substrings, ordered by start position.
-     */
+    // All balanced `openChar`…`closeChar` spans, in start order. String
+    // literals are tracked so a brace inside one is not counted.
     function collectBalancedJsonSnippets(text, openChar, closeChar) {
         let snippets = [];
         let stack = [];
@@ -237,29 +344,16 @@
     //  Vibe Schema Extraction                                             //
     // ================================================================== //
 
-    /**
-     * Parse a candidate JSON string and return it if it satisfies isVibeSchemaFn.
-     */
+    // A candidate JSON string, returned only if it is a Vibe Schema.
     function parseVibeSchemaCandidate(text, isVibeSchemaFn) {
         let parsed = null;
-        try {
-            parsed = JSON.parse(stripJsonComments(text));
-        } catch (e1) {
-            try {
-                parsed = JSON.parse(repairJsonQuotes(stripJsonComments(text)));
-            } catch (e2) { /* ignore */ }
-        }
+        try { parsed = parseJsonRelaxed(stripJsonComments(text)); }
+        catch (e) { /* not JSON, or beyond repair */ }
         return (parsed && isVibeSchemaFn(parsed)) ? parsed : null;
     }
 
-    /**
-     * Extract the last Vibe Schema object from LLM message text.
-     * Search order: code fences (last first) → full text → balanced objects.
-     *
-     * @param {string} messageContent  Raw LLM assistant message.
-     * @param {Object} cfg             Configurator with `isVibeSchema(obj)` method.
-     * @returns {Object|null}
-     */
+    // The last Vibe Schema in a reply. Search order: code fences (last
+    // first) → full text → balanced objects.
     function extractVibeSchema(messageContent, cfg) {
         if (!cfg || !cfg.isVibeSchema) return null;
 
@@ -287,13 +381,7 @@
         return null;
     }
 
-    /**
-     * Extract explicit connection hints from a Vibe Schema embedded in the message.
-     *
-     * @param {string} messageContent
-     * @param {Object} cfg   Configurator with `isVibeSchema` method.
-     * @returns {Array<{from: string, to: string, fromPort: number}>}
-     */
+    // → [{ from, to, fromPort }]
     function extractConnectionHints(messageContent, cfg) {
         let hints = [];
         let parsed = extractVibeSchema(messageContent, cfg);
@@ -305,14 +393,8 @@
         return hints;
     }
 
-    /**
-     * Extract flow directives (node deletions, connection deletions,
-     * reposition requests) from the message.
-     *
-     * @param {string} messageContent
-     * @param {Object} cfg   Configurator with `isVibeSchema` method.
-     * @returns {{ removeTokens: string[], removeConnections: Array, repositionTokens: string[] }}
-     */
+    // Node deletions, connection deletions and reposition requests.
+    // → { removeTokens, removeConnections, repositionTokens }
     function extractFlowDirectives(messageContent, cfg) {
         let directives = { removeTokens: [], removeConnections: [], repositionTokens: [] };
         let parsed = extractVibeSchema(messageContent, cfg);
@@ -329,9 +411,10 @@
                 if (!c || !c.remove || typeof c.remove !== 'object') return;
                 let r = c.remove;
                 if (typeof r.from !== 'string' || typeof r.to !== 'string') return;
+                // No port named means the wire, whichever port it leaves from.
                 directives.removeConnections.push({
                     from: r.from, to: r.to,
-                    fromPort: (typeof r.fromPort === 'number' && r.fromPort >= 0) ? r.fromPort : 0
+                    fromPort: (typeof r.fromPort === 'number' && r.fromPort >= 0) ? r.fromPort : null
                 });
             });
         }
@@ -364,24 +447,9 @@
     //  Flow Lookup                                                        //
     // ================================================================== //
 
-    /**
-     * Build a unified lookup table for resolving aliases, names, and raw IDs to
-     * node IDs from a Node-RED flow snapshot.
-     *
-     * Resolution cascade (resolve method):
-     *   exact ID → exact alias → normalized alias → node name → loose alias → fuzzy
-     *
-     * @param {Array}  flowNodes  Node-RED flow nodes array.
-     * @param {Object} [cfg]      Configurator with `toIntermediate` method (for alias maps).
-     * @returns {{
-     *   resolve: function(token: string, opts?: {minLen?: number, fuzzy?: boolean}): string|null,
-     *   aliasToId: Object,
-     *   idToAlias: Object,
-     *   nameToId: Object,
-     *   byId: Object,
-     *   inter: Object|null
-     * }}
-     */
+    // Resolve an alias, name or raw ID to a node ID, in this order:
+    //   exact ID → exact alias → normalized alias → name → loose alias → fuzzy
+    // `resolve(token, { minLen, fuzzy, exactOnly })` plus the maps it built.
     function buildFlowLookup(flowNodes, cfg) {
         let aliasToId = {};
         let idToAlias = {};
@@ -459,15 +527,9 @@
     //  Schema Resolution                                                  //
     // ================================================================== //
 
-    /**
-     * Resolve a Vibe Schema alias token against the intermediate nodes of the
-     * current flow. Falls back through normalized alias → name → fuzzy.
-     *
-     * @param {string} token          Alias to resolve.
-     * @param {Object} currentNodes   Intermediate node map from toIntermediate().
-     * @param {Object} explicitNodes  Nodes already defined in the schema being built.
-     * @returns {string}  Resolved alias (or original token if unresolvable).
-     */
+    // Alias → alias, against the current flow's intermediate nodes
+    // (normalized → name → fuzzy). Returns the token unchanged if nothing
+    // resolves.
     function resolveAliasInSchema(token, currentNodes, explicitNodes) {
         if (typeof token !== 'string' || !token) return token;
         if (explicitNodes && explicitNodes[token]) return token;
@@ -493,16 +555,8 @@
         return found || token;
     }
 
-    /**
-     * Merge a partial agent schema (which may only list changed nodes) with the
-     * intermediate representation of the current flow. Pulls in any nodes that
-     * appear as connection endpoints but are not defined in the partial schema.
-     *
-     * @param {Object} schema       Partial Vibe Schema from the LLM agent.
-     * @param {Array}  currentFlow  Current Node-RED flow nodes.
-     * @param {Object} cfg          Configurator with `toIntermediate` method.
-     * @returns {Object}  Merged Vibe Schema.
-     */
+    // An Agent reply may list only what changed, so connection endpoints it
+    // never declared have to be pulled in from the current flow.
     function mergeAgentPartialSchemaWithCurrentFlow(schema, currentFlow, cfg) {
         try {
             if (!schema || !cfg || !cfg.toIntermediate || !Array.isArray(currentFlow) || currentFlow.length === 0) {
@@ -515,7 +569,13 @@
             let merged = {
                 description: schema.description || '',
                 nodes: {},
-                connections: Array.isArray(schema.connections) ? schema.connections.slice() : []
+                // Deep-cloned, not `slice()`d: the endpoint-resolution pass
+                // below rewrites `conn.from` / `conn.to`, and a shallow copy
+                // shares those objects with the caller's schema — so the
+                // caller would silently see the merged aliases too.
+                connections: Array.isArray(schema.connections)
+                    ? JSON.parse(JSON.stringify(schema.connections))
+                    : []
             };
             // Preserve directive fields the merger doesn't otherwise touch
             // so a reposition-only agent message survives the merge.
@@ -558,15 +618,8 @@
     //  Flow Node Extraction                                               //
     // ================================================================== //
 
-    /**
-     * Normalize a Vibe Schema for conversion to Node-RED JSON:
-     * skips null/invalid entries and infers missing `type` from the current flow.
-     *
-     * @param {Object} schema
-     * @param {Object} options   { currentFlow: Array }
-     * @param {Object} cfg       Configurator with `toIntermediate` method.
-     * @returns {Object}  Clean Vibe Schema ready for cfg.toNodeRed().
-     */
+    // Drop null/invalid entries and infer a missing `type` from the current
+    // flow, so the result is safe to hand to cfg.toNodeRed().
     function normalizeSchemaForConversion(schema, options, cfg) {
         let out = {
             description: (schema && schema.description) || '',
@@ -630,25 +683,13 @@
         return out;
     }
 
-    /**
-     * Try to parse Node-RED flow nodes from a single JSON text snippet.
-     * Handles Vibe Schema, raw Node-RED arrays, and single-node objects.
-     *
-     * @param {string} text
-     * @param {Object} options  { mode: string, currentFlow: Array }
-     * @param {Object} cfg      Configurator with `isVibeSchema`, `toNodeRed`, `toIntermediate`.
-     * @returns {Array|null}
-     */
+    // One snippet → nodes. Accepts Vibe Schema, a raw Node-RED array, or a
+    // single node object.
     function tryParseFlowNodes(text, options, cfg) {
         let cleaned = stripJsonComments(text).trim();
         let parsed;
-        try {
-            parsed = JSON.parse(cleaned);
-        } catch (e) {
-            try {
-                parsed = JSON.parse(repairJsonQuotes(cleaned));
-            } catch (e2) { /* still invalid */ }
-        }
+        try { parsed = parseJsonRelaxed(cleaned); }
+        catch (e) { /* not JSON, or beyond repair */ }
         if (!parsed) return null;
 
         try {
@@ -661,16 +702,9 @@
                 let conversionSchema = normalizeSchemaForConversion(sourceSchema, options, cfg);
                 if (Object.keys(conversionSchema.nodes).length === 0) return [];
 
-                // Always preserve aliases on rebuilt nodes -- the importer
-                // needs them to resolve `above` references for comments
-                // (each `above: <alias>` is matched against rebuilt nodes
-                // via `_llmAlias`). Without it, a fresh import has no way
-                // to map a comment's anchor alias back to the real node id
-                // generated for the same alias in toNodeRed, and every
-                // caption falls through to the order-based fallback --
-                // landing above the NEXT sample's inject instead of its
-                // own. _llmAlias is stripped after the importer consumes it,
-                // so leaving it on always is cheap.
+                // preserveAlias is always on: the importer matches a comment's
+                // `above: <alias>` against `_llmAlias` to find its target, and
+                // strips the marker once consumed.
                 let converted = cfg.toNodeRed(conversionSchema, {
                     preserveAlias: true
                 });
@@ -697,20 +731,14 @@
         return null;
     }
 
-    /**
-     * Extract Node-RED flow nodes from LLM message content.
-     * Tries (in order): code fences → full text → balanced objects → balanced arrays.
-     *
-     * @param {string} messageContent
-     * @param {Object} options         { mode: string, currentFlow: Array }
-     * @param {Object} cfg             Configurator module.
-     * @returns {Array|null}
-     */
+    // Whole reply → nodes. Tries code fences → full text → balanced objects
+    // → balanced arrays, last candidate first at each stage.
     function extractFlowNodes(messageContent, options, cfg) {
+        let raw = String(messageContent || '');
         let codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
         let candidates = [];
         let m;
-        while ((m = codeBlockRegex.exec(messageContent)) !== null) {
+        while ((m = codeBlockRegex.exec(raw)) !== null) {
             candidates.push(m[1].trim());
         }
         for (let i = candidates.length - 1; i >= 0; i--) {
@@ -718,7 +746,7 @@
             if (nodes) return nodes;
         }
 
-        let stripped = messageContent.replace(/```[\s\S]*?```/g, '');
+        let stripped = raw.replace(/```[\s\S]*?```/g, '');
         let whole = stripped.trim();
         if (whole) {
             let wholeNodes = tryParseFlowNodes(whole, options, cfg);
@@ -739,26 +767,16 @@
         return null;
     }
 
-    /**
-     * Diagnose why `extractFlowNodes` returned null. Re-parses each fenced
-     * code block (preferring the last one, same priority extractFlowNodes
-     * uses) and returns the parse error of the first block that fails
-     * both `JSON.parse` and `repairJsonQuotes`. Used by the importer to
-     * surface a useful "JSON parse failed at line X, col Y" notification
-     * instead of the generic "No JSON flow found" — the common cause is
-     * an LLM forgetting to escape inner quotes in a JSONata expression
-     * (e.g. `"to": "foo" & bar`).
-     *
-     * @param {string} messageContent
-     * @returns {{error: string, line?: number, column?: number, snippet?: string} | null}
-     *          null when no fenced code block exists (truly "no JSON found"),
-     *          or every fenced block parses fine (the failure happened elsewhere).
-     */
+    // Why extractFlowNodes returned null, so the importer can say "JSON parse
+    // failed at line X" instead of "no JSON found". The usual cause is an
+    // unescaped quote inside a JSONata expression. Null when there was no
+    // fenced block at all, or when every block parses (failure was elsewhere).
     function diagnoseJsonExtractionFailure(messageContent) {
+        let raw = String(messageContent || '');
         let codeBlockRegex = /```(?:json|javascript)?\s*\n?([\s\S]*?)\n?\s*```/gi;
         let candidates = [];
         let m;
-        while ((m = codeBlockRegex.exec(messageContent)) !== null) {
+        while ((m = codeBlockRegex.exec(raw)) !== null) {
             candidates.push(m[1].trim());
         }
         if (candidates.length === 0) return null;
@@ -766,20 +784,19 @@
         for (let i = candidates.length - 1; i >= 0; i--) {
             let text = stripJsonComments(candidates[i]).trim();
             if (!text) continue;
-            try { JSON.parse(text); continue; } catch (e) {}
-            try { JSON.parse(repairJsonQuotes(text)); continue; } catch (e2) {
+            try { parseJsonRelaxed(text); continue; } catch (e2) {
                 let info = { error: (e2 && e2.message) ? e2.message : String(e2) };
                 let posMatch = /position\s+(\d+)/.exec(info.error);
-                if (posMatch) {
-                    let pos = parseInt(posMatch[1], 10);
-                    if (!isNaN(pos) && pos >= 0 && pos <= text.length) {
-                        let before = text.substring(0, pos);
-                        info.line = (before.match(/\n/g) || []).length + 1;
-                        info.column = pos - (before.lastIndexOf('\n') + 1) + 1;
-                        info.snippet = text
-                            .substring(Math.max(0, pos - 30), Math.min(text.length, pos + 30))
-                            .replace(/\n/g, '↵');
-                    }
+                // No position means the text simply ended (a truncated reply),
+                // so the end of it is where to look.
+                let pos = posMatch ? parseInt(posMatch[1], 10) : text.length;
+                if (!isNaN(pos) && pos >= 0 && pos <= text.length) {
+                    let before = text.substring(0, pos);
+                    info.line = (before.match(/\n/g) || []).length + 1;
+                    info.column = pos - (before.lastIndexOf('\n') + 1) + 1;
+                    info.snippet = text
+                        .substring(Math.max(0, pos - 30), Math.min(text.length, pos + 30))
+                        .replace(/\n/g, '↵');
                 }
                 return info;
             }
@@ -791,17 +808,13 @@
     //  Public API                                                         //
     // ================================================================== //
 
+    // Token normalization and schema resolution are internal steps of the
+    // entry points below, not part of the callable surface. The repairs are
+    // reachable only through parseJsonBlock, so the sidebar can read a block
+    // exactly as the importer will.
     return {
-        // Token normalization
-        normalizeToken: normalizeToken,
-        normalizeTokenLoose: normalizeTokenLoose,
-        putUniqueToken: putUniqueToken,
-        resolveUniqueApprox: resolveUniqueApprox,
-
-        // JSON parsing / repair
-        stripJsonComments: stripJsonComments,
-        repairJsonQuotes: repairJsonQuotes,
-        collectBalancedJsonSnippets: collectBalancedJsonSnippets,
+        // One block of reply text → its JSON, repairs included
+        parseJsonBlock: parseJsonBlock,
 
         // Vibe Schema extraction (requires cfg with isVibeSchema)
         extractVibeSchema: extractVibeSchema,
@@ -811,13 +824,7 @@
         // Flow lookup (requires cfg with toIntermediate)
         buildFlowLookup: buildFlowLookup,
 
-        // Schema resolution (requires cfg with toIntermediate)
-        resolveAliasInSchema: resolveAliasInSchema,
-        mergeAgentPartialSchemaWithCurrentFlow: mergeAgentPartialSchemaWithCurrentFlow,
-
         // Flow node extraction (requires cfg with isVibeSchema, toNodeRed, toIntermediate)
-        normalizeSchemaForConversion: normalizeSchemaForConversion,
-        tryParseFlowNodes: tryParseFlowNodes,
         extractFlowNodes: extractFlowNodes,
         diagnoseJsonExtractionFailure: diagnoseJsonExtractionFailure
     };

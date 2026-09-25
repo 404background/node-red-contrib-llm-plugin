@@ -1,10 +1,20 @@
 {
   "name": "@background404/node-red-contrib-llm-plugin",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Node-RED sidebar plugin for chatting with LLMs (Ollama / OpenAI / Custom OpenAI-compatible endpoints), generating flows, and importing results",
   "main": "llm_plugin.js",
+  "files": [
+    "llm_plugin.js",
+    "llm_plugin.html",
+    "llm-plugin_styles.css",
+    "src/",
+    "node/",
+    "examples/",
+    "images/"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test/run_all.js",
+    "test:llm": "node test/llm_roundtrip.test.js"
   },
   "node-red": {
     "version": ">=4.0.0",
@@ -24,12 +34,12 @@
   "author": "background404",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
-    "fs-extra": "^11.3.4",
-    "marked": "^17.0.1",
-    "openai": "^6.2.0"
+    "fs-extra": "^11.4.0",
+    "marked": "^18.0.13",
+    "openai": "^7.20.0"
   },
   "repository": {
     "type": "git",
