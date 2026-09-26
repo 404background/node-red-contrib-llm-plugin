@@ -330,6 +330,26 @@ function scenarioAnAliasListReadsAsTheMap() {
   ok(aliasNull && aliasNull.nodes.debug_extra === null && aliasNull.nodes.debug_log.type === 'debug',
     '`"debug_extra": { "alias": null }` reads as a delete of debug_extra');
 
+  // gemma4:12b keys the connections by their source.
+  const keyed = schema(JSON.stringify({
+    nodes: { inject_t: { type: 'inject' }, debug_t: { type: 'debug' }, debug_u: { type: 'debug' } },
+    connections: { inject_t: { to: ['debug_t', 'debug_u'] }, debug_x: 'debug_t' },
+  }));
+  ok(keyed && Array.isArray(keyed.connections) && keyed.connections.length === 3 &&
+     keyed.connections[0].from === 'inject_t' && keyed.connections[1].to === 'debug_u' && keyed.connections[2].from === 'debug_x',
+    'connections keyed by their source read as the list (' + JSON.stringify(keyed && keyed.connections) + ')');
+
+  const oneBased = schema(JSON.stringify({
+    nodes: { switch_v: { type: 'switch', props: { rules: [{ t: 'gte', v: '10', vt: 'num' }, { t: 'else' }] } },
+             function_f: { type: 'function', props: { outputs: 2 } } },
+    connections: [{ from: 'switch_v', to: 'debug_h', fromPort: 1 }, { from: 'switch_v', to: 'debug_l', fromPort: 2 },
+                  { from: 'function_f', to: 'debug_a', fromPort: 0 }, { from: 'function_f', to: 'debug_b', fromPort: 1 }],
+  }));
+  ok(oneBased && oneBased.connections[0].fromPort === 0 && oneBased.connections[1].fromPort === 1,
+    'ports counted from 1 (the last one out of range) are shifted to count from 0');
+  ok(oneBased && oneBased.connections[2].fromPort === 0 && oneBased.connections[3].fromPort === 1,
+    'while ports already counted from 0 are left alone');
+
   const raw = [{ id: 'a', type: 'inject', z: 't', wires: [['b']] }, { id: 'b', type: 'debug', z: 't', wires: [] }];
   ok(schema(JSON.stringify(raw)) === null, 'a raw Node-RED array is not mistaken for one');
 }

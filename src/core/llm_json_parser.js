@@ -390,6 +390,30 @@
             out = Object.assign({}, out);
             out.nodes = toMap(out.nodes);
         }
+        // `connections: { "a": { "to": "b" } }` — keyed by the source node,
+        // with a target, a list of targets, or `{ to, fromPort }` entries.
+        if (out && out.connections && typeof out.connections === 'object' && !Array.isArray(out.connections)) {
+            let list = [];
+            let readable = Object.keys(out.connections).every(function(from) {
+                let entries = [].concat(out.connections[from]);
+                return entries.every(function(e) {
+                    if (typeof e === 'string') { list.push({ from: from, to: e }); return true; }
+                    if (!e || typeof e !== 'object') return false;
+                    let targets = [].concat(e.to);
+                    if (!targets.length || !targets.every(function(t) { return typeof t === 'string'; })) return false;
+                    targets.forEach(function(t) {
+                        let c = { from: from, to: t };
+                        if (typeof e.fromPort === 'number') c.fromPort = e.fromPort;
+                        list.push(c);
+                    });
+                    return true;
+                });
+            });
+            if (readable) {
+                out = (out === parsed) ? Object.assign({}, out) : out;
+                out.connections = list;
+            }
+        }
         // `"debug_old": { "alias": null }` — the key already is the alias, so
         // a null alias inside can only mean delete.
         if (out && out.nodes && typeof out.nodes === 'object' && !Array.isArray(out.nodes)) {
@@ -439,6 +463,32 @@
             let target = (c.remove && typeof c.remove === 'object') ? c.remove : c;
             target.from = fix(target.from);
             target.to = fix(target.to);
+        });
+        return shiftOneBasedPorts(schema);
+    }
+
+    // Ports counted from 1: on a node this reply declares with N outputs,
+    // a `fromPort` of N is out of range from 0, so with no port 0 in use
+    // the whole numbering is one-based.
+    function shiftOneBasedPorts(schema) {
+        let ports = {};
+        schema.connections.forEach(function(c) {
+            if (c && typeof c.from === 'string' && typeof c.fromPort === 'number') {
+                (ports[c.from] = ports[c.from] || []).push(c.fromPort);
+            }
+        });
+        Object.keys(ports).forEach(function(from) {
+            let spec = schema.nodes[from];
+            if (!spec || typeof spec !== 'object') return;
+            let props = (spec.props && typeof spec.props === 'object' && !Array.isArray(spec.props)) ? spec.props : {};
+            let rules = Array.isArray(props.rules) ? props.rules : (Array.isArray(spec.rules) ? spec.rules : null);
+            let outputs = typeof props.outputs === 'number' ? props.outputs
+                : (typeof spec.outputs === 'number' ? spec.outputs : (rules ? rules.length : 0));
+            let used = ports[from];
+            if (!outputs || Math.min.apply(null, used) < 1 || Math.max.apply(null, used) !== outputs) return;
+            schema.connections.forEach(function(c) {
+                if (c && c.from === from && typeof c.fromPort === 'number') c.fromPort -= 1;
+            });
         });
         return schema;
     }
