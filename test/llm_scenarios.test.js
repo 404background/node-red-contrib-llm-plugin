@@ -12,6 +12,10 @@
 // llm-test-config.json). LLM_TEST_ONLY="delete,switch" runs the scenarios whose
 // name contains one of them. LLM_TEST_RUNS=10 runs each scenario 10 times without retries
 // and reports how often it passed. Endpoint: llm-test-config.json / LLM_TEST_URL.
+// LLM_TEST_PROVIDER=openai uses OpenAI with the key from LLM_TEST_OPENAI_KEY or
+// the git-ignored ../.credentials.json ({ "OpenAI": "sk-..." }); the tokens
+// the API reports are counted, and LLM_TEST_TOKEN_BUDGET=200000 stops the run
+// before a scenario once that many have been used.
 // Exit codes: 0 = every scenario passed for every model, 1 = some failed,
 // 2 = skipped (endpoint or model absent).
 
@@ -29,6 +33,8 @@ const CONFIG = (function() {
   cfg.models = (process.env.LLM_TEST_MODELS || process.env.LLM_TEST_MODEL || cfg.model)
     .split(',').map((m) => m.trim()).filter(Boolean);
   cfg.runs = Math.max(0, parseInt(process.env.LLM_TEST_RUNS, 10) || 0);
+  cfg.provider = process.env.LLM_TEST_PROVIDER === 'openai' ? 'openai' : 'ollama';
+  cfg.tokenBudget = parseInt(process.env.LLM_TEST_TOKEN_BUDGET, 10) || 0;
   return cfg;
 })();
 
@@ -36,6 +42,43 @@ const TRANSPORT = /^error: .*(fetch failed|ECONN|socket|terminated|timed out|ETI
 // LLM_TEST_ONLY: comma-separated parts of scenario names.
 const ONLY = (process.env.LLM_TEST_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 const selected = (sc) => !ONLY.length || ONLY.some((part) => sc.name.indexOf(part) !== -1);
+
+function openaiKey() {
+  if (process.env.LLM_TEST_OPENAI_KEY) return process.env.LLM_TEST_OPENAI_KEY;
+  const file = path.join(ROOT, '.credentials.json');
+  return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')).OpenAI || '') : '';
+}
+
+// The tokens OpenAI bills, reasoning included, are only in the stream's usage
+// chunk, which comes only when asked for. The test asks for it on the wire so
+// the adapter itself stays as it ships.
+const usage = { input: 0, output: 0, calls: 0, missing: 0, pending: [] };
+async function usageSettled() { await Promise.all(usage.pending.splice(0)); }
+function countOpenAITokens() {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async function(url, init) {
+    const href = String(url && url.url ? url.url : url);
+    if (!/\/chat\/completions$/.test(href) || !init || typeof init.body !== 'string') return realFetch(url, init);
+    const body = JSON.parse(init.body);
+    body.stream_options = { include_usage: true };
+    const res = await realFetch(url, Object.assign({}, init, { body: JSON.stringify(body) }));
+    if (!res.body) return res;
+    const [mine, theirs] = res.body.tee();
+    usage.pending.push((async () => {
+      const text = await new Response(mine).text();
+      let u = null;
+      text.split('\n').forEach((line) => {
+        if (line.indexOf('data: {') !== 0) return;
+        try { const obj = JSON.parse(line.slice(6)); if (obj.usage) u = obj.usage; } catch (e) { /* not JSON */ }
+      });
+      if (!u) { usage.missing++; return; }
+      usage.input += u.prompt_tokens || 0;
+      usage.output += u.completion_tokens || 0;
+      usage.calls++;
+    })().catch(() => { usage.missing++; }));
+    return new Response(theirs, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
+}
 
 function makeCore() {
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-scenarios-'));
@@ -727,8 +770,9 @@ async function runOnce(core, model, sc) {
   const context = canvas.nodes.length || (canvas.junctions || []).length
     ? P.UI.getFlowsByIds(ids, { includeCanvasExtras: true }) : null;
   const settings = core.getPluginSettings();
+  if (CONFIG.provider === 'openai') settings.openaiApiKey = openaiKey();
   const messages = core.buildMessages(sc.prompt, context, 't1', settings, { mode: sc.mode });
-  const reply = await core.generateWithProvider('ollama', settings, model, messages, { timeoutMs: CONFIG.timeoutMs });
+  const reply = await core.generateWithProvider(CONFIG.provider, settings, model, messages, { timeoutMs: CONFIG.timeoutMs });
   const schema = P.LLMJsonParser.extractVibeSchema(reply, P.FlowConverterCore);
   if (sc.mode === 'ask') return { problem: sc.checkReply(reply, schema), reply };
 
@@ -744,17 +788,25 @@ async function runOnce(core, model, sc) {
 }
 
 async function main() {
-  const core = makeCore();
-  let tags;
-  try {
-    tags = await (await fetch(CONFIG.ollamaUrl + '/api/tags')).json();
-  } catch (e) {
-    console.log('SKIP: cannot reach ' + CONFIG.ollamaUrl);
-    process.exit(2);
+  // Before makeCore: the OpenAI SDK keeps the fetch it finds when loaded.
+  if (CONFIG.provider === 'openai') {
+    if (!openaiKey()) { console.log('SKIP: no OpenAI key'); process.exit(2); }
+    countOpenAITokens();
   }
-  const have = (tags.models || []).map((m) => m.name);
-  const missing = CONFIG.models.filter((m) => have.indexOf(m) === -1);
-  if (missing.length) { console.log('SKIP: not installed: ' + missing.join(', ')); process.exit(2); }
+  const core = makeCore();
+  if (CONFIG.provider !== 'openai') {
+    let tags;
+    try {
+      tags = await (await fetch(CONFIG.ollamaUrl + '/api/tags')).json();
+    } catch (e) {
+      console.log('SKIP: cannot reach ' + CONFIG.ollamaUrl);
+      process.exit(2);
+    }
+    const have = (tags.models || []).map((m) => m.name);
+    const missing = CONFIG.models.filter((m) => have.indexOf(m) === -1);
+    if (missing.length) { console.log('SKIP: not installed: ' + missing.join(', ')); process.exit(2); }
+  }
+  let overBudget = false;
 
   const table = {}, rates = {};
   let failed = 0;
@@ -763,6 +815,12 @@ async function main() {
     table[model] = {};
     rates[model] = { pass: 0, total: 0, lost: 0 };
     for (const sc of SCENARIOS.filter(selected)) {
+      await usageSettled();
+      if (CONFIG.tokenBudget && usage.input + usage.output >= CONFIG.tokenBudget) {
+        if (!overBudget) console.log('  token budget reached (' + (usage.input + usage.output) + '); skipping the rest');
+        overBudget = true;
+        continue;
+      }
       let result = null, tries = 0, passes = 0, lost = 0;
       const tryLimit = CONFIG.runs || CONFIG.attempts;
       for (tries = 1; tries <= tryLimit; tries++) {
@@ -780,7 +838,9 @@ async function main() {
           await new Promise((res) => setTimeout(res, 15000));
         }
         const secs = ((Date.now() - started) / 1000).toFixed(1);
-        console.log('  [' + sc.name + '] attempt ' + tries + ' (' + secs + 's): ' + (result.problem || 'ok'));
+        await usageSettled();
+        const spent = CONFIG.provider === 'openai' ? ', ' + (usage.input + usage.output) + ' tokens so far' : '';
+        console.log('  [' + sc.name + '] attempt ' + tries + ' (' + secs + 's' + spent + '): ' + (result.problem || 'ok'));
         if (result.problem && process.env.LLM_TEST_SHOW_FAILED) {
           console.log(String(result.reply).split('\n').map((l) => '      | ' + l).join('\n').slice(0, 3000));
         }
@@ -806,6 +866,12 @@ async function main() {
   console.log('\n=== summary ===');
   const width = Math.max(...SCENARIOS.map((s) => s.name.length));
   console.log(' '.repeat(width) + '  ' + CONFIG.models.join('  |  '));
+  await usageSettled();
+  if (CONFIG.provider === 'openai') {
+    if (usage.missing) console.log('WARNING: ' + usage.missing + ' call(s) reported no usage; the count is low');
+    console.log('tokens: ' + usage.input + ' in + ' + usage.output + ' out = ' + (usage.input + usage.output) +
+      ' over ' + usage.calls + ' calls');
+  }
   SCENARIOS.filter((sc) => table[CONFIG.models[0]][sc.name]).forEach((sc) => {
     console.log(sc.name.padEnd(width) + '  ' + CONFIG.models.map((m) => table[m][sc.name].padEnd(m.length)).join('  |  '));
   });
