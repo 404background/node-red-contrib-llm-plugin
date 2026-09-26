@@ -671,6 +671,7 @@ function createLLMCore(RED) {
         let buffer = '';
         let content = '';
         let sawMessage = false;
+        let done = false;
         function take(line) {
             line = line.trim();
             if (!line) return;
@@ -681,6 +682,7 @@ function createLLMCore(RED) {
                 content += obj.message.content;
                 sawMessage = true;
             }
+            if (obj && obj.done === true) done = true;
         }
         for await (const chunk of stream) {
             buffer += decoder.decode(chunk, { stream: true });
@@ -692,7 +694,16 @@ function createLLMCore(RED) {
         }
         take(buffer + decoder.decode());
         if (!sawMessage) throw new Error('No response from model');
+        // A proxy that drops the connection ends the stream just as cleanly
+        // as the last line does; only `done` says the reply is whole.
+        if (!done) throw connectionClosed();
         return content;
+    }
+
+    function connectionClosed() {
+        const e = new Error('The connection closed before the reply finished');
+        e.code = 'ECONNRESET';
+        return e;
     }
 
     function combineSignals(a, b) {
@@ -724,6 +735,7 @@ function createLLMCore(RED) {
         const timer = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
         let content = '';
         let sawChoice = false;
+        let finished = false;
         try {
             const stream = await openai.chat.completions.create({
                 messages: Array.isArray(messages) ? messages : [],
@@ -735,6 +747,7 @@ function createLLMCore(RED) {
                 if (!choice) continue;
                 sawChoice = true;
                 if (choice.delta && typeof choice.delta.content === 'string') content += choice.delta.content;
+                if (choice.finish_reason) finished = true;
             }
             // The SDK ends an aborted stream quietly; a cut-off reply must not
             // pass for a whole one.
@@ -756,6 +769,8 @@ function createLLMCore(RED) {
             throw new Error('The LLM endpoint returned no message content. Verify the Base URL points to an ' +
                 'OpenAI-compatible chat-completions API (e.g. ends in /v1) and that the model name is valid.');
         }
+        // The last chunk carries `finish_reason`; without it the stream was cut.
+        if (!finished) throw connectionClosed();
         return content;
     }
 

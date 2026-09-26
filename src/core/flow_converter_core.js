@@ -33,6 +33,22 @@
         _runtimeGetType = (typeof fn === 'function') ? fn : null;
     }
 
+    // Aliases write a type's spaces as `_` (`http_in_hello`), and models copy
+    // that into `type`. `http_in` means `http in` when only the spaced type
+    // exists; returns the spaced type, or null to keep what was written.
+    let CORE_SPACED_TYPES = ['http in', 'http response', 'http request', 'mqtt in', 'mqtt out',
+        'link in', 'link out', 'link call', 'websocket in', 'websocket out', 'tcp in', 'tcp out',
+        'tcp request', 'udp in', 'udp out', 'file in'];
+    function spacedType(type) {
+        if (typeof type !== 'string' || type.indexOf('_') === -1) return null;
+        let spaced = type.replace(/_/g, ' ');
+        if (_runtimeGetType) {
+            if (_runtimeGetType(type)) return null;
+            if (_runtimeGetType(spaced)) return spaced;
+        }
+        return CORE_SPACED_TYPES.indexOf(spaced) !== -1 ? spaced : null;
+    }
+
     function isConfigType(type) {
         if (typeof type !== 'string') return false;
         if (_runtimeGetType) {
@@ -376,7 +392,8 @@
         Object.keys(declaredNodes || {}).forEach(function(k) {
             let spec = declaredNodes[k];
             if (spec === null) return;
-            nodeSpecs[k] = spec;
+            let spaced = spacedType(spec && spec.type);
+            nodeSpecs[k] = spaced ? Object.assign({}, spec, { type: spaced }) : spec;
         });
 
         // Stub the config nodes an LLM referenced by alias but never defined.

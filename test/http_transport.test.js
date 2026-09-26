@@ -114,7 +114,7 @@ async function scenarioOllamaRoundTrip() {
     req.on('end', () => {
       body = { url: req.url, method: req.method, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ message: { content: 'hello from the model' } }));
+      res.end(JSON.stringify({ message: { content: 'hello from the model' }, done: true }));
     });
   });
   try {
@@ -177,7 +177,7 @@ async function scenarioOllamaHonoursABasePath() {
   const s = await serve((req, res) => {
     seenUrl = req.url;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: { content: 'ok' } }));
+    res.end(JSON.stringify({ message: { content: 'ok' }, done: true }));
   });
   try {
     const core = createLLMCore(fakeRED());
@@ -270,7 +270,7 @@ async function scenarioOpenAICompatibleReadsAStream() {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       ['hel', 'lo 日本', '語'].forEach((c) => {
         res.write('data: ' + JSON.stringify({ id: 'x', object: 'chat.completion.chunk', created: 0, model: 'm',
-          choices: [{ index: 0, delta: { content: c }, finish_reason: null }] }) + '\n\n');
+          choices: [{ index: 0, delta: { content: c }, finish_reason: c === '語' ? 'stop' : null }] }) + '\n\n');
       });
       res.end('data: [DONE]\n\n');
     });
@@ -298,6 +298,38 @@ async function scenarioOpenAICompatibleReadsAStream() {
   } finally { await s.close(); }
 }
 
+// A proxy that drops the connection mid-reply ends the stream as cleanly as
+// the model does. Only the end marker (`done` / `finish_reason`) tells them apart.
+async function scenarioACutStreamIsNotAReply() {
+  console.log('\na stream cut off before its end marker is an error, not a short reply');
+  let provider = 'ollama';
+  const s = await serve((req, res) => {
+    if (provider === 'ollama') {
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+      res.end(JSON.stringify({ message: { content: 'half an ans' } }) + '\n');
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: 'half' }, finish_reason: null }] }) + '\n\n');
+    }
+  });
+  try {
+    const core = createLLMCore(fakeRED());
+    let err = null;
+    try {
+      await core.generateWithProvider('ollama', { ollamaUrl: 'http://127.0.0.1:' + s.port }, 'm', [{ role: 'user', content: 'hi' }], {});
+    } catch (e) { err = e; }
+    ok(err && err.code === 'ECONNRESET', 'Ollama: rejects with ECONNRESET (' + (err && (err.code || err.message)) + ')');
+
+    provider = 'custom';
+    err = null;
+    try {
+      await core.generateWithProvider('custom', { customBaseUrl: 'http://127.0.0.1:' + s.port + '/v1' }, 'm',
+        [{ role: 'user', content: 'hi' }], {});
+    } catch (e) { err = e; }
+    ok(err && err.code === 'ECONNRESET', 'OpenAI-compatible: rejects with ECONNRESET (' + (err && (err.code || err.message)) + ')');
+  } finally { await s.close(); }
+}
+
 async function run() {
   await scenarioAdminApiReadsFlows();
   await scenarioAdminApiKeepsUrlOutOfErrors();
@@ -309,6 +341,7 @@ async function run() {
   await scenarioOllamaReadsAStream();
   await scenarioOllamaTimeoutMidStream();
   await scenarioOpenAICompatibleReadsAStream();
+  await scenarioACutStreamIsNotAReply();
   summary();
 }
 

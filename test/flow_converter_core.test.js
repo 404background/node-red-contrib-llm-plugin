@@ -130,6 +130,17 @@ it('vibe-schema.md Example 1 produces exactly its 5 declared nodes', function() 
     assert.deepStrictEqual(out.wires, []);
 });
 
+// --- A type written the way aliases spell it ---
+it('http_in / http_response mean http in / http response; an unknown underscore type is kept', function() {
+    const flow = Cfg.toNodeRed({
+        nodes: { a: { type: 'http_in', props: { url: '/x' } }, b: { type: 'http_response' }, c: { type: 'my_custom_node' } },
+        connections: [{ from: 'a', to: 'b' }]
+    }, { workspace: 'ws' });
+    assert.deepStrictEqual(flow.map((n) => n.type).sort(), ['http in', 'http response', 'my_custom_node']);
+    const hin = byType(flow, 'http in')[0], hout = byType(flow, 'http response')[0];
+    assert.deepStrictEqual(hin.wires, [[hout.id]]);
+});
+
 // --- Properties written under `config` ---
 // `config` is the config-node flag; models also use it as `props`.
 it('properties written under config reach the node, and props win a clash', function() {

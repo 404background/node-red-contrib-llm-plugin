@@ -32,7 +32,7 @@ const CONFIG = (function() {
   return cfg;
 })();
 
-const TRANSPORT = /^error: .*(fetch failed|ECONN|socket|terminated|timed out|ETIMEDOUT|EAI_AGAIN)/i;
+const TRANSPORT = /^error: .*(fetch failed|ECONN|socket|terminated|timed out|ETIMEDOUT|EAI_AGAIN|connection closed)/i;
 // LLM_TEST_ONLY: comma-separated parts of scenario names.
 const ONLY = (process.env.LLM_TEST_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 const selected = (sc) => !ONLY.length || ONLY.some((part) => sc.name.indexOf(part) !== -1);
