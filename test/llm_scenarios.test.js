@@ -9,8 +9,8 @@
 // are about the outcome, not the wording.
 //
 // Models: LLM_TEST_MODELS="gemma3:4b,gemma4:e2b" (default: the model in
-// llm-test-config.json). LLM_TEST_ONLY="delete" runs the scenarios whose name
-// contains it. LLM_TEST_RUNS=10 runs each scenario 10 times without retries
+// llm-test-config.json). LLM_TEST_ONLY="delete,switch" runs the scenarios whose
+// name contains one of them. LLM_TEST_RUNS=10 runs each scenario 10 times without retries
 // and reports how often it passed. Endpoint: llm-test-config.json / LLM_TEST_URL.
 // Exit codes: 0 = every scenario passed for every model, 1 = some failed,
 // 2 = skipped (endpoint or model absent).
@@ -33,6 +33,9 @@ const CONFIG = (function() {
 })();
 
 const TRANSPORT = /^error: .*(fetch failed|ECONN|socket|terminated|timed out|ETIMEDOUT|EAI_AGAIN)/i;
+// LLM_TEST_ONLY: comma-separated parts of scenario names.
+const ONLY = (process.env.LLM_TEST_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+const selected = (sc) => !ONLY.length || ONLY.some((part) => sc.name.indexOf(part) !== -1);
 
 function makeCore() {
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-scenarios-'));
@@ -758,9 +761,9 @@ async function main() {
   for (const model of CONFIG.models) {
     console.log('\n=== ' + model + ' ===');
     table[model] = {};
-    rates[model] = { pass: 0, total: 0 };
-    for (const sc of SCENARIOS.filter((s) => !process.env.LLM_TEST_ONLY || s.name.indexOf(process.env.LLM_TEST_ONLY) !== -1)) {
-      let result = null, tries = 0, passes = 0;
+    rates[model] = { pass: 0, total: 0, lost: 0 };
+    for (const sc of SCENARIOS.filter(selected)) {
+      let result = null, tries = 0, passes = 0, lost = 0;
       const tryLimit = CONFIG.runs || CONFIG.attempts;
       for (tries = 1; tries <= tryLimit; tries++) {
         const started = Date.now();
@@ -782,12 +785,16 @@ async function main() {
           console.log(String(result.reply).split('\n').map((l) => '      | ' + l).join('\n').slice(0, 3000));
         }
         if (!result.problem) passes++;
+        // Still unreachable after the retries: no answer to judge.
+        if (TRANSPORT.test(result.problem || '')) lost++;
         if (!result.problem && !CONFIG.runs) break;
       }
       if (CONFIG.runs) {
-        table[model][sc.name] = passes + '/' + CONFIG.runs;
+        const judged = CONFIG.runs - lost;
+        table[model][sc.name] = passes + '/' + judged + (lost ? ' (' + lost + ' unanswered)' : '');
         rates[model].pass += passes;
-        rates[model].total += CONFIG.runs;
+        rates[model].total += judged;
+        rates[model].lost += lost;
         if (passes < CONFIG.runs) failed++;
       } else {
         table[model][sc.name] = result.problem ? 'FAIL' : (tries === 1 ? 'ok' : 'ok (' + tries + ')');
@@ -805,6 +812,7 @@ async function main() {
   if (CONFIG.runs) {
     console.log('pass rate'.padEnd(width) + '  ' + CONFIG.models.map((m) =>
       (Math.round(1000 * rates[m].pass / rates[m].total) / 10 + '%').padEnd(m.length)).join('  |  '));
+    console.log('unanswered'.padEnd(width) + '  ' + CONFIG.models.map((m) => String(rates[m].lost).padEnd(m.length)).join('  |  '));
   }
   process.exit(failed ? 1 : 0);
 }
