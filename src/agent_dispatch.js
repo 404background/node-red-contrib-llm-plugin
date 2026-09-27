@@ -1,10 +1,6 @@
-// LLM Plugin  -  One Agent-node reply, applied by one editor.
-//
-// The llm-request node publishes its reply over comms, which reaches every
-// open editor. Each dispatch gets an id here, and the first editor to claim
-// it is the one that applies it. Module state, so the node and the admin
-// route (both in the runtime process) share it.
-// See docs/{en,jp}/llm-request.md.
+// One Agent-node reply, applied by one editor: every open editor gets it over
+// comms, and the first to claim its id applies it. Module state, shared by the
+// node and the admin route. See docs/{en,jp}/llm-request.md.
 const crypto = require('crypto');
 
 // Longer than an editor needs to react to a comms message, short enough that

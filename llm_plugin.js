@@ -8,10 +8,8 @@ module.exports = function(RED) {
         createLLMPluginServer(RED);
         RED.log.info('[LLM Plugin] Server routes registered');
     } catch (err) {
-        // Logged AND rethrown. Swallowing it left the sidebar loading against
-        // endpoints that all 404, with nothing in the log to say why; letting
-        // it through makes Node-RED mark the plugin as failed, which is the
-        // signal a broken install should give.
+        // Logged AND rethrown, so Node-RED marks the plugin as failed rather than
+        // leaving a sidebar whose endpoints all 404.
         RED.log.error('[LLM Plugin] Failed to initialise: ' +
             ((err && err.message) ? err.message : err));
         throw err;

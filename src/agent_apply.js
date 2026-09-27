@@ -1,7 +1,5 @@
-// Agent mode's editor half for the `llm-request` node: the runtime publishes a
-// reply over comms, and this applies it through the plugin's own importer.
-// It lives with the plugin rather than in the node's html because
-// everything it touches is the plugin's. See docs/{en,jp}/llm-request.md.
+// Agent mode's editor half for the `llm-request` node: a reply published over
+// comms is applied through the plugin's importer. See docs/{en,jp}/llm-request.md.
 (function() {
     let P = window.LLMPlugin = window.LLMPlugin || {};
     if (typeof RED === 'undefined' || !RED.comms || typeof RED.comms.subscribe !== 'function') return;

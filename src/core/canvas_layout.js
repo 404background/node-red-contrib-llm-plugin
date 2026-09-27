@@ -1,7 +1,6 @@
-// Canvas Layout - standalone layout engine for Node-RED node arrays.
-// Public API: layoutNodes, reflowCanvasNodes, placeAddedNodesNearNeighbors,
-// fitGroups, getNodeWidth, and the two passes the converter shares
-// (computeComponentYOffsets, computeLeftEdges). See docs/{en,jp}/layout.md.
+// Canvas Layout - standalone layout engine for Node-RED node arrays. The
+// converter shares computeComponentYOffsets / computeLeftEdges.
+// See docs/{en,jp}/layout.md.
 (function(factory) {
     if (typeof module === 'object' && module.exports) {
         module.exports = factory();
@@ -12,10 +11,8 @@
 })(function() {
     'use strict';
 
-    // `spacingY`, `componentGap` and `edgeGap` are EDGE-TO-EDGE clearances
-    // (visible whitespace), not centre-to-centre distances; the vertical
-    // pitch is `nodeHeight + gap` rounded up to the grid. See
-    // docs/{en,jp}/layout.md — Everything on the grid.
+    // Gaps are EDGE-TO-EDGE clearances; a vertical pitch is `nodeHeight + gap`
+    // rounded up to the grid. See docs/{en,jp}/layout.md — Everything on the grid.
     let LAYOUT_DEFAULTS = {
         startX:        60,
         startY:        60,
@@ -216,18 +213,15 @@
         return compOf;
     }
 
-    // `spacingY` and `gap` are EDGE-TO-EDGE clearances, so each pitch is
-    // `nodeHeight + `the clearance. See docs/{en,jp}/layout.md — Defaults.
+    // Each pitch is `nodeHeight +` its clearance, rounded up to the grid.
+    // See docs/{en,jp}/layout.md — Everything on the grid.
     function computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight, gridSize) {
         if (typeof nodeHeight !== 'number') nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
         if (typeof gridSize !== 'number') gridSize = LAYOUT_DEFAULTS.gridSize;
         let rowPitch = gridCeil(nodeHeight + spacingY, gridSize);
         let compStep = gridCeil(nodeHeight + gap, gridSize);
-        // `startY` is the top EDGE of the first row, the way `startX` is the
-        // left edge of the first column — the row's centre is half a node
-        // further down. They used to mean different things, which is why a
-        // flow sat 15px nearer the top of the canvas than its left side, and
-        // the group box around it nearer still.
+        // `startY` is the first row's top EDGE, as `startX` is its left edge; the
+        // centre goes half a node lower, onto the grid.
         startY = gridCeil(startY + nodeHeight / 2, gridSize);
         let info = {};
         ids.forEach(function(id) {
@@ -248,15 +242,9 @@
         return offsets;
     }
 
-    // Per-predecessor left edges, NOT shared column widths: each key sits
-    // `edgeGap` right of `max(pred.rightEdge)`, roots at `startX`. Column 0
-    // and branch siblings still align, but a wide label in one chain no
-    // longer drags a parallel chain right.
-    //
-    // Keyed by whatever the caller uses — node ids here, aliases in the
-    // converter, which has no ids yet. Both have to produce the same
-    // coordinates, so they run the same pass rather than two copies of it.
-    // See docs/{en,jp}/layout.md — Width-aware spacing.
+    // Per-predecessor left edges, not shared column widths, so a wide label in one
+    // chain does not drag a parallel one right. Keyed by ids here, by aliases in
+    // the converter. See docs/{en,jp}/layout.md — Width-aware spacing.
     function computeLeftEdges(keys, positions, incoming, widthOf, startX, edgeGap) {
         let leftEdges = {};
         let buckets = {};
@@ -355,11 +343,9 @@
         return !!n && (n.type === 'junction' || n.type === 'link in' || n.type === 'link out');
     }
 
-    // Routing outside a box travels with what it serves: a junction or a
-    // `link in` with the nodes it leads to, a `link out` with the nodes
-    // feeding it. Followed through further routing. Returns
-    // { routingId: [anchor nodes] } for every unboxed routing node that has
-    // any. See docs/{en,jp}/layout.md — Routing follows what it serves.
+    // { routingId: [anchor nodes] } for every unboxed junction / link node: what
+    // it serves, followed through further routing.
+    // See docs/{en,jp}/layout.md — Routing follows what it serves.
     function routingAnchors(nodes) {
         let byId = {}, feeders = {};
         (nodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
@@ -425,10 +411,9 @@
     function nodeRightEdge(node, opts) { return (node.x || 0) + getNodeWidth(node, opts) / 2; }
     function nodeLeftEdge (node, opts) { return (node.x || 0) - getNodeWidth(node, opts) / 2; }
 
-    // Place each comment directly above the canvas node it heads, stacking
-    // upward when several share a target and landing on top of any comments
-    // already there. Target = `_llmAboveId`, else the next canvas node in
-    // `_llmOrder`. See docs/{en,jp}/layout.md#comment-placement.
+    // Place each comment above the canvas node it heads (`_llmAboveId`, else the
+    // next canvas node in `_llmOrder`), stacking upward.
+    // See docs/{en,jp}/layout.md — Comment placement.
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
@@ -554,19 +539,13 @@
                 // A box is drawn around things; it is not something a caption
                 // heads, and its x / y is a corner, not a centre.
                 if (n.type === 'group') continue;
-                // A caption in a box heads something IN that box. Letting the
-                // search cross the boundary anchored a caption sitting near
-                // the bottom of one group to the top of the next, which then
-                // tied the two groups into one block — and a block cannot be
-                // pushed apart from itself, so the boxes overlapped.
+                // A caption in a box heads something IN that box; crossing the boundary
+                // tied two groups into one block that could not be pushed apart.
                 if (from.g && n.g !== from.g) continue;
                 let width = getNodeWidth(n, opts);
                 let nLeft = (n.x || 0) - width / 2;
-                // Sharing a BOX is the stronger statement: the schema put the
-                // caption in the group that holds the node, and the editor
-                // draws the box around both. A caption nudged out of the
-                // column — by a drag, or by an older layout — would otherwise
-                // be orphaned and left behind the moment its node moved.
+                // Sharing a box outweighs sharing a column: a caption nudged out of the
+                // column would otherwise be left behind when its node moved.
                 let sameBox = !!from.g && from.g === n.g;
                 let near = sameBox
                     ? (nLeft < fromLeft + fromWidth && fromLeft < nLeft + width)
@@ -617,10 +596,8 @@
                 }
                 current = next;
             }
-            // Touching nothing, but in a box: it is that sequence's heading,
-            // and a layout pass that moved the members without it can leave it
-            // beside or below what it names. Nothing else would bring it back,
-            // so it is re-stacked above the box's first member.
+            // Touching nothing, but in a box: the box's heading, re-stacked above its
+            // first member so a pass that moved the members does not strand it.
             if (!anchors[c.id] && c.g) {
                 (strandedByGroup[c.g] = strandedByGroup[c.g] || []).push(c);
             }
@@ -643,12 +620,9 @@
         return anchors;
     }
 
-    // Re-apply each captured anchor: the caption keeps its vertical offset and
-    // takes its target's LEFT EDGE. The captured `dx` is a centre offset, and
-    // replaying it kept a caption aligned only while both widths stayed the
-    // same — rename the node it heads and the column it shared with it was
-    // gone. Skips entries whose target was deleted from the rebuilt flow (the
-    // comment stays at its last position rather than vanishing).
+    // Re-apply each captured anchor: the same vertical offset, the target's LEFT
+    // edge (a centre offset breaks when a rename changes a width). A caption whose
+    // target is gone stays where it was.
     function applyCommentAnchors(canvasNodes, anchors, opts) {
         if (!anchors) return;
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
@@ -676,11 +650,8 @@
             (onTarget[info.targetId] = onTarget[info.targetId] || []).push(c);
         });
 
-        // `snapCaptions`: put every caption on the standard slot rather than
-        // the offset it happened to have. A reposition is a request to tidy
-        // up, and an offset of half a row — which is what a caption dragged
-        // by hand leaves behind — reads as a caption sitting ON its node once
-        // everything else is back on the grid.
+        // `snapCaptions`: every caption to the standard slot. A reposition asks for
+        // tidying, and a half-row offset left by a drag reads as sitting ON the node.
         let snap = !!(opts && opts.snapCaptions);
         Object.keys(onTarget).forEach(function(targetId) {
             let stack = onTarget[targetId];
@@ -699,14 +670,9 @@
         });
     }
 
-    // A node's `x` is its CENTRE, so a rename moves BOTH its edges: the node
-    // slid out of the column it was aligned to, and took the caption above it
-    // and its group's box with it — a long enough name pushed the left edge
-    // off the canvas. The column is what this engine aligns, so a width change
-    // must not move it. `widthsBefore` is keyed by id; a node that is not in
-    // it (a new one) is left to the layout passes. Returns the ids it moved,
-    // because a node that grew also has to stop overlapping what follows it —
-    // pass them to `placeAddedNodesNearNeighbors` as `reflowIds`.
+    // `x` is a centre, so a rename moves both edges; this keeps the left edge.
+    // Returns the ids it moved: pass them as `reflowIds`, so what follows a grown
+    // node moves over. See docs/{en,jp}/layout.md — Width changes keep the left edge.
     function keepLeftEdges(nodes, widthsBefore, options) {
         let changed = [];
         if (!widthsBefore) return changed;
@@ -762,9 +728,8 @@
 
         let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight, gridSize);
 
-        // No grid snap on the derived centre: left edges are what align, so
-        // each is kept exactly and the centre derived from it.
-        // See docs/{en,jp}/layout.md — Width-aware spacing.
+        // x derives from the left edge, which is what aligns; y is on the grid by
+        // construction. See docs/{en,jp}/layout.md — Everything on the grid.
         ids.forEach(function(id) {
             let node = byId[id];
             let pos = positions[id] || { col: 0, row: 0 };
@@ -861,10 +826,8 @@
             let succs = outgoing[n.id].filter(function(id) { return positioned[id]; });
             if (preds.length === 0 && succs.length === 0) return false;
 
-            // No snap on derived X/Y -- keeps the exact `edgeGap` clearance
-            // between the placed node and its neighbour, and keeps the new
-            // node's left edge aligned with `predRightEdge + edgeGap` even
-            // when the neighbour's centre is at an odd half-grid offset.
+            // x from the neighbour's edge plus `edgeGap`, not snapped: left edges are
+            // what align. y on the grid line nearest the neighbours.
             let nHalf = getNodeWidth(n, opts) / 2;
             if (preds.length > 0 && succs.length > 0) {
                 let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
@@ -931,11 +894,8 @@
             Object.keys(toShift).forEach(function(id) {
                 let node = byId[id];
                 if (node && typeof node.x === 'number') {
-                    // No snap -- the shift amount comes from edge-aware
-                    // math (`needed = nRight + edgeGap - succLeft`); snap
-                    // here would round the clearance off by up to a
-                    // half-grid and break left-edge alignment further down
-                    // the chain.
+                    // Not snapped: the shift is edge maths, and rounding it would break
+                    // the left-edge alignment further down the chain.
                     node.x = node.x + toShift[id];
                     shiftedIds[id] = true;
                 }
@@ -947,11 +907,8 @@
         // (cross-component push-down).
         let compOf = wiredComponents(canvasNodes);
 
-        // Step 3.5a: within-component sibling nudge — when a newly-placed
-        // node ends up at the same row as a same-component node (e.g. two
-        // siblings of one predecessor), push it down by one row pitch
-        // (= nodeHeight + spacingY) until clear. Cross-component collisions
-        // are handled by Step 3.5b so we deliberately skip them here.
+        // Step 3.5a: a new node on the same row as a same-component node moves
+        // down a row pitch until clear; other components are Step 3.5b's.
         let allPositioned = canvasNodes.filter(function(n) { return positioned[n.id]; });
         let newlyPlaced = canvasNodes.filter(function(n) {
             return !existingIdMap[n.id] && positioned[n.id];
@@ -985,11 +942,8 @@
             }
         }
 
-        // Step 3.6: reflow the whole component around any insertion. The
-        // per-edge pushes in 3.4 / 3.5a clear the overlap but leave the
-        // surrounding nodes pinned, so the chain ends up with uneven gaps
-        // whenever the inserted node's width differs from the cadence.
-        // Orphan-band nodes are excluded — Step 4 lays them out fresh.
+        // Step 3.6: reflow the whole component around an insertion; the pushes
+        // above clear overlaps but leave uneven gaps. Orphan-band nodes are Step 4's.
         let componentsNeedingReflow = {};
         newlyPlaced.forEach(function(n) {
             let cidN = compOf[n.id];
@@ -1011,10 +965,8 @@
             reflowedComponents[cid] = true;
         });
 
-        // Step 3.5b: shift a colliding component down as a WHOLE, so the
-        // untouched flow keeps its shape. "Modified" = holds a new node or
-        // one Step 3.4 shifted; a pushed component then propagates in turn.
-        // Components that started above a modifier are never pushed.
+        // Step 3.5b: a colliding component moves down WHOLE, so an untouched flow
+        // keeps its shape; a pushed one propagates in turn, never upward.
         (function pushCollidingComponentsDown() {
             let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
 
@@ -1023,11 +975,8 @@
             // captured).
             applyCommentAnchors(canvasNodes, commentAnchors, opts);
 
-            // Comments are wireless → singleton components. An ANCHORED
-            // caption counts as part of its target's component here (it
-            // moves with it, and its bbox must make the component
-            // pushable); standalone captions never move in this pass and
-            // are left out so they don't inflate the shift distance.
+            // An anchored caption counts as part of its target's component (it moves
+            // with it); a standalone one never moves here and is left out.
             let nodesByComp = {};
             allPositioned.forEach(function(n) {
                 let c = compOf[n.id];
@@ -1078,10 +1027,8 @@
                 for (let mi = 0; mi < modIds.length; mi++) {
                     let mid = modIds[mi];
                     let mBox = compBoxes[mid];
-                    // One dy for every colliding component, sized for the
-                    // topmost. Per-component dy makes a caption (higher minY)
-                    // jump further than the inject it sits above, landing on
-                    // it; a uniform shift keeps the existing gaps.
+                    // One dy for every colliding component, sized for the topmost: separate
+                    // shifts moved a caption further than the node below it.
                     let candidates = [];
                     let topMinY = Infinity;
                     let othIds = Object.keys(nodesByComp);
@@ -1118,11 +1065,8 @@
             }
         })();
 
-        // Excuse EVERY comment from the orphan layout -- comments are
-        // captions, not graph nodes. A comment with x/y (existing or
-        // raw-JSON import) keeps that position. New LLM comments from
-        // the Vibe Schema get placed onto their target by the final
-        // repositionCommentsByLlmOrder pass below.
+        // Comments are captions, not graph nodes: none is laid out as an orphan.
+        // New schema comments go onto their target in the final comment pass.
         remaining = remaining.filter(function(n) {
             if (n && n.type === 'comment') {
                 if (typeof n.x === 'number' && typeof n.y === 'number') {
@@ -1154,9 +1098,8 @@
             });
             if (!isFinite(maxBottomEdge)) maxBottomEdge = LAYOUT_DEFAULTS.startY + nodeHeight / 2;
             if (!isFinite(minLeftEdge))   minLeftEdge   = LAYOUT_DEFAULTS.startX;
-            // First orphan row's CENTRE = (deepest bottom edge) + bandGap +
-            // half a node height = exactly `bandGap` of visible whitespace
-            // between the previous bottom edge and the orphan's top edge.
+            // First orphan row: at least `bandGap` below the deepest bottom edge,
+            // its centre rounded up to the grid.
             let orphanStartY = maxBottomEdge + bandGap + nodeHeight / 2;
 
             let orphanIds = remaining.map(function(n) { return n.id; });
@@ -1178,11 +1121,8 @@
                 orphanIds, orphanPositions, orphanStartY, spacingY, bandGap, nodeHeight, gridSize
             );
 
-            // Per-predecessor left-edge placement (same idea as
-            // reflowCanvasNodes). Each orphan component's column-0 nodes
-            // sit at `minLeftEdge` so the first node of every new flow
-            // lines up with the canvas's leftmost edge; everything
-            // downstream advances by THIS chain's widths only.
+            // Per-predecessor left edges, as in reflowCanvasNodes; each new flow
+            // starts at the canvas's leftmost left edge.
             let orphanById = {};
             remaining.forEach(function(n) { orphanById[n.id] = n; });
             let orphanLeftEdgeById = {};
@@ -1220,8 +1160,7 @@
                 let pos = orphanPositions[n.id] || { col: 0, row: 0 };
                 let ci = pos.comp || 0;
                 let left = (orphanLeftEdgeById[n.id] !== undefined) ? orphanLeftEdgeById[n.id] : minLeftEdge;
-                // No snap -- see the matching block in reflowCanvasNodes
-                // for why centre-snapping breaks left-edge alignment.
+                // x from the left edge, as in reflowCanvasNodes.
                 n.x = left + getNodeWidth(n, opts) / 2;
                 n.y = pos.row * rowPitch + (orphanOffsets[ci] || 0);
             });
@@ -1232,11 +1171,8 @@
         // can stack new comments above the re-aligned existing ones.
         applyCommentAnchors(canvasNodes, commentAnchors, opts);
 
-        // Place schema comments above their resolved target: every new one,
-        // and an existing one the reply named a target for — where a comment
-        // goes is the model's decision. Runs here, after every canvas target
-        // (including orphan-band ones) has its final coordinates, so the
-        // comment lands on the right spot in one go.
+        // Schema comments over their resolved target (every new one, and an existing
+        // one the reply gave an `above`), once every target has its final place.
         repositionCommentsByLlmOrder(canvasNodes, opts, function(c) {
             return !existingIdMap[c.id] || typeof c._llmAboveId === 'string';
         });
@@ -1368,15 +1304,9 @@
         return Object.keys(byRoot).map(function(k) { return byRoot[k]; });
     }
 
-    // Stacked sequences read as a column, so their boxes share a left edge
-    // rather than stepping in and out by whatever their first node happens to
-    // be. PER BOX, not per block: two sequences wired to each other are one
-    // block, and a reposition leaves exactly that pair stepped.
-    //
-    // A box is not moved when its block holds a node in no box at all — the
-    // chain feeding it, or a node hanging off it — since only the box would
-    // move and the wire between them would shear. Routing that serves only the
-    // box is not such a node: it moves with it. Boxes never block each other.
+    // Stacked boxes share their sequences' left edge, per box. A box whose block
+    // holds an unboxed node is not moved (the wire would shear); routing serving
+    // only the box moves with it. See docs/{en,jp}/layout.md — separateGroups.
     function alignBoxesLeft(blocks, groups, byId, anchors, routing, opts) {
         let blockOf = {};
         blocks.forEach(function(b, i) { b.nodes.forEach(function(n) { blockOf[n.id] = i; }); });
@@ -1404,10 +1334,8 @@
             });
             if (isFinite(left)) movable.push({ contents: contents.concat(along), group: g, left: left });
         });
-        // Alignment is for sequences STACKED one above another. Two boxes
-        // whose rows overlap are side by side, or interlocked because a node
-        // in one is wired to a node in the other; pulling those into the same
-        // column drops one sequence on top of the other.
+        // Only STACKED sequences align: boxes whose rows overlap are side by side
+        // or interlocked, and one column would drop one onto the other.
         movable = movable.filter(function(m) {
             return !movable.some(function(other) {
                 if (other === m) return false;
@@ -1457,14 +1385,8 @@
         return unit;
     }
 
-    // A box is drawn `groupPadding` outside its members, so the clearance the
-    // node layout left between two sequences is that clearance MINUS both
-    // paddings — and a caption that joined a group grows its box further into
-    // it. Stacked sequences that read as separate therefore come out with
-    // boxes that touch, or overlap outright.
-    //
-    // So: line the boxes up, then settle every collision, which keeps each
-    // box `groupGap` clear of whatever is outside it.
+    // Node spacing does not keep boxes apart (they are drawn around members):
+    // line them up, then settle collisions.
     // See docs/{en,jp}/layout.md — Order of the passes.
     function separateGroups(nodes, options) {
         let opts = options || {};
@@ -1486,25 +1408,15 @@
         return nodes;
     }
 
-    // The invariant every other pass works towards, checked on the finished
-    // canvas: nothing sits on anything — node, caption or box — and no node is
-    // inside a box it is not a member of. Siblings are compared level by level
-    // (the canvas, then each box's own members), so a member is never in the
-    // way of its own box. Everything on the canvas counts, whoever placed it.
-    //
-    // The lower party goes under the upper one, rigidly: a box with everything
-    // in it, a wired chain with its captions. Inside one chain, moving it
-    // whole cannot separate its own nodes, so the lower node steps off alone
-    // (a caption travels with the node it heads). Boxes are refitted after
-    // every move. Returns the ids it moved.
-    // See docs/{en,jp}/layout.md — Order of the passes.
+    // The invariant, checked on the finished canvas: nothing on anything (node,
+    // caption, box), no node in a box it is not a member of. Returns the ids it
+    // moved. See docs/{en,jp}/layout.md — Order of the passes.
     function settleCollisions(nodes, options) {
         let opts = options || {};
         let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
         let groupPad   = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
-        // Sequences are `componentGap` apart member to member, boxed or not:
-        // a box against a plain node gives back one padding. Routing belongs
-        // to the sequence it serves, so it only keeps the box gap.
+        // Sequences keep `componentGap` member to member, boxed or not: a box against
+        // a plain node gives back one padding; routing keeps only the box gap.
         let boxClear = function(a, b) {
             let other = a.type === 'group' ? b : a;
             return (other.type === 'group' || routing[other.id]) ? gap : gap + groupPad;
@@ -1609,10 +1521,8 @@
                 for (let i = 0; i < list.length; i++) {
                     for (let j = i + 1; j < list.length; j++) {
                         let a = list[i], b = list[j];
-                        // A caption and what it heads, or two captions over the
-                        // same node, are one stack: placing those is the
-                        // comment pass's job, and moving one moves the other.
-                        // Routing on what it serves still hides it, though.
+                        // A caption and what it heads, or two captions on one node, are a stack
+                        // for the comment pass; routing on what it serves still hides it.
                         if (ownerOf(a) === ownerOf(b) && !routing[a.id] && !routing[b.id]) continue;
                         let boxed = a.type === 'group' || b.type === 'group';
                         let junction = a.type === 'junction' || b.type === 'junction';
@@ -1631,12 +1541,8 @@
             return null;
         }
 
-        // Each round puts one thing under another; stacking n things can take
-        // on the order of n² of them when every one overlaps every other.
-        // A caption outside a box that heads one of its members from on top
-        // of the frame is that sequence's heading, and no move can clear it
-        // (it travels with the box): it joins the member's box instead. One
-        // sitting clear above the frame stays where it is.
+        // A caption outside a box heading a member from on top of the frame cannot
+        // be cleared (it moves with the box), so it joins that box.
         Object.keys(anchors).forEach(function(id) {
             let c = byId[id], t = byId[anchors[id].targetId];
             if (!c || !t || !t.g || !byId[t.g] || container(c) === container(t)) return;
@@ -1650,6 +1556,7 @@
         fitGroups(all, opts);
 
         let moved = {};
+        // Each round puts one thing under another: up to n² when everything overlaps.
         let rounds = all.length * all.length + 20;
         while (rounds-- > 0) {
             let hit = findCollision();
@@ -1705,12 +1612,8 @@
         return Object.keys(moved);
     }
 
-    // The only margin guard, on both edges at once and counting BOXES as well
-    // as nodes: a box is drawn `groupPadding` outside its members, so
-    // measuring nodes alone leaves it nearer the edge, or off the canvas
-    // entirely. Measuring both edges the
-    // same way is what makes the gap above a flow equal the gap beside it.
-    // Everything slides by one shared delta, so relative geometry is untouched.
+    // The only margin guard, counting boxes too (drawn a padding outside their
+    // members). One shared shift per axis, so nothing moves apart.
     function ensureCanvasMargins(nodes, options) {
         let opts = options || {};
         let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
@@ -1744,12 +1647,9 @@
         return nodes;
     }
 
-    // Every node onto the grid the way the editor snaps one: centre y, left
-    // edge x. The passes above only ever step in whole squares, so this moves
-    // only what arrived off the grid (placed by an older layout, or by hand).
-    // `options.keep` ({ id: true }) names what this edit left where it was,
-    // which stays put. Boxes are refitted to what moved. A junction is a
-    // routing point, and stays where its wires put it.
+    // What arrived off the grid goes onto it as the editor snaps: centre y, left
+    // edge x. `options.keep` ids stay put, a junction stays where its wires put
+    // it, boxes are refitted. See docs/{en,jp}/layout.md — Everything on the grid.
     function snapToGrid(nodes, options) {
         let opts = options || {};
         let gridSize = pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize);

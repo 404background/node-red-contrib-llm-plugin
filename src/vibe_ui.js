@@ -3,10 +3,7 @@
 (function(){
     let Common = window.LLMPlugin.Common;
 
-    /**
-     * Build the sidebar DOM from the templates in llm_plugin.html.
-     * Node-RED's sidebar.addTab accepts DOM elements for its `content` property.
-     */
+    // Fill `el` from a markup template in llm_plugin.html (static, no reply text).
     function fromTemplate(el, templateId, missingText) {
         let tpl = document.getElementById(templateId);
         el.innerHTML = tpl ? tpl.innerHTML
@@ -91,9 +88,8 @@
         let cachedSettings = null;
         let settingsSaving = false;
         let lastFocusedBeforeSettings = null;
-        // Selected workspace IDs to send as flow context. Initialized lazily to
-        // the active tab on first use so the "Current Open Flow" default works
-        // even before RED is fully ready.
+        // Workspace ids sent as flow context: restored from the chat or the last
+        // session, else the open flow once the flows are loaded.
         let selectedFlowIds = {};
         let selectionInitialized = false;
         // The editor adds the tabs one by one while it loads the flows, so
@@ -306,7 +302,7 @@
             if (modeSelect) modeSelect.disabled = false;
         }
 
-        // Toast on mode change so the user sees the dropdown took effect.
+        // The mode is remembered for the next session.
         if (modeSelect) {
             modeSelect.addEventListener('change', function() {
                 try { localStorage.setItem('llm-plugin-last-mode', modeSelect.value); }
@@ -373,8 +369,7 @@
             }
         }
 
-        // Drop selections whose workspace is gone. Guarded against the
-        // transient "RED not ready yet" state, which reports no workspaces.
+        // Drop selections whose workspace is gone, once the flows are loaded.
         function pruneSelectedFlows(workspaces) {
             let ws = workspaces || listWorkspaces();
             if (!flowsLoaded || ws.length === 0) return;
@@ -652,10 +647,7 @@
         }
 
         // --- Core generation flow ---
-        // `promptOverride` is how anything else sends: the retry button hands
-        // back the prompt it wants re-asked, and everything after it — the
-        // apply, the checkpoint, the buttons on the reply — happens exactly
-        // as it does for a prompt typed here.
+        // `promptOverride` is how Retry sends: the turn after it is the same as a typed one.
         function handleGenerate(promptOverride) {
             // A request is already in flight (Send is Stop).
             if (isGenerating()) return;
@@ -683,9 +675,8 @@
                 promptInput._llmPluginResetHistoryNav();
             }
 
-            // Checkpoints are captured at import time (right before a flow
-            // edit is applied), not here — chat sends that don't end up
-            // modifying the flow no longer consume a checkpoint slot.
+            // Checkpoints are taken at import time, not here: a send that edits nothing
+            // takes no checkpoint slot.
             let loadingMsg = LLMPlugin.UI.addMessageToUI('Generating...', false);
             if (loadingMsg) loadingMsg.classList.add('loading-message');
             // The placeholder is last now, and it is not retryable.
@@ -707,8 +698,7 @@
             if (currentAbortController) currentAbortController.abort();
             currentAbortController = new AbortController();
 
-            // One endpoint for both modes: the server-side request is
-            // identical; Agent only differs client-side (auto-import below).
+            // One endpoint for both modes; Agent also imports the reply (below).
             let fetchStart = Date.now();
 
             Common.apiFetch('llm-plugin/generate', {

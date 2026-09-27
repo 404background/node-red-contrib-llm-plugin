@@ -33,10 +33,8 @@
         _runtimeGetType = (typeof fn === 'function') ? fn : null;
     }
 
-    // Aliases write a type's spaces as `_` (`http_in_hello`), and models copy
-    // that into `type`, or write `-`. `http_in` / `http-in` mean `http in`
-    // when only the spaced type exists; returns the spaced type, or null to
-    // keep what was written.
+    // Models copy an alias's `_` for a space into `type`, or write `-`: `http_in`
+    // / `http-in` mean `http in` when only the spaced type exists. Null keeps the type.
     let CORE_SPACED_TYPES = ['http in', 'http response', 'http request', 'mqtt in', 'mqtt out',
         'link in', 'link out', 'link call', 'websocket in', 'websocket out', 'tcp in', 'tcp out',
         'tcp request', 'udp in', 'udp out', 'file in'];
@@ -142,10 +140,8 @@
         return (typeof v === 'string') ? v.trim().toLowerCase() === 'true' : !!v;
     }
 
-    // `_`-prefixed = plugin-internal bookkeeping. The rule lives here alone
-    // so both invariants hold: toIntermediate never emits such a key (the
-    // LLM never sees metadata) and toNodeRed never accepts one (the LLM
-    // cannot forge it). See docs/{en,jp}/design.md §0.
+    // `_`-prefixed = plugin bookkeeping: toIntermediate never emits one and
+    // toNodeRed never accepts one. See docs/{en,jp}/design.md §0.
     function isMetaProp(key) {
         return typeof key === 'string' && key.charAt(0) === '_';
     }
@@ -233,11 +229,9 @@
             return { description: '', nodes: {}, connections: [] };
         }
 
-        // Junctions and link in / link out nodes are the user's routing, not
-        // something the model edits: they get no alias, and a wire through
-        // one reads as a connection to wherever it leads — through a
-        // junction's wires, or from a link out to the nodes its link ins
-        // feed. See docs/{en,jp}/vibe-schema.md.
+        // Junctions and link in / link out are the user's routing: no alias, and a wire
+        // through one reads as a connection to where it leads.
+        // See docs/{en,jp}/vibe-schema.md.
         let routing = {};
         nodeRedJson.forEach(function(n) {
             if (n && n.id && isRoutingNode(n)) routing[n.id] = n;
@@ -289,7 +283,6 @@
         nodes.forEach(function(node) {
             let alias = idToAlias[node.id];
 
-            // Collect type-specific properties
             let props = {};
             Object.keys(node).forEach(function(key) {
                 if (META_KEYS.indexOf(key) !== -1) return;
@@ -303,10 +296,8 @@
                 delete props.props;
             }
 
-            // Node ids in props, at any depth, become aliases: the model never
-            // sees an id. A prop that names something with no alias (routing,
-            // a group, a tab) is left out; the merge keeps it as it was.
-            // See docs/{en,jp}/vibe-schema.md.
+            // Node ids in props, at any depth, become aliases; one naming something with
+            // no alias (routing, a group, a tab) is left out and kept by the merge.
             Object.keys(props).forEach(function(key) {
                 let v = aliasIdsIn(props[key], idToAlias, unaliased);
                 if (v === UNALIASED) delete props[key];
@@ -319,10 +310,8 @@
             if (isConfigNode(node)) {
                 entry.config = true;
             }
-            // Lift the single-letter editor flags out of props under their
-            // readable names (see NODE_FLAGS). A disabled node keeps every
-            // property it had — only the flag is renamed — so the model reads
-            // it exactly as a user sees it on the canvas.
+            // Lift the single-letter editor flags out of props under their readable
+            // names (NODE_FLAGS); a disabled node keeps every other property.
             Object.keys(NODE_FLAGS).forEach(function(raw) {
                 if (!(raw in props)) return;
                 let alias = NODE_FLAGS[raw];
@@ -338,7 +327,6 @@
 
             intermediateNodes[alias] = entry;
 
-            // wires → connections
             if (Array.isArray(node.wires)) {
                 node.wires.forEach(function(output, portIndex) {
                     if (!Array.isArray(output)) return;
@@ -357,7 +345,6 @@
             }
         });
 
-        // Auto-generate a human-readable description
         let typeCount = {};
         nodes.forEach(function(n) {
             typeCount[n.type] = (typeCount[n.type] || 0) + 1;
@@ -412,10 +399,9 @@
             nodeSpecs[k] = spaced ? Object.assign({}, spec, { type: spaced }) : spec;
         });
 
-        // Stub the config nodes an LLM referenced by alias but never defined.
-        // Two detections: a props key ending in "config", or a well-known
-        // reference key. Stub aliases are tracked here rather than flagged on
-        // the spec, so a schema can never claim to be an auto stub.
+        // Stub the config nodes a reply referenced by alias but never defined (a key
+        // ending in "config", or a well-known reference key). Tracked here, so a schema
+        // can never claim to be a stub.
         let autoStubAliases = {};
         let CONFIG_REF_KEYS = {
             'broker': 'mqtt-broker',
@@ -494,7 +480,6 @@
         let aliases = Object.keys(nodeSpecs);
         if (aliases.length === 0) return [];
 
-        // --- Generate real IDs ---
         let aliasToId = {};
         aliases.forEach(function(alias) {
             aliasToId[alias] = genId();
@@ -535,10 +520,8 @@
 
         connections.forEach(function(conn) {
             if (!wiresMap[conn.from] || !aliasToId[conn.to]) return;
-            // Skip connections targeting nodes that cannot accept input
             let targetSpec = nodeSpecs[conn.to];
             if (targetSpec && isNoInputType(targetSpec.type)) return;
-            // Skip connections originating from nodes with no outputs
             let sourceSpec = nodeSpecs[conn.from];
             if (sourceSpec && isNoOutputType(sourceSpec.type)) return;
             let port = Math.max(0, Math.min(conn.fromPort || 0, 32));
@@ -688,10 +671,7 @@
             return formatted;
         }
 
-        // Function nodes: Node-RED sandboxes func code so `require()` is
-        // unavailable.  External modules must be declared in the `libs`
-        // array.  This normaliser scans for require() calls, moves them
-        // into `libs`, and rewrites the code to use plain variable names.
+        // `require()` calls move into `libs`, the code keeping plain variable names.
         function normalizeFunctionNode(node) {
             if (!node.func || typeof node.func !== 'string') return;
 
@@ -711,10 +691,8 @@
                 return '';  // remove the require statement
             });
 
-            // Tidy up: remove leading/trailing whitespace left behind
             cleaned = cleaned.replace(/^\s+/, '');
             cleaned = cleaned.replace(/\s+$/, '');
-            // Collapse double semicolons left by require removal
             cleaned = cleaned.replace(/;\s*;/g, ';');
 
             if (libs.length > 0) {
@@ -722,10 +700,8 @@
                 node.func = cleaned;
             }
 
-            // Reformat single-line code into readable multi-line
             node.func = formatFunctionCode(node.func);
 
-            // Ensure outputs is set (defaults to 1)
             if (node.outputs === undefined) node.outputs = 1;
         }
 
@@ -758,7 +734,6 @@
                 node.repeat = String(parseFloat(every[1]) * (unit === 'h' ? 3600 : unit === 'm' ? 60 : 1));
             }
 
-            // Build the internal props descriptor array expected by the editor.
             if (!Array.isArray(node.props)) {
                 let injectProps = [{ p: 'payload' }];
                 if (node.topic !== undefined) {
@@ -773,9 +748,7 @@
             }
         }
 
-        // Change nodes and switch nodes sometimes receive raw objects instead of 
-        // JSON-stringified strings when the property type is 'json'.
-        // Node-RED expects stringified JSON in the internal representation.
+        // A `json`-typed value written as an object is stringified, as the editor stores it.
         function normalizeRuleNodes(node) {
             if (Array.isArray(node.rules)) {
                 node.rules.forEach(function(rule) {
@@ -821,7 +794,6 @@
         // Template nodes: LLMs often use "tmpl" or "content" instead of "template".
         // Also ensure default values for syntax/output/field settings.
         function normalizeTemplateNode(node) {
-            // Map common LLM property name mistakes
             if (node.template === undefined) {
                 if (node.tmpl !== undefined) {
                     node.template = node.tmpl;
@@ -882,10 +854,8 @@
             'http in': [normalizeHttpInNode]
         };
 
-        // Stack disconnected components vertically using the shared helper
-        // (also used by reflowCanvasNodes / placeAddedNodesNearNeighbors).
-        // spacingY / componentGap are EDGE-TO-EDGE clearances; the helper
-        // turns them into the centre-to-centre pitch internally.
+        // Components stacked by the shared helper, which rounds each pitch up to
+        // the grid (see computeComponentYOffsets).
         let nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
         let gridSize = LAYOUT_DEFAULTS.gridSize;
         let rowPitch = Math.ceil((nodeHeight + spacingY) / gridSize) * gridSize;
@@ -918,30 +888,24 @@
                 id:   aliasToId[alias],
                 type: spec.type
             };
-            // Record the LLM's schema declaration order so downstream
-            // layout passes can place ordering-sensitive nodes (notably
-            // `comment` nodes that have no wires) near the canvas nodes
-            // the LLM listed them next to.
+            // The reply's declaration order, for the layout passes to place a wireless
+            // comment near the node listed after it.
             node._llmOrder = schemaIndex;
             if (preserveAlias) node._llmAlias = alias;
             // Marks a config stub this module invented for a dangling props
             // reference. The importer uses it to skip the stub when the real
             // config node already exists (Config Node Protection).
             if (autoStubAliases[alias]) node._autoStub = true;
-            // `spec.flow` is deliberately not carried onto the node: routing
-            // happens on the raw schema, before this conversion runs.
-            // `above` is, so the layout pass can anchor the comment; the
-            // importer resolves it to a node id and strips it afterwards.
+            // `flow` is not carried onto the node (routing uses the raw schema); `above`
+            // is, for the layout, and the importer strips it afterwards.
             if (spec.type === 'comment' && typeof spec.above === 'string' && spec.above.length > 0) {
                 node._llmAbove = spec.above;
             }
             if (spec.name) node.name = spec.name;
             if (workspace && !isConfig) node.z = workspace;
 
-            // Config nodes don't appear on the canvas — skip coordinates.
-            // No snap on derived x/y: the per-pred leftEdge gives exact
-            // `edgeGap` clearance from the upstream chain, and the
-            // constant `rowPitch` keeps vertical spacing uniform.
+            // Config nodes have no coordinates. x from the left edge (not snapped),
+            // y on the grid, as reflowCanvasNodes places them.
             if (!isConfig) {
                 let left = (leftEdgeByAlias[alias] !== undefined) ? leftEdgeByAlias[alias] : startX;
                 let w = nodeWidthByAlias[alias] || CanvasLayout.getNodeWidth({ type: spec.type, name: spec.name || '' }, opts);
@@ -999,11 +963,8 @@
                 node[key] = mergedProps[key];
             });
 
-            // `d` exists only while the node is disabled, so re-enabling
-            // means removing the key, not writing `d: false`. It still
-            // counts as explicitly proposed (_llmSpecKeys below keeps it),
-            // which is what stops the importer's merge from restoring the
-            // node's previous `d: true`.
+            // `d` exists only while disabled: re-enabling removes it. It still counts as
+            // proposed (_llmSpecKeys), so the merge does not restore the old `d: true`.
             if (node.d !== true) delete node.d;
 
             // The keys the LLM actually proposed, as opposed to the ones the
@@ -1013,12 +974,9 @@
             if (spec.name) llmSpecKeys.push('name');
             node._llmSpecKeys = llmSpecKeys;
 
-            // Resolve alias references in props → real IDs.
-            // Only resolve type-specific properties (config-node references like
-            // venvconfig: "my_venv" → "id_xxx"). Skip META_KEYS (id, type, name,
-            // z, x, y, wires, g) and metadata to avoid corrupting node identity
-            // when an alias happens to match a type or name (e.g. alias "inject"
-            // colliding with type "inject").
+            // Alias references in type-specific props -> ids (a config reference like
+            // `venvconfig: "my_venv"`); never META_KEYS or metadata, where an alias can
+            // coincide with a type or name.
             Object.keys(node).forEach(function(key) {
                 if (isMetaProp(key)) return;
                 if (META_KEYS.indexOf(key) !== -1) return;
@@ -1031,7 +989,6 @@
                 node.wires = wiresMap[alias] || [];
             }
 
-            // Apply type-specific normalisers (no-op for custom/contrib types).
             (NODE_NORMALIZERS[node.type] || []).forEach(function(fn) { fn(node); });
 
             result.push(node);
@@ -1057,12 +1014,8 @@
         if (hasNodesObj || hasConnectionsArr) return true;
         let repo = obj.reposition || obj.relayout || obj.reflow;
         if (Array.isArray(repo)) return true;
-        // A deletion-only reply. The prompt asks for the `nodes: {alias: null}`
-        // form, which always carries `nodes` — but the directive extractor also
-        // accepts a top-level remove array, and a model that uses it for a pure
-        // "delete this node" edit emits a schema with no other key. Without this
-        // that tolerance is unreachable and the edit is rejected outright as
-        // "No JSON flow found in message".
+        // A deletion-only reply: a top-level `delete` (or `remove`) list may be its
+        // only key.
         let removals = obj.remove || obj.delete || obj.removeNodes || obj.deleted;
         return Array.isArray(removals);
     }
@@ -1071,10 +1024,7 @@
     //  Public API                                                         //
     // ------------------------------------------------------------------ //
 
-    // Layout primitives are NOT re-exported here. Use
-    //   require('./canvas_layout.js')                  (Node)
-    //   window.LLMPlugin.CanvasLayout                  (browser)
-    // for layoutNodes / reflowCanvasNodes / placeAddedNodesNearNeighbors.
+    // Layout is not re-exported: use canvas_layout.js / LLMPlugin.CanvasLayout.
     return {
         toIntermediate:      toIntermediate,
         toNodeRed:           toNodeRed,

@@ -166,14 +166,9 @@
         return { open: openLiteral, close: endsInLiteral };
     }
 
-    // Repair unescaped double quotes inside JSON string values: models embed
-    // f"text {var}" and code snippets that JSON.parse rejects.
-    //
-    // `newline` says what to do with a raw newline inside a string, which JSON
-    // forbids and which therefore means the string was never closed. 'keep'
-    // leaves it (and the parse fails), 'close' assumes the closing quote was
-    // dropped at the end of that line, 'escape' assumes the value really is
-    // multi-line. Both readings are real; parseJsonRelaxed tries each in turn.
+    // Repair unescaped double quotes inside string values. `newline` is what a raw
+    // newline in a string means: 'keep' (fail), 'close' (the closing quote was
+    // dropped there) or 'escape' (a multi-line value); parseJsonRelaxed tries each.
     function repairJsonQuotes(text, newline) {
         let result = [];
         let i = 0;
@@ -350,12 +345,9 @@
     //  Vibe Schema Extraction                                             //
     // ================================================================== //
 
-    // A candidate JSON string, returned only if it is a Vibe Schema.
-    // Small models often write the nodes as a list with each alias inside —
-    // `nodes: [{ alias, type, ... }]`, or the whole reply as one list of such
-    // nodes and `{ from, to }` connections, or one schema per sequence in a
-    // list. The meaning is unambiguous, so each is read as the one map form.
-    // A raw Node-RED array has no `alias` and is left alone.
+    // Reply shapes that mean the one map form unambiguously, read as it: node
+    // lists (by `alias` or export-style `id`), one schema per sequence, source-keyed
+    // connections, delete spellings. See docs/{en,jp}/vibe-schema.md.
     function normalizeAliasList(parsed) {
         function isAliased(n) {
             return !!n && typeof n === 'object' && !Array.isArray(n) &&
@@ -500,10 +492,8 @@
         return out;
     }
 
-    // A connection that names a node this reply declares by its `name`
-    // (`payload_check`) instead of its alias (`switch_payload_check`) means
-    // that node when exactly one declared node has that name and no alias is
-    // spelled that way.
+    // A connection endpoint written as a declared node's `name` means that node,
+    // when exactly one declared node has it and no alias is spelled that way.
     function resolveEndpointsByName(schema) {
         if (!schema || !schema.nodes || typeof schema.nodes !== 'object' || Array.isArray(schema.nodes) ||
             !Array.isArray(schema.connections)) return schema;
@@ -536,11 +526,9 @@
         return typeof raw === 'number' ? raw : (rules ? rules.length : 0);
     }
 
-    // A node this reply declares with N outputs, wired to N different nodes
-    // with no port named on any of them: one wire per port, in order. Written
-    // as they are, all N would leave port 0 and the rest would stay unwired.
-    // A function whose `outputs` is not a count gets as many as the ports
-    // its wires name.
+    // N unported wires from a declared N-output node to N different nodes take one
+    // port each, in order (all would leave port 0). A function whose `outputs` is
+    // not a count gets as many as its wires name.
     function spreadUnportedWires(schema) {
         schema.connections.forEach(function(c) {
             if (c && typeof c.fromPort === 'string' && /^\d+$/.test(c.fromPort.trim())) c.fromPort = parseInt(c.fromPort, 10);
@@ -595,6 +583,7 @@
         return schema;
     }
 
+    // A candidate JSON string, returned only if it is a Vibe Schema.
     function parseVibeSchemaCandidate(text, isVibeSchemaFn) {
         let parsed = null;
         try { parsed = resolveEndpointsByName(normalizeAliasList(parseJsonRelaxed(stripJsonComments(text)))); }
@@ -671,11 +660,7 @@
         Object.keys(parsed.nodes || {}).forEach(function(alias) {
             if (parsed.nodes[alias] === null) directives.removeTokens.push(alias);
         });
-        // `reposition` accepts either a flat alias array
-        //   "reposition": ["a", "b"]
-        // or grouped sequences (e.g. when the LLM wants to make the
-        // grouping explicit) — they are flattened: aliases are simply
-        // collected so the importer can relayout that subset together.
+        // `reposition`: a flat alias list, or grouped lists, flattened.
         let repo = parsed.reposition || parsed.relayout || parsed.reflow;
         if (Array.isArray(repo)) {
             repo.forEach(function(entry) {
@@ -819,10 +804,8 @@
             let merged = {
                 description: schema.description || '',
                 nodes: {},
-                // Deep-cloned, not `slice()`d: the endpoint-resolution pass
-                // below rewrites `conn.from` / `conn.to`, and a shallow copy
-                // shares those objects with the caller's schema — so the
-                // caller would silently see the merged aliases too.
+                // Deep-cloned: endpoint resolution below rewrites `from` / `to`, and a
+                // shallow copy would change the caller's schema too.
                 connections: Array.isArray(schema.connections)
                     ? JSON.parse(JSON.stringify(schema.connections))
                     : []
@@ -1058,10 +1041,8 @@
     //  Public API                                                         //
     // ================================================================== //
 
-    // Token normalization and schema resolution are internal steps of the
-    // entry points below, not part of the callable surface. The repairs are
-    // reachable only through parseJsonBlock, so the sidebar can read a block
-    // exactly as the importer will.
+    // Internal steps are not exported; the repairs are reachable only through
+    // parseJsonBlock, so the sidebar reads a block exactly as the importer will.
     return {
         // One block of reply text → its JSON, repairs included
         parseJsonBlock: parseJsonBlock,

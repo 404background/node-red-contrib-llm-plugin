@@ -1,8 +1,6 @@
-// LLM Plugin  -  shared LLM engine: storage, encrypted credentials, settings,
-// provider adapters, prompt construction, redaction. One store for the sidebar
-// and the llm-request node both. See docs/{en,jp}/architecture.md.
-//
-// Usage:  const core = require('./llm_core.js')(RED);
+// Shared LLM engine for the sidebar and the llm-request node: storage,
+// encrypted credentials, settings, providers, prompts, redaction.
+// See docs/{en,jp}/architecture.md. Usage: require('./llm_core.js')(RED).
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
@@ -13,10 +11,8 @@ const FlowConverterCore = require('./core/flow_converter_core');
 // stand-in would keep generating flows while silently dropping the rules the
 // importer depends on. Failing to load is the honest answer.
 const SYSTEM_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_system.txt'), 'utf8');
-// Ask is a different job, not a milder version of the same one: it reads the
-// flow and explains it, and is told NOT to propose one. Two prompts rather
-// than one with a flag, because the schema rules are most of the other file
-// and none of them apply here.
+// Ask reads the flow and explains it, and is told NOT to propose one: its own
+// prompt, since the schema rules are most of the other file.
 const ASK_PROMPT_TEMPLATE = fs.readFileSync(path.join(__dirname, 'prompt_ask.txt'), 'utf8');
 
 // Per-process singleton: two instances would cache credentials separately (a
@@ -78,11 +74,8 @@ function createLLMCore(RED) {
     // ------------------------------------------------------------------ //
     //  Settings + credential persistence                                  //
     // ------------------------------------------------------------------ //
-    // Everything the plugin keeps is in `<userDir>/llm-plugin`, beside the
-    // chats and checkpoints: `settings.json`, the API keys encrypted in
-    // `credentials.json`, and `credential.key` they are encrypted with.
-    // Removing that one folder resets the plugin.
-    // See docs/{en,jp}/architecture.md — Security measures.
+    // All in `<userDir>/llm-plugin` (settings.json, credentials.json, credential.key);
+    // removing it resets the plugin. See docs/{en,jp}/architecture.md — Security measures.
     const credsFile = persistenceEnabled ? path.join(baseDir, 'credentials.json') : null;
     const settingsFile = persistenceEnabled ? path.join(baseDir, 'settings.json') : null;
     const secretFile = persistenceEnabled ? path.join(baseDir, 'credential.key') : null;
@@ -423,16 +416,12 @@ function createLLMCore(RED) {
         return ctx.length > 0 ? ctx : null;
     }
 
-    // Build a flow context description for the prompt.
-    // Converts the Node-RED flow to Vibe Schema (intermediate JSON) so the LLM
-    // sees a clean, alias-based representation without random IDs or coordinates.
+    // The flow context for the prompt, as Vibe Schema: aliases, no ids or coordinates.
     function buildFlowContextDescription(flow, activeWorkspaceId) {
         const empty = { header: 'CURRENT FLOW (Vibe Schema):', body: 'No current flow context available.' };
         if (!flow) return empty;
 
-        // Normalize input. Both shapes get the same validity filter — the
-        // `{nodes: […]}` branch used to pass its entries through unchecked,
-        // so a null / typeless entry threw on the first `n.type` read below.
+        // Both input shapes get the same validity filter.
         let nodes = [];
         if (Array.isArray(flow)) {
             nodes = flow.filter(n => n && n.type);
@@ -472,8 +461,7 @@ function createLLMCore(RED) {
         Object.keys(byTab).forEach(z => tabIdSet.add(z));
         const tabIds = Array.from(tabIdSet);
 
-        // Single-flow case: keep the original single-schema output for prompt
-        // continuity (existing prompt template references "CURRENT FLOW").
+        // One flow: its schema under `CURRENT FLOW (<name>)`.
         if (tabIds.length <= 1) {
             let flowDisplay = 'Vibe Schema';
             if (tabIds.length === 1) {
@@ -536,12 +524,9 @@ function createLLMCore(RED) {
             : '';
     }
 
-    // Build the system prompt. It asks for Vibe Schema rather than Node-RED
-    // JSON (docs/{en,jp}/vibe-schema.md). `settings` is optional — pass an
-    // already-resolved object to avoid a second settings read per generation.
-    // `options.mode`: 'ask' reads the flow and explains it; anything else
-    // builds one. The flow context is the same either way — you cannot answer
-    // "what does this do" without it — but the instructions are not.
+    // The system prompt: `options.mode` 'ask' explains, anything else builds.
+    // The flow context is the same either way. `settings` may be passed in to
+    // save a second read. See docs/{en,jp}/vibe-schema.md.
     function buildMessages(userPrompt, flowContext, activeWorkspaceId, settings, options) {
         const userSystemPrompt = getUserSystemPrompt(settings);
         const asking = !!(options && options.mode === 'ask');

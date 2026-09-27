@@ -360,10 +360,7 @@ describe('An untouched flow stays rigid during an incremental edit', function() 
     ok(d1[0].dy >= 0, 'lower flow only moved down (or stayed)');
 
     // A TALL untouched flow whose top sits ABOVE the edited node: the
-    // cross-component push skips it (it only pushes flows below), so the
-    // overlap reaches the safety net. That net must translate the component
-    // rigidly — the case that regressed before resolveOverlaps became
-    // component-rigid.
+    // cross-component push skips it, so settleCollisions must move it rigidly.
     const tall = [
         { id: 'm1', type: 'function', z: 'z', name: 'M1', x: 100, y: 150, wires: [['n']] },
         { id: 'n',  type: 'debug',    z: 'z', name: 'N',                  wires: [[]] }, // NEW
@@ -842,8 +839,8 @@ describe('An annotation buried by the layout is moved clear', function() {
     });
 });
 
-// `ensureTopMargin` guards the top; boxes made the left edge the same problem,
-// since a box is drawn one padding further out than the members it holds.
+// ensureCanvasMargins guards both edges, boxes included: a box is drawn one
+// padding further out than the members it holds.
 describe('Nothing is left hanging off the canvas', function() {
     const OPTS = { isCanvasNode: (n) => !!n && n.type !== 'tab' };
 

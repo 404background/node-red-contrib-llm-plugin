@@ -321,12 +321,9 @@
         return flowNodes;
     }
 
-    // The context shows `A -> junction -> B`, and `A -> link out ... link in
-    // -> B`, as `A -> B`, so a reply that restates the connection would add a
-    // direct wire beside the routing, and B would get every message twice. A
-    // wire this edit added is dropped when the same port already reaches that
-    // node through routing; a wire that was there before is never touched.
-    // See docs/{en,jp}/vibe-schema.md.
+    // The context shows a wire through a junction or link nodes as `A -> B`, so a
+    // restated connection must not add a direct wire beside the routing (B would
+    // get every message twice). See docs/{en,jp}/vibe-schema.md.
     function dropWiresBesideRouting(nodes, beforeFlow) {
         let g = readRouting(nodes);
         let before = {};
@@ -344,12 +341,9 @@
         });
     }
 
-    // The routing graph under the connections the model is shown. An edge is
-    // a wire, or a link out's link to a link in. A source is a node's output
-    // port (`id#port`); a link in fed from another tab, or called by a link
-    // call, has a source that is never cut (`ext:` / `call:`), and a link to
-    // another tab ends at an `ext:` target. `carried(edge)` is the set of
-    // `source>target` connections the edge lies on.
+    // The routing graph under the connections the model is shown: an edge is a wire
+    // or a link out's link, a source `id#port` (`ext:` / `call:` are never cut), and
+    // `carried(edge)` the `source>target` connections it lies on.
     function readRouting(nodes) {
         let byId = {};
         (nodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
@@ -438,13 +432,9 @@
         }
     }
 
-    // `remove: { from, to }` names a connection the model was shown, which
-    // may run through junctions and link nodes. The routing that carries only
-    // what is being removed is cut; when the connection shares its path with
-    // ones that stay, the source leaves that path and is wired back to what
-    // it should still reach — through routing that leads nowhere else, or
-    // directly. Every other connection reads the same afterwards.
-    // See docs/{en,jp}/vibe-schema.md.
+    // A connection delete (`delete: { from, to }`, carried as `remove`) names a
+    // connection the model was shown, possibly through routing; every other
+    // connection reads the same afterwards. See docs/{en,jp}/vibe-schema.md.
     function severConnections(nodes, removals) {
         let g = readRouting(nodes);
         let pairs = [], removedPair = {};
@@ -514,12 +504,9 @@
         });
     }
 
-    // Routing this edit left with nothing to carry is taken down: an edge
-    // that carried a connection before and carries none now is cut, then a
-    // junction left with no wire at all, a link out left with no link, and a
-    // link in left unreferenced or with nowhere to send go. Routing that was
-    // already idle before the edit is the user's and stays as it is.
-    // Returns the surviving nodes. See docs/{en,jp}/vibe-schema.md.
+    // Routing this edit left idle is taken down; routing that was already idle is
+    // the user's and stays. Returns the surviving nodes.
+    // See docs/{en,jp}/vibe-schema.md.
     function removeIdleRouting(nodes, beforeFlow) {
         if (!Array.isArray(beforeFlow) || beforeFlow.length === 0) return nodes;
         let gb = readRouting(beforeFlow);
@@ -606,10 +593,7 @@
         return isCanvasNode(node) && !(node && node.type === 'group');
     }
 
-    // Separated by type because the remove API is:
-    //   nodes      -> RED.nodes.remove(id)
-    //   groups     -> RED.nodes.removeGroup(groupObj)
-    //   junctions  -> RED.nodes.removeJunction(juncObj)
+    // Separated by type: each has its own remove API.
     function collectWorkspaceEntities(wsId) {
         return {
             nodes:     RED.nodes.filterNodes({ z: wsId }) || [],
@@ -642,11 +626,8 @@
     //  Rebuild Workspace Flow                                             //
     // ================================================================== //
 
-    // The layout phase, run inside-out: correct the coordinates coming in,
-    // place the members, rearrange a named subset, fit each box around what
-    // it now holds, then arrange the boxes and the canvas edge. Each step
-    // needs the one before it to have finished — see docs/{en,jp}/layout.md,
-    // "Order of the passes".
+    // The layout phase, inside-out; each step needs the one before it.
+    // See docs/{en,jp}/layout.md — Order of the passes.
     function layoutRebuiltFlow(rebuilt, ctx) {
         let beforeFlow = ctx.beforeFlow;
         let baseIds = ctx.baseIds;
@@ -693,11 +674,9 @@
             }
         });
 
-        // Routing is the user's: the node passes lay a chain out through a
-        // junction, then it goes back where it was, shifted by as much as
-        // what it serves moved (not at all when that moved unevenly). A link
-        // node outside a box is placed the same way; one inside a box is laid
-        // out with its sequence. See docs/{en,jp}/layout.md.
+        // Routing is the user's: after the node passes it goes back where it was,
+        // shifted by as much as what it serves moved (not at all when that was uneven).
+        // See docs/{en,jp}/layout.md — Routing follows what it serves.
         let placedAt = {}, routingAt = {};
         rebuilt.forEach(function(n) {
             if (!n || !n.id || typeof n.x !== 'number' || typeof n.y !== 'number') return;
@@ -707,10 +686,8 @@
             }
         });
 
-        // Was anything ON the canvas before? The tab itself is in `baseIds`
-        // too, so counting ids made an empty flow look like an edit to an
-        // existing one — and the fresh-layout branch, the one that starts at
-        // the canvas origin, almost never ran.
+        // Anything ON the canvas before? Not counting ids: the tab is in `baseIds`
+        // too, which made an empty flow look like an edit.
         let hadCanvasNodes = (rebuilt || []).some(function(n) {
             return n && n.id && baseIds[n.id] && isLayoutNode(n) &&
                 typeof n.x === 'number' && typeof n.y === 'number';
@@ -780,11 +757,8 @@
         let finalAnchors = layout.captureCommentAnchors(rebuilt, layoutOpts);
         layout.applyCommentAnchors(rebuilt, finalAnchors, layoutOpts);
 
-        // What the layout placed or moved goes onto the grid; what the edit
-        // left where it was stays there. The snap comes before collisions are
-        // settled, so it cannot leave anything touching, and settling pushes
-        // in whole squares; what a push moved off its old place is snapped in
-        // turn, until nothing moves.
+        // Onto the grid, then settle; a push moves in whole squares, and what it moved
+        // off its old place is snapped in turn. What the edit left in place stays.
         function snapMoved() {
             let unmoved = {};
             rebuilt.forEach(function(n) {
@@ -805,11 +779,8 @@
         }
         settle();
 
-        // Last: the canvas edges. A box hangs one padding further out than
-        // its members, so this is the pass that sees it — on both edges, so
-        // the gap above the flow is the gap beside it. One shared shift, in
-        // whole squares, so nothing it moves can start overlapping; what it
-        // moved off the grid goes onto it like everything else.
+        // Last: the canvas edges, boxes included. One shift in whole squares; what it
+        // moved off the grid is snapped and settled again.
         let probe = rebuilt.find(function(n) { return n && typeof n.x === 'number' && typeof n.y === 'number'; });
         let probeAt = probe && { x: probe.x, y: probe.y };
         layout.ensureCanvasMargins(rebuilt, layoutOpts);
@@ -902,11 +873,9 @@
         let baseIds = {};
         base.forEach(function(n) { if (n && n.id) baseIds[n.id] = true; });
 
-        // Never carried over from existing to proposed: something else
-        // supplies each. `g` is deliberately absent — the group pass below
-        // only writes the members a schema named, so every other node's
-        // membership has to survive here. See docs/{en,jp}/design.md §4.2,
-        // §12 and §15.
+        // Never carried over from existing to proposed: something else supplies each.
+        // Not `g`: membership a schema did not name must survive.
+        // See docs/{en,jp}/design.md §4.2, §12, §15.
         let MERGE_SKIP_KEYS = {
             id: 1, type: 1, z: 1, x: 1, y: 1, wires: 1,
             dirty: 1, changed: 1, selected: 1, valid: 1, h: 1, w: 1
@@ -1054,10 +1023,8 @@
             });
         })();
 
-        // Group boxes are the user's: the model neither sees nor declares one.
-        // What an edit does is keep a box holding its one sequence — a new
-        // node wired into a boxed sequence, and a comment placed over a boxed
-        // node, go into that box. See docs/{en,jp}/design.md §15.
+        // Group boxes are the user's: an edit keeps a box holding its one sequence
+        // (new wired nodes and captions go in). See docs/{en,jp}/design.md §15.
         (function keepBoxesAroundTheirSequences() {
             let groups = rebuilt.filter(function(n) { return n && n.type === 'group'; });
             if (groups.length === 0) return;
@@ -1116,11 +1083,8 @@
                 });
             }
 
-            // A caption heads the sequence it names, so it belongs in the box
-            // of the node it heads: left out, it lands exactly on the top edge
-            // (the padding is one row) and reads as a stray label. A comment
-            // the reply gave an `above` follows its target — into that box, or
-            // out of the one it was in when the target has none.
+            // A caption belongs in the box of the node it heads (left out, it sits on the
+            // top edge); one the reply gave an `above` follows its target in or out.
             rebuilt.forEach(function(c) {
                 if (!c || c.type !== 'comment' || typeof c._llmAboveId !== 'string') return;
                 let target = byId[c._llmAboveId];
@@ -1159,12 +1123,8 @@
         return rebuilt;
     }
 
-    // Reflow only the named nodes, keeping their IDs, then translate the
-    // subset back to its previous top-left so the rest of the canvas does
-    // not shift. Captions ride along via capture/apply.
-    // The subset is laid out on its own, so a node wired to it but left
-    // unnamed would keep its place while the named ones are laid out over it.
-    // Grows the subset along the wires, but not out of the box it is in.
+    // Reflow only the named nodes (grown along the wires, not out of their box),
+    // then translate them back to their top-left; captions ride along.
     // See docs/{en,jp}/vibe-schema.md — Layout fix.
     function takeWiredSequence(allNodes, byId, subsetIdSet) {
         let neighbours = {};
@@ -1215,10 +1175,8 @@
         });
         if (subsetNodes.length < 1) return;
 
-        // Anchor the subset to its current top-left so unrelated nodes
-        // around it don't visually shift. LEFT EDGES, like everything else
-        // here: pinning centres moves the column whenever the reflow puts a
-        // node of a different width first.
+        // Pinned to the subset's top-left by LEFT edges: pinning centres moves the
+        // column when a node of another width comes first.
         function leftEdgeOf(n) {
             return n.x - layout.getNodeWidth(n, layoutOpts) / 2;
         }
@@ -1271,10 +1229,8 @@
             if (typeof c.y === 'number') n.y = c.y + dy;
         });
 
-        // Re-align captions to follow their (now moved) anchor target, and put
-        // them back on the standard slot while we are at it: a reposition is a
-        // request to tidy up, so a caption carrying half a row of drift should
-        // not come out of it still carrying that drift.
+        // Captions follow their target, back on the standard slot: a reposition is
+        // a request to tidy up.
         layout.applyCommentAnchors(allNodes, commentAnchors,
             Object.assign({}, layoutOpts, { snapCaptions: true }));
     }
@@ -1392,21 +1348,16 @@
     //  Incremental Workspace Apply                                        //
     // ================================================================== //
     //
-    // rebuildWorkspaceFromSnapshot produces the complete desired end state;
-    // this applies it as a diff. Anything the diff cannot express hands back
-    // `fallback: true` and the caller rebuilds instead, so correctness never
-    // depends on the diff covering every case. See docs/{en,jp}/design.md §12.
+    // Applies rebuildWorkspaceFromSnapshot's end state as a diff; what it cannot
+    // express returns `fallback: true` for a rebuild. See docs/{en,jp}/design.md §12.
 
     // Handled by other means, so they take no part in the property compare:
     // `wires` becomes link surgery, `x`/`y` a move, and id/type/z identify the
     // entity. A group's `w`/`h` are derived from its members.
     function comparableKeys(before, after) {
         let skip = { id: 1, type: 1, z: 1, wires: 1, x: 1, y: 1 };
-        // A group's box and its member list follow its members, so neither is
-        // compared here: the authoritative half of membership is each node's
-        // `g`, and `applyGroupMembership` writes the list and the box the
-        // layout fitted. Comparing them would report every membership change
-        // twice — once on the node, once on the group.
+        // A group's box and member list follow its members: membership is each
+        // node's `g`, written by `applyGroupMembership`, so it is not compared twice.
         if (after && after.type === 'group') { skip.w = 1; skip.h = 1; skip.nodes = 1; }
         let keys = {};
         Object.keys(before || {}).forEach(function(k) { if (!skip[k]) keys[k] = true; });
@@ -1440,10 +1391,8 @@
         return ak.length === bk.length && ak.every(function(k) { return b[k]; });
     }
 
-    // A live entity by id, whichever registry it lives in. Junctions and
-    // groups are NOT in RED.nodes.node()'s lookup — each has its own — and a
-    // wire may perfectly well end at a junction, while a group is what an
-    // alias resolves to when the schema edits a box.
+    // A live entity by id, whichever registry holds it: junctions and groups are
+    // not in RED.nodes.node()'s lookup.
     function liveEntity(id) {
         let n = RED.nodes.node(id);
         if (n) return n;
@@ -1485,13 +1434,9 @@
         });
     }
 
-    // A property the reply left out gets its type's default, as a node dropped
-    // from the palette does, instead of failing validation (a split with no
-    // `property` shows the warning mark). Done here, not through an import
-    // option, so it does not depend on the editor version. A config reference
-    // with no default is "", which is what the edit dialog writes for "none":
-    // left undefined, merely opening the node and closing it marks the flow
-    // changed (http in's `swaggerDoc`).
+    // A property the reply left out gets its type's default, as from the palette;
+    // a config reference with none is "", as the edit dialog writes it.
+    // See docs/{en,jp}/design.md — applyTypeDefaults.
     function applyTypeDefaults(n) {
         let def = (n && n.type && typeof RED.nodes.getType === 'function') ? RED.nodes.getType(n.type) : null;
         let defaults = def && def.defaults;
@@ -1559,16 +1504,9 @@
                (!Array.isArray(group.nodes) || group.nodes.indexOf(liveNode) === -1);
     }
 
-    // Both halves of group membership, reconciled against the desired state:
-    // `g` on the member, the member OBJECT in the group's `nodes`. The editor
-    // draws from both and repairs neither, and `RED.nodes.import` only links
-    // members that were in the SAME import set — so a new node joining a box
-    // that already existed, or a new box drawn around nodes already on the
-    // canvas, is written here.
-    //
-    // Not `RED.group.addToGroup`: it recomputes the box from `n.w` / `n.h`,
-    // which a node that has not been drawn yet does not have, and the layout
-    // has already fitted these boxes.
+    // Both halves of group membership, reconciled: `g` on the member, the member
+    // OBJECT in the group's `nodes`. Not `RED.group.addToGroup`, which refits the
+    // box from sizes an undrawn node lacks. See docs/{en,jp}/design.md §12.
     function applyGroupMembership(desiredCanvas, liveLookup) {
         function liveOf(id) {
             if (!id || typeof id !== 'string') return null;
@@ -1629,10 +1567,8 @@
             // that draws an empty box.
             group.nodes = members;
 
-            // The box with it. Node-RED recomputes a group's bounds only when
-            // a user drags a member, so the box the layout fitted is the box
-            // the user sees — and it is not compared as a property for that
-            // reason (see comparableKeys).
+            // The box with it: the editor refits bounds only when a member is dragged,
+            // so the layout's box is the one the user sees.
             ['x', 'y', 'w', 'h'].forEach(function(k) {
                 if (typeof want[k] === 'number') group[k] = want[k];
             });
@@ -1812,21 +1748,15 @@
         });
 
         // --- Refuse what the diff cannot express ----------------------- //
-        // Groups it CAN express: the box is an entity like any other, and
-        // `applyGroupMembership` writes both halves of membership after the
-        // import. What it cannot survive is a workspace where the group API
-        // is a silent no-op, because half-written membership is the failure
-        // the editor never repairs. See docs/{en,jp}/design.md §12.
+        // A workspace where the group API is a silent no-op: half-written membership
+        // is never repaired. See docs/{en,jp}/design.md §12.
         let bail = null;
         updates.forEach(function(u) {
             let before = beforeById[u.id], after = afterById[u.id];
             if (before.type !== after.type) bail = bail || 'a node changed type';
         });
-        // Any box on either side means the membership pass runs: a group's
-        // box and member list are not compared as properties (see
-        // comparableKeys), so "nothing changed" is not something the diff can
-        // read off them. The pass writes the desired state as it is, which
-        // for an untouched group is what it already had.
+        // Any box on either side runs the membership pass: box and member list are
+        // not compared, so "nothing changed" cannot be read off them.
         let groupWork = split.canvas.some(function(n) { return n && n.type === 'group'; }) ||
             Object.keys(liveKind).some(function(id) { return liveKind[id] === 'group'; });
         if (groupWork && !canMaintainGroups()) {
@@ -1916,10 +1846,9 @@
     //  Multi-flow Dispatch                                                //
     // ================================================================== //
 
-    // The aliases exactly as the model was shown them: one numbering over
-    // every context flow, so each names one node. Each canvas node also
-    // carries the alias its own tab gives it, which is what the per-workspace
-    // import resolves. See docs/{en,jp}/design.md §6.
+    // The aliases as the model was shown them (one numbering over every context
+    // flow), plus the alias each node's own tab gives it.
+    // See docs/{en,jp}/design.md §6.
     function contextAliasTable(ids) {
         let opts = { includeCanvasExtras: true };
         let context = LLMPlugin.UI.getFlowsByIds(ids, opts) || [];
@@ -1938,12 +1867,9 @@
         return { entries: entries, local: local, byId: byId, idToAlias: idToAlias };
     }
 
-    // A node reference inside a property — a catch node's `scope`, say — is
-    // an alias on the way to the model (toIntermediate) and goes back to the
-    // id here. A string array naming only nodes is references; any other
-    // string is restored only where the node already held that reference, so
-    // text that happens to read like an alias is left alone. Top-level
-    // strings are config references, resolved later by their own rules.
+    // A node reference inside a property (a catch node's `scope`) goes back from
+    // alias to id: a string array naming only nodes, or a string where the node
+    // already held that reference. Top-level strings are config references.
     function restoreNodeRefs(value, was, t, isNewAlias, depth) {
         if (Array.isArray(value)) {
             let allRefs = value.length > 0 && value.every(function(v) {
@@ -1965,12 +1891,9 @@
         return value;
     }
 
-    // Splits a reply into one sub-schema per context flow, in the aliases
-    // that flow's own import resolves. An existing node is edited on the tab
-    // it is on, whatever `flow` the reply gave it. A new node goes to its
-    // `flow`, else to the flow of what it is wired to or captions, else to
-    // the default flow. A wire between two tabs is not made; a removed one is
-    // severAcrossFlows'. Returns { wsId: subSchema }.
+    // One sub-schema per context flow, in that flow's aliases. An existing node
+    // stays on its tab; a new one goes to its `flow`, else to what it is wired to
+    // or captions, else the default flow. Returns { wsId: subSchema }.
     function planByWorkspace(schema, ids, allowedSet) {
         let t = contextAliasTable(ids);
         let nodes = (schema.nodes && typeof schema.nodes === 'object' && !Array.isArray(schema.nodes)) ? schema.nodes : {};
@@ -2180,10 +2103,8 @@
     //  Main Import Entry Point                                            //
     // ================================================================== //
 
-    // A connection the model was shown across tabs — `A → link out` on one,
-    // `link in → B` on another, both in the context — is cut here, over all
-    // the context flows at once: every other step works one workspace at a
-    // time and cannot see the far end. Tabs outside the context are never
+    // A connection across two context tabs (link out on one, link in on the other)
+    // is cut here, over all of them at once; tabs outside the context are never
     // touched. See docs/{en,jp}/vibe-schema.md.
     function severAcrossFlows(messageContent, allowedWorkspaceIds) {
         let ids = Array.isArray(allowedWorkspaceIds) ? allowedWorkspaceIds.filter(Boolean) : [];

@@ -314,14 +314,9 @@ function createLLMPluginServer(RED) {
     //  HTTP admin endpoints                                               //
     // ------------------------------------------------------------------ //
 
-    // One generation endpoint for both sidebar modes, but not one prompt:
-    // `mode: 'ask'` reads the flow and explains it, anything else builds one.
-    // The mode has to be decided HERE because it chooses the instructions the
-    // model is given; what stays client-side is only what happens to a reply
-    // once it arrives.
-    //
-    // Bounded like the node (core.DEFAULT_TIMEOUT_MS), and abandoned when the
-    // sidebar goes away: its Stop button only closes the connection.
+    // One generation endpoint; `mode: 'ask'` explains, anything else builds, so
+    // the server chooses the prompt. Bounded like the node, and abandoned when the
+    // sidebar goes away (Stop only closes the connection).
     RED.httpAdmin.post('/llm-plugin/generate', guard(PERM_WRITE), async function(req, res) {
         const { model, prompt, currentFlow, activeWorkspaceId, mode } = req.body;
         if (!model || !prompt) {
@@ -633,8 +628,8 @@ function createLLMPluginServer(RED) {
         serveFile(res, path.join(__dirname, '..', 'llm-plugin_styles.css'), 'text/css; charset=utf-8');
     });
 
-    // Exactly what client.js loads — never the server-side modules beside
-    // them. test/http_transport.test.js keeps the two lists equal.
+    // Exactly what client.js loads, never the server-side modules beside them.
+    // test/server_api.test.js keeps the two lists equal.
     const CLIENT_FILES = [
         'client.js',
         'common.js',

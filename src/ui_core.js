@@ -8,10 +8,9 @@
     let Parser = window.LLMPlugin.LLMJsonParser;
     let escapeHtml = Common.escapeHtml;
 
-    // Messages render inside the editor, which holds admin privileges, so the
-    // HTML marked produces goes through DOMPurify (the plugin's own copy)
-    // with only what Markdown needs. See docs/{en,jp}/architecture.md —
-    // Security measures.
+    // Replies render inside the editor, which holds admin privileges: marked's
+    // HTML goes through DOMPurify (the plugin's own copy), allowed only what
+    // Markdown needs. See docs/{en,jp}/architecture.md — Security measures.
     let PURIFY_CONFIG = {
         ALLOWED_TAGS: ['p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 's',
             'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'a', 'table', 'thead', 'tbody', 'tr', 'th',
@@ -33,11 +32,9 @@
         return purify;
     }
 
-    // A Markdown image becomes a link: rendering it would fetch the URL, and
-    // a reply steered by text in the flow can put the flow's contents in that
-    // URL. A link sends nothing until it is clicked. Done in an inert
-    // document, before anything could load. Null without DOMPurify: the
-    // caller then shows the reply as plain text.
+    // A Markdown image becomes a link first, in an inert document: rendering it
+    // would fetch a URL a steered reply can fill with the flow. Null without
+    // DOMPurify, and the caller shows plain text.
     function sanitizeRenderedHtml(html) {
         let purify = purifier();
         if (!purify) return null;
@@ -66,7 +63,7 @@
     }
 
     function formatMessage(text) {
-        // Run with marked.js (assumed present in modern Node-RED environments)
+        // marked is served by the plugin (vendor/marked.js).
         if (typeof marked !== 'undefined' && marked.parse) {
             let raw = String(text || '').trim();
             // A reply that is nothing but JSON: its indented lines are not
@@ -344,10 +341,8 @@
         return repaired ? label + ' (repaired)' : label;
     }
 
-    // Fold a JSON block into <details> so the prose around it stays readable.
-    // It folds on the same reading the importer uses, repairs included — a
-    // block the model broke is the one a reader most needs to get out of the
-    // way, so a `json` block that cannot be read at all folds too.
+    // Fold a JSON block into <details>, on the importer's reading (repairs
+    // included); a `json` block that cannot be read folds too.
     function foldJsonBlock(pre) {
         let codeEl = pre.querySelector('code') || pre;
         let text = codeEl.textContent || '';
@@ -418,12 +413,9 @@
         return elapsed;
     }
 
-    // The two halves of the same choice, each placed where it acts: Restore
-    // goes above the PROMPT, so everything below it is what gets rewound, and
-    // Apply Again rides on the schema block, so the control that applies a
-    // proposal sits with the proposal. In Agent mode the Import button below
-    // the message is hidden, which makes Apply Again the only way back to a
-    // proposal once it has been rewound.
+    // Restore goes above the PROMPT (everything below it is what gets rewound);
+    // Apply Again rides on the schema block, the only way back to a rewound
+    // proposal in Agent mode. See docs/{en,jp}/architecture.md.
     function showPostImportActions(message, checkpointId, content, messageMeta) {
         placeRestoreAboveThePrompt(message, checkpointId, messageMeta);
         placeReapplyOnTheSchema(message, content, messageMeta);
@@ -658,11 +650,8 @@
         return null;
     }
 
-    // Retry is two ordinary things in order: rewind to the checkpoint this
-    // reply was applied over, then send its prompt again down the SAME path
-    // the Send button uses. Nothing about the turn that follows is special —
-    // it applies, checkpoints and grows its own Restore / Apply Again exactly
-    // as a typed prompt would.
+    // Retry: rewind to this reply's checkpoint, then send its prompt again down
+    // the Send button's own path; the turn that follows is an ordinary one.
     UI.retryLastUserMessage = function(messageMeta) {
         try {
             let send = LLMPlugin.sendPrompt;
@@ -714,10 +703,8 @@
                 });
             });
 
-            // filterNodes returns neither junctions nor groups, so a caller
-            // has to opt in. Neither shifts a node alias: the converter drops
-            // groups and reads a wire through a junction as a connection to
-            // where it leads. See docs/{en,jp}/vibe-schema.md.
+            // filterNodes returns neither junctions nor groups, so a caller opts in;
+            // neither shifts an alias. See docs/{en,jp}/vibe-schema.md.
             if (opts && opts.includeCanvasExtras) {
                 ids.forEach(function(zid) {
                     let extras = (RED.nodes.junctions(zid) || []).concat(RED.nodes.groups(zid) || []);
@@ -745,10 +732,8 @@
         }
     };
 
-    // By reference only — the flow selection is the user's statement of what
-    // may leave the machine. References are followed transitively (broker →
-    // tls-config) and through array properties, matching `flowContextFor` in
-    // node/llm-request/llm-request.js.
+    // By reference only, transitively and through arrays: the selection is what
+    // may leave the machine. Matches `flowContextFor` in node/llm-request.
     function collectReferencedConfigs(nodes, seenIds) {
         let configById = {};
         RED.nodes.eachConfig(function(cn) {
