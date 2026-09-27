@@ -341,6 +341,46 @@ function scenarioAnAliasListReadsAsTheMap() {
   ok(aliasNull && aliasNull.nodes.debug_extra === null && aliasNull.nodes.debug_log.type === 'debug',
     '`"debug_extra": { "alias": null }` reads as a delete of debug_extra');
 
+  // gemma4:e4b lists nodes the way an export does, keyed by `id`.
+  const byIds = schema(JSON.stringify({
+    nodes: [{ id: 'inject_temp', type: 'inject', name: 'T', repeat: '2', x: 100, y: 100, wires: [['debug_temp']] },
+            { id: 'debug_temp', type: 'debug', name: 'D', x: 300, y: 100 },
+            { id: 'inject_hum', type: 'inject', name: 'H' }, { id: 'debug_hum', type: 'debug', name: 'HD' }],
+    connections: [{ from: 'inject_hum', to: 'debug_hum' }],
+  }));
+  ok(byIds && byIds.nodes.inject_temp && byIds.nodes.inject_temp.repeat === '2' && !('x' in byIds.nodes.inject_temp) &&
+     !('id' in byIds.nodes.inject_temp) && byIds.connections.length === 2 &&
+     byIds.connections.some((c) => c.from === 'inject_temp' && c.to === 'debug_temp'),
+    'nodes listed by `id` read with the id as alias, their wires as connections (' + JSON.stringify(byIds && byIds.connections) + ')');
+
+  const bare = schema('"nodes": { "debug_a": { "type": "debug" } }');
+  ok(bare && bare.nodes.debug_a && bare.nodes.debug_a.type === 'debug', 'a reply with the outer braces left off still reads');
+
+  const objDelete = schema(JSON.stringify({ connections: { remove: { from: 'inject_tick', to: 'debug_extra' } } }));
+  ok(objDelete && Array.isArray(objDelete.connections) && objDelete.connections[0].remove &&
+     objDelete.connections[0].remove.to === 'debug_extra',
+    '`connections: { remove: { from, to } }` is a connection delete, not wires from a node called remove');
+
+  // qwen3.5:9b / gemma4:e4b wire both routes of a switch with no port.
+  const spread = schema(JSON.stringify({
+    nodes: { switch_level: { type: 'switch', props: { rules: [{ t: 'gte', v: '10', vt: 'num' }, { t: 'else' }] } },
+             debug_high: { type: 'debug' }, debug_low: { type: 'debug' } },
+    connections: [{ from: 'switch_level', to: 'debug_high' }, { from: 'switch_level', to: 'debug_low' }],
+  }));
+  ok(spread && spread.connections[0].fromPort === 0 && spread.connections[1].fromPort === 1,
+    'N unported wires from a declared N-output node take one port each, in order');
+  const fanOut = schema(JSON.stringify({
+    nodes: { function_f: { type: 'function', props: { func: 'return msg;', outputs: 1 } }, debug_a: { type: 'debug' }, debug_b: { type: 'debug' } },
+    connections: [{ from: 'function_f', to: 'debug_a' }, { from: 'function_f', to: 'debug_b' }],
+  }));
+  ok(fanOut && fanOut.connections.every((c) => c.fromPort === undefined), 'while a one-output node fanning out is left alone');
+  const notACount = schema(JSON.stringify({
+    nodes: { function_f: { type: 'function', props: { func: 'return [msg, null];', outputs: true } }, debug_a: { type: 'debug' }, debug_b: { type: 'debug' } },
+    connections: [{ from: 'function_f', to: 'debug_a', fromPort: 0 }, { from: 'function_f', to: 'debug_b', fromPort: '1' }],
+  }));
+  ok(notACount && notACount.nodes.function_f.props.outputs === 2 && notACount.connections[1].fromPort === 1,
+    'a function whose outputs is not a count has as many as its wires name (' + JSON.stringify(notACount && notACount.nodes.function_f.props) + ')');
+
   // gemma4:12b keys the connections by their source.
   const keyed = schema(JSON.stringify({
     nodes: { inject_t: { type: 'inject' }, debug_t: { type: 'debug' }, debug_u: { type: 'debug' } },

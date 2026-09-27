@@ -34,14 +34,15 @@
     }
 
     // Aliases write a type's spaces as `_` (`http_in_hello`), and models copy
-    // that into `type`. `http_in` means `http in` when only the spaced type
-    // exists; returns the spaced type, or null to keep what was written.
+    // that into `type`, or write `-`. `http_in` / `http-in` mean `http in`
+    // when only the spaced type exists; returns the spaced type, or null to
+    // keep what was written.
     let CORE_SPACED_TYPES = ['http in', 'http response', 'http request', 'mqtt in', 'mqtt out',
         'link in', 'link out', 'link call', 'websocket in', 'websocket out', 'tcp in', 'tcp out',
         'tcp request', 'udp in', 'udp out', 'file in'];
     function spacedType(type) {
-        if (typeof type !== 'string' || type.indexOf('_') === -1) return null;
-        let spaced = type.replace(/_/g, ' ');
+        if (typeof type !== 'string' || !/[_-]/.test(type)) return null;
+        let spaced = type.replace(/[_-]/g, ' ');
         if (_runtimeGetType) {
             if (_runtimeGetType(type)) return null;
             if (_runtimeGetType(spaced)) return spaced;
@@ -58,6 +59,21 @@
         if (type.length > CONFIG_TYPE_SUFFIX.length &&
             type.substring(type.length - CONFIG_TYPE_SUFFIX.length) === CONFIG_TYPE_SUFFIX) return true;
         return false;
+    }
+
+    // `config: true` marks a config node, but models also put it on nodes
+    // that are not (a function, a debug); on a type known to be drawn on the
+    // canvas it is ignored.
+    let CORE_CANVAS_TYPES = ['inject', 'debug', 'function', 'change', 'switch', 'template', 'delay',
+        'trigger', 'exec', 'catch', 'status', 'complete', 'comment', 'split', 'join', 'sort', 'batch',
+        'range', 'json', 'csv', 'html', 'xml', 'yaml', 'rbe', 'filter'].concat(CORE_SPACED_TYPES);
+    function claimsConfig(spec) {
+        if (!spec || typeof spec !== 'object') return false;
+        if (isConfigType(spec.type)) return true;
+        if (spec.config !== true) return false;
+        let def = _runtimeGetType && typeof spec.type === 'string' ? _runtimeGetType(spec.type) : null;
+        if (def) return def.category === 'config';
+        return CORE_CANVAS_TYPES.indexOf(spec.type) === -1;
     }
 
     function isConfigNode(node) {
@@ -450,8 +466,7 @@
                 if (!s || typeof s.type !== 'string' || !s.type.trim()) return false;
                 if (s.type === 'comment' || s.type === 'tab') return false;
                 if (s.type.indexOf('subflow:') === 0) return false;
-                if (s.config === true) return false;
-                return !isConfigType(s.type);
+                return !claimsConfig(s);
             }
             let order = Object.keys(nodeSpecs);
             let hasCanvas = order.some(aliasIsCanvas);
@@ -488,7 +503,7 @@
         // --- Separate config nodes from canvas nodes for layout ---
         let canvasAliases = aliases.filter(function(a) {
             let spec = nodeSpecs[a];
-            return !(isConfigType(spec.type) || spec.config === true);
+            return !claimsConfig(spec);
         });
 
         // --- Build adjacency lists (skip dangling references) ---
@@ -714,6 +729,15 @@
             if (node.outputs === undefined) node.outputs = 1;
         }
 
+        // A count, whatever it was written as: `"2"` is 2, and anything that is
+        // not a count (`true`, `{ "0": "0" }`) is as many as the wires use.
+        function normalizeFunctionOutputs(node) {
+            let n = (typeof node.outputs === 'string' && /^\d+$/.test(node.outputs.trim()))
+                ? parseInt(node.outputs, 10) : node.outputs;
+            if (typeof n === 'number' && n >= 0 && Math.floor(n) === n) { node.outputs = n; return; }
+            node.outputs = Math.max(1, Array.isArray(node.wires) ? node.wires.length : 0);
+        }
+
         // Inject nodes require a special internal `props` array plus several
         // default fields.  Without them the editor shows "not properly configured".
         function normalizeInjectNode(node) {
@@ -724,6 +748,15 @@
             if (node.crontab    === undefined) node.crontab    = '';
             if (node.once       === undefined) node.once       = false;
             if (node.onceDelay  === undefined) node.onceDelay  = 0.1;
+
+            // `repeat` is seconds, as a string: `"2 seconds"`, `"5 min"`, `2`.
+            if (typeof node.repeat === 'number') node.repeat = String(node.repeat);
+            let every = /^\s*(\d+(?:\.\d+)?)\s*(s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)?\s*$/i
+                .exec(String(node.repeat));
+            if (every && every[2]) {
+                let unit = every[2].charAt(0).toLowerCase();
+                node.repeat = String(parseFloat(every[1]) * (unit === 'h' ? 3600 : unit === 'm' ? 60 : 1));
+            }
 
             // Build the internal props descriptor array expected by the editor.
             if (!Array.isArray(node.props)) {
@@ -801,6 +834,18 @@
                     delete node.body;
                 }
             }
+            // Or under a key of its own choosing (`expression`, `payload`):
+            // the one string with a mustache tag in it.
+            if (node.template === undefined) {
+                let SETTINGS = ['name', 'type', 'field', 'fieldType', 'syntax', 'output', 'format'];
+                let tagged = Object.keys(node).filter(function(k) {
+                    return SETTINGS.indexOf(k) === -1 && typeof node[k] === 'string' && /\{\{[^}]+\}\}/.test(node[k]);
+                });
+                if (tagged.length === 1) {
+                    node.template = node[tagged[0]];
+                    delete node[tagged[0]];
+                }
+            }
             if (node.template === undefined) node.template = '';
             if (node.syntax === undefined) node.syntax = 'mustache';
             if (node.output === undefined) node.output = 'str';
@@ -808,16 +853,33 @@
             if (node.field === undefined) node.field = 'payload';
         }
 
+        // `method` is lower case (the runtime calls `app[method]`, so `GET`
+        // fails to start), and `url` a path from the root, which models also
+        // write as `path` or as a full URL.
+        function normalizeHttpInNode(node) {
+            if (Array.isArray(node.method)) node.method = node.method[0];
+            if (typeof node.method === 'string') node.method = node.method.trim().toLowerCase();
+            if (node.url === undefined) {
+                let k = ['path', 'endpoint', 'route'].filter(function(key) { return typeof node[key] === 'string'; })[0];
+                if (k) { node.url = node[k]; delete node[k]; }
+            }
+            if (typeof node.url === 'string') {
+                let url = node.url.trim().replace(/^[a-z]+:\/\/[^/]*/i, '');
+                node.url = (url.charAt(0) === '/') ? url : '/' + url;
+            }
+        }
+
         // Core types only: anything else passes through untouched. Add an
         // entry to teach the converter a type's defaults; the dispatch below
         // stays generic. See docs/{en,jp}/vibe-schema.md.
         const NODE_NORMALIZERS = {
             inject:   [normalizeInjectNode],
-            function: [normalizeFunctionNode],
+            function: [normalizeFunctionNode, normalizeFunctionOutputs],
             change:   [normalizeRuleNodes],
             switch:   [normalizeRuleNodes, normalizeSwitchNode],
             template: [normalizeTemplateNode],
-            debug:    [normalizeDebugNode]
+            debug:    [normalizeDebugNode],
+            'http in': [normalizeHttpInNode]
         };
 
         // Stack disconnected components vertically using the shared helper
@@ -849,7 +911,7 @@
         let result = [];
         aliases.forEach(function(alias, schemaIndex) {
             let spec = nodeSpecs[alias];
-            let isConfig = isConfigType(spec.type) || spec.config === true;
+            let isConfig = claimsConfig(spec);
             let pos  = layout[alias] || { col: 0, row: 0 };
 
             let node = {
@@ -1018,6 +1080,7 @@
         toNodeRed:           toNodeRed,
         isVibeSchema:        isVibeSchema,
         isConfigType:        isConfigType,
+        claimsConfig:        claimsConfig,
         isConfigNode:        isConfigNode,
         isCanvasNode:        isCanvasNode,
         isRoutingNode:       isRoutingNode,

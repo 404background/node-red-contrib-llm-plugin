@@ -194,4 +194,45 @@ it('reformatting a function body never changes anything but whitespace', functio
     });
 });
 
+// What the small models wrote in the live scenarios (test/llm_scenarios.test.js).
+it('an http in written `http-in`, with GET and a path, is a working http in', function() {
+    const flow = Cfg.toNodeRed({
+        nodes: { http_hello: { type: 'http-in', name: 'hello', props: { method: ['GET'], path: 'hello' } },
+                 http_out: { type: 'http_response' } },
+        connections: [{ from: 'http_hello', to: 'http_out' }]
+    }, { workspace: 'ws' });
+    const hin = byType(flow, 'http in')[0];
+    assert(hin && hin.method === 'get' && hin.url === '/hello' && hin.path === undefined,
+        JSON.stringify(hin));
+    assert(byType(flow, 'http response').length === 1, 'the response is an http response');
+    const full = Cfg.toNodeRed({ nodes: { http_a: { type: 'http in', props: { url: 'http://localhost:1880/a', method: 'POST' } } } }, { workspace: 'ws' });
+    assert.strictEqual(byType(full, 'http in')[0].url, '/a');
+});
+
+it('an inject repeat written with a unit is seconds', function() {
+    const every = (repeat) => byType(Cfg.toNodeRed({ nodes: { inject_t: { type: 'inject', props: { repeat: repeat } } } },
+        { workspace: 'ws' }), 'inject')[0].repeat;
+    assert.strictEqual(every('2 seconds'), '2');
+    assert.strictEqual(every('5 min'), '300');
+    assert.strictEqual(every(3), '3');
+    assert.strictEqual(every('10'), '10');
+});
+
+it('a template body under a key of the model\'s choosing is the template', function() {
+    const flow = Cfg.toNodeRed({ nodes: { template_f: { type: 'template', props: { expression: 'Time is {{payload}}' } } } },
+        { workspace: 'ws' });
+    const t = byType(flow, 'template')[0];
+    assert(t.template === 'Time is {{payload}}' && t.expression === undefined, JSON.stringify(t));
+});
+
+it('`config: true` on a node drawn on the canvas does not make it a config node', function() {
+    const flow = Cfg.toNodeRed({
+        nodes: { function_f: { type: 'function', config: true, props: { func: 'return msg;', outputs: 1 } },
+                 debug_d: { type: 'debug', config: true } },
+        connections: [{ from: 'function_f', to: 'debug_d' }]
+    }, { workspace: 'ws' });
+    const fn = byType(flow, 'function')[0];
+    assert(fn && typeof fn.x === 'number' && fn.z === 'ws' && fn.wires[0].length === 1, JSON.stringify(fn));
+});
+
 summary();

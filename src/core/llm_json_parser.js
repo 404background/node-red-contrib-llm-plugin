@@ -292,6 +292,12 @@
             function() { return JSON.parse(repairJsonQuotes(text, 'close')); },
             function() { return JSON.parse(repairJsonQuotes(text, 'escape')); }
         ];
+        // The inside of an object with the braces left off: `"nodes": [ … ]`.
+        if (/^\s*"[^"]+"\s*:/.test(text)) {
+            let wrapped = '{' + text + '}';
+            attempts.push(function() { return JSON.parse(wrapped); });
+            attempts.push(function() { return JSON.parse(repairJsonQuotes(wrapped)); });
+        }
         let lastError = null;
         for (let i = 0; i < attempts.length; i++) {
             try { return attempts[i](); } catch (e) { lastError = e; }
@@ -398,9 +404,48 @@
             return { nodes: toMap(parsed.filter(isAliased)), connections: parsed.filter(function(x) { return !isAliased(x); }) };
         }
         let out = parsed;
+        // `nodes` listed the way an export lists them, keyed by `id` (the
+        // connections name the same ids): the id is the alias, the canvas
+        // fields go, and `wires` are connections.
+        if (out && Array.isArray(out.nodes) && out.nodes.length > 0 && !out.nodes.some(isAliased) &&
+            out.nodes.every(function(n) {
+                return !!n && typeof n === 'object' && typeof n.id === 'string' && !!n.id.trim() && typeof n.type === 'string';
+            })) {
+            let wired = [];
+            out = Object.assign({}, out);
+            out.nodes = out.nodes.map(function(n) {
+                let copy = Object.assign({}, n, { alias: n.id.trim() });
+                (Array.isArray(n.wires) ? n.wires : []).forEach(function(port, i) {
+                    (Array.isArray(port) ? port : []).forEach(function(to) {
+                        if (typeof to === 'string') wired.push({ from: copy.alias, to: to, fromPort: i });
+                    });
+                });
+                ['id', 'x', 'y', 'z', 'g', 'wires'].forEach(function(k) { delete copy[k]; });
+                return copy;
+            });
+            let listed = Array.isArray(out.connections) ? out.connections : [];
+            out.connections = listed.concat(wired.filter(function(w) {
+                return !listed.some(function(c) { return c && c.from === w.from && c.to === w.to; });
+            }));
+        }
         if (out && Array.isArray(out.nodes) && out.nodes.length > 0 && out.nodes.every(isAliased)) {
             out = Object.assign({}, out);
             out.nodes = toMap(out.nodes);
+        }
+        // `connections: { "delete": { from, to } }` — a connection delete (or a
+        // list of them) written as an object rather than as a list entry.
+        if (out && out.connections && typeof out.connections === 'object' && !Array.isArray(out.connections)) {
+            let keys = Object.keys(out.connections);
+            let dels = [];
+            let allDeletes = keys.length > 0 && keys.every(function(k) {
+                if (k !== 'delete' && k !== 'remove') return false;
+                let list = [].concat(out.connections[k]);
+                return list.every(function(r) { return isConnection(r) && !r.remove && dels.push({ remove: r }); });
+            });
+            if (allDeletes) {
+                out = (out === parsed) ? Object.assign({}, out) : out;
+                out.connections = dels;
+            }
         }
         // `connections: { "a": { "to": "b" } }` — keyed by the source node,
         // with a target, a list of targets, or `{ to, fromPort }` entries.
@@ -479,7 +524,49 @@
             target.from = fix(target.from);
             target.to = fix(target.to);
         });
-        return shiftOneBasedPorts(schema);
+        return spreadUnportedWires(shiftOneBasedPorts(schema));
+    }
+
+    function outputsOf(spec) {
+        if (!spec || typeof spec !== 'object') return 0;
+        let props = (spec.props && typeof spec.props === 'object' && !Array.isArray(spec.props)) ? spec.props : {};
+        let rules = Array.isArray(props.rules) ? props.rules : (Array.isArray(spec.rules) ? spec.rules : null);
+        let raw = props.outputs !== undefined ? props.outputs : spec.outputs;
+        if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) raw = parseInt(raw, 10);
+        return typeof raw === 'number' ? raw : (rules ? rules.length : 0);
+    }
+
+    // A node this reply declares with N outputs, wired to N different nodes
+    // with no port named on any of them: one wire per port, in order. Written
+    // as they are, all N would leave port 0 and the rest would stay unwired.
+    // A function whose `outputs` is not a count gets as many as the ports
+    // its wires name.
+    function spreadUnportedWires(schema) {
+        schema.connections.forEach(function(c) {
+            if (c && typeof c.fromPort === 'string' && /^\d+$/.test(c.fromPort.trim())) c.fromPort = parseInt(c.fromPort, 10);
+        });
+        Object.keys(schema.nodes).forEach(function(alias) {
+            let spec = schema.nodes[alias];
+            if (!spec || typeof spec !== 'object' || spec.type !== 'function') return;
+            let holder = (spec.props && typeof spec.props === 'object' && spec.props.outputs !== undefined) ? spec.props : spec;
+            let raw = holder.outputs;
+            if (raw === undefined || typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(raw.trim()))) return;
+            let top = -1;
+            schema.connections.forEach(function(c) {
+                if (c && c.from === alias && typeof c.fromPort === 'number' && c.fromPort > top) top = c.fromPort;
+            });
+            holder.outputs = Math.max(1, top + 1);
+        });
+        Object.keys(schema.nodes).forEach(function(alias) {
+            let n = outputsOf(schema.nodes[alias]);
+            if (n < 2) return;
+            let out = schema.connections.filter(function(c) { return c && !c.remove && c.from === alias; });
+            if (out.length !== n || out.some(function(c) { return c.fromPort !== undefined; })) return;
+            let targets = out.map(function(c) { return c.to; });
+            if (targets.some(function(t, i) { return targets.indexOf(t) !== i; })) return;
+            out.forEach(function(c, i) { c.fromPort = i; });
+        });
+        return schema;
     }
 
     // Ports counted from 1: on a node this reply declares with N outputs,

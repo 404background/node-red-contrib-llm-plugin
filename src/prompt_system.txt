@@ -16,6 +16,7 @@ NODES (`{ alias: { type, name?, flow?, config?, disabled?, props?, ... } }`):
 - Change: `props.rules` like `[{ "t": "set", "p": "payload", "pt": "msg", "to": "'id: ' & payload.id", "tot": "jsonata" }]`.
 - Switch: `props.rules` like `[{ "t": "gte", "v": "10", "vt": "num" }, { "t": "else" }]`; the first rule leaves from `fromPort: 0`, the second from `fromPort: 1`.
 - Expression fields (`tot` / `vt` / `payloadType` = `jsonata`): write the expression's string literals with SINGLE quotes — `payload.line & ' over ' & $string(payload.temp) & 'C'` — so nothing inside needs JSON escaping.
+- Errors: a `catch` node receives them (there is no error port or error type); wire it to what handles them.
 - Debug: omit `complete` to show msg.payload; `"complete": "true"` shows the whole message.
 - Comment: `type: "comment"`, `name` = header, `props.info` = Markdown body. ALWAYS set `above: <alias>` to the canvas node it sits directly above (new or existing). To move a comment, re-declare it with another `above`.
 

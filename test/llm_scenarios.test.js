@@ -16,6 +16,9 @@
 // the git-ignored ../.credentials.json ({ "OpenAI": "sk-..." }); the tokens
 // the API reports are counted, and LLM_TEST_TOKEN_BUDGET=200000 stops the run
 // before a scenario once that many have been used.
+// LLM_TEST_REPLAY=run.log[,more.log] sends nothing: it re-judges the failed
+// replies a run with LLM_TEST_SHOW_FAILED=1 logged, against the code as it is
+// now, and reports which of them would pass.
 // Exit codes: 0 = every scenario passed for every model, 1 = some failed,
 // 2 = skipped (endpoint or model absent).
 
@@ -773,6 +776,17 @@ async function runOnce(core, model, sc) {
   if (CONFIG.provider === 'openai') settings.openaiApiKey = openaiKey();
   const messages = core.buildMessages(sc.prompt, context, 't1', settings, { mode: sc.mode });
   const reply = await core.generateWithProvider(CONFIG.provider, settings, model, messages, { timeoutMs: CONFIG.timeoutMs });
+  return judge(sc, reply);
+}
+
+// What a reply does to the scenario's canvas, and whether that is what was asked.
+async function judge(sc, reply) {
+  const canvas = sc.canvas();
+  const mock = buildEditorMock({ tabs: canvas.tabs, nodes: clone(canvas.nodes), junctions: clone(canvas.junctions || []),
+    groups: clone(canvas.groups || []), configs: clone(canvas.configs || []), activeId: 't1' });
+  const P = loadPluginSandbox(mock.RED);
+  const ids = sc.tabs || ['t1'];
+  if (canvas.nodes.length || (canvas.junctions || []).length) P.UI.getFlowsByIds(ids, { includeCanvasExtras: true });
   const schema = P.LLMJsonParser.extractVibeSchema(reply, P.FlowConverterCore);
   if (sc.mode === 'ask') return { problem: sc.checkReply(reply, schema), reply };
 
@@ -787,7 +801,63 @@ async function runOnce(core, model, sc) {
   return { problem: sc.check(flow, { mock, reply, schema }), reply };
 }
 
+// Failed replies from logs: { model: [{ scenario, problem, reply }] }.
+function loggedFailures(files) {
+  const out = {};
+  files.forEach((file) => {
+    let model = null, cur = null;
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line) => {
+      const m = /^=== (.*) ===$/.exec(line);
+      if (m) { model = m[1]; cur = null; return; }
+      const a = /^  \[(.*?)\] attempt \d+ \([^)]*\): (.*)$/.exec(line);
+      if (a) {
+        cur = (a[2] === 'ok' || TRANSPORT.test(a[2])) ? null : { scenario: a[1], problem: a[2], lines: [] };
+        if (cur) (out[model] = out[model] || []).push(cur);
+        return;
+      }
+      if (cur && line.indexOf('      | ') === 0) cur.lines.push(line.slice(8));
+      else if (cur && line === '      |') cur.lines.push('');
+    });
+  });
+  Object.values(out).forEach((list) => list.forEach((r) => {
+    r.reply = r.lines.join('\n');
+    // SHOW_FAILED keeps the first 3000 characters of the prefixed reply.
+    r.cut = r.lines.reduce((n, l) => n + l.length + 9, 0) >= 2990;
+    delete r.lines;
+  }));
+  return out;
+}
+
+async function replay(files) {
+  const byModel = loggedFailures(files);
+  let fixed = 0, total = 0;
+  for (const model of Object.keys(byModel)) {
+    console.log('\n=== ' + model + ' ===');
+    const counts = {};
+    for (const r of byModel[model]) {
+      const sc = SCENARIOS.find((x) => x.name === r.scenario);
+      if (!sc || (!r.reply && r.problem !== 'no Vibe Schema in the reply')) continue;
+      let now;
+      try { now = (await judge(sc, r.reply)).problem; } catch (e) { now = 'error: ' + e.message; }
+      total++;
+      if (!now) fixed++;
+      const key = r.scenario;
+      counts[key] = counts[key] || { fixed: 0, still: {} };
+      if (!now) counts[key].fixed++;
+      else { const label = (r.cut ? '(reply cut in the log) ' : '') + now.slice(0, 80); counts[key].still[label] = (counts[key].still[label] || 0) + 1; }
+    }
+    Object.keys(counts).forEach((k) => {
+      const c = counts[k];
+      const still = Object.keys(c.still).map((p) => c.still[p] + 'x ' + p).join('; ');
+      console.log('  [' + k + '] now pass ' + c.fixed + (still ? ' | still: ' + still : ''));
+    });
+  }
+  console.log('\nlogged failures that now pass: ' + fixed + '/' + total);
+  process.exit(0);
+}
+
 async function main() {
+  if (process.env.LLM_TEST_REPLAY) return replay(process.env.LLM_TEST_REPLAY.split(',').map((x) => x.trim()).filter(Boolean));
   // Before makeCore: the OpenAI SDK keeps the fetch it finds when loaded.
   if (CONFIG.provider === 'openai') {
     if (!openaiKey()) { console.log('SKIP: no OpenAI key'); process.exit(2); }

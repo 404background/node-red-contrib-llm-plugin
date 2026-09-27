@@ -1982,7 +1982,7 @@
             let spec = nodes[k];
             if (t.entries[k] && !t.entries[k].ws) return true;
             return !!spec && typeof spec === 'object' &&
-                (spec.config === true || (typeof spec.type === 'string' && isConfigNodeType(spec.type)));
+                Converter.claimsConfig(spec);
         }
         function isNewCanvas(k) {
             let spec = nodes[k];
