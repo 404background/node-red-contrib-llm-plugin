@@ -551,6 +551,11 @@
     flex: 0 0 auto;
     margin-bottom: 0;
 }
+/* As wide as "Agent": the editor sizes every select 220px (`.red-ui-editor
+   select`), which outranks `.mode-select` alone. */
+.session-row .mode-select {
+    width: auto;
+}
 .session-row .model-input {
     flex: 1 1 180px;
     min-width: 140px;

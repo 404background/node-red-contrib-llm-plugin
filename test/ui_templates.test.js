@@ -345,6 +345,8 @@ function scenarioModeAndModelShareARow() {
     'that wraps instead of squeezing the model name');
   ok(/\.session-row \.model-input \{[^}]*flex: 1 1/.test(CSS),
     'and the model input is the half that gives, since its text is the long one');
+  ok(/\.session-row \.mode-select \{[^}]*width: auto/.test(CSS),
+    'the mode select is as wide as its options, not the editor\'s 220px');
 }
 
 function scenarioThePluginRaisesNoNotifications() {
