@@ -2351,6 +2351,7 @@
 
                 // 2. Singleton config node: reuse the lone existing match
                 //    by type to avoid duplicating it.
+                let byTypeOnly = false;
                 if (!replacedExisting && isConfigNodeObj(nn)) {
                     let configTypeKey = String(nn.type).trim().toLowerCase();
                     let sameTypeCandidates = existingConfigByType[configTypeKey] || [];
@@ -2359,6 +2360,7 @@
                     });
                     if (unclaimedCandidates.length === 1) {
                         replacedExisting = unclaimedCandidates[0];
+                        byTypeOnly = true;
                     }
                 }
 
@@ -2370,9 +2372,10 @@
                         remappedIds[originalId] = nn.id;
                     }
 
-                    // Stub-only payloads keep the ID remap (so refs are
-                    // rewired) but never overwrite the real config node.
-                    if (nn._autoStub) {
+                    // A stub, or a config node the reply declared under another alias
+                    // and matched only by type, rewires references to the real one but
+                    // never overwrites it: a reply cannot re-point an existing broker.
+                    if (nn._autoStub || byTypeOnly) {
                         existingIds.add(nn.id);
                         return null;
                     }

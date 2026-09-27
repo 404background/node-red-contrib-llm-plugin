@@ -1524,11 +1524,16 @@
                 if (solid(n)) (levels[container(n)] = levels[container(n)] || []).push(n);
             });
             let keys = Object.keys(levels);
+            // Top-down, each rect measured once: a pair further apart than the
+            // widest clearance cannot collide, and neither can anything below it.
+            let reach = gap + groupPad;
             for (let k = 0; k < keys.length; k++) {
-                let list = levels[keys[k]];
+                let list = levels[keys[k]].map(function(n) { return { n: n, r: rect(n) }; })
+                    .sort(function(p, q) { return p.r.top - q.r.top; });
                 for (let i = 0; i < list.length; i++) {
                     for (let j = i + 1; j < list.length; j++) {
-                        let a = list[i], b = list[j];
+                        if (list[j].r.top >= list[i].r.bottom + reach) break;
+                        let a = list[i].n, b = list[j].n;
                         if (stuck[a.id + '|' + b.id]) continue;
                         // A caption and what it heads, or two captions on one node, are a stack
                         // for the comment pass; routing on what it serves still hides it.
@@ -1539,7 +1544,7 @@
                         // is ordinary; only something ON a junction hides it.
                         if (junction && boxed) continue;
                         if (a.type === 'junction' && b.type === 'junction') continue;
-                        let ra = rect(a), rb = rect(b);
+                        let ra = list[i].r, rb = list[j].r;
                         let clear = boxed ? boxClear(a, b) : 0;
                         if (ra.right <= rb.left || rb.right <= ra.left) continue;
                         if (ra.bottom + clear <= rb.top || rb.bottom + clear <= ra.top) continue;
