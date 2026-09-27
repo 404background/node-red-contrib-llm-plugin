@@ -381,6 +381,18 @@ function scenarioAnAliasListReadsAsTheMap() {
   ok(notACount && notACount.nodes.function_f.props.outputs === 2 && notACount.connections[1].fromPort === 1,
     'a function whose outputs is not a count has as many as its wires name (' + JSON.stringify(notACount && notACount.nodes.function_f.props) + ')');
 
+  // gemma3:4b lists `delete` beside nodes it restates, and deletes a
+  // connection from a node to itself when asked to disable it.
+  const contradictory = schema(JSON.stringify({
+    delete: ['debug_log', 'debug_old'],
+    nodes: { debug_log: { type: 'debug', name: 'log' } },
+    connections: [{ delete: { from: 'debug_log', to: 'debug_log' } }, { delete: { from: 'inject_tick', to: 'debug_old' } }],
+  }));
+  ok(contradictory && JSON.stringify(contradictory.delete) === '["debug_old"]',
+    'a node the reply both deletes and declares is kept (' + JSON.stringify(contradictory && contradictory.delete) + ')');
+  ok(contradictory && contradictory.connections.length === 1 && contradictory.connections[0].remove.to === 'debug_old',
+    'and a connection deleted from a node to itself is dropped');
+
   // gemma4:12b keys the connections by their source.
   const keyed = schema(JSON.stringify({
     nodes: { inject_t: { type: 'inject' }, debug_t: { type: 'debug' }, debug_u: { type: 'debug' } },

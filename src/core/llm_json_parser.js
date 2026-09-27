@@ -489,6 +489,29 @@
             out.connections = (Array.isArray(out.connections) ? out.connections : [])
                 .concat(edges.map(function(r) { return { remove: r }; }));
         });
+        return dropContradictoryDeletes(out);
+    }
+
+    // A reply that deletes a node and declares it in the same breath (small
+    // models list `delete` next to every node they restate) keeps the node:
+    // the delete runs first and a deleted alias cannot come back, so obeying
+    // both loses the node. A connection deleted from a node to itself is noise.
+    function dropContradictoryDeletes(out) {
+        if (!out || typeof out !== 'object' || Array.isArray(out)) return out;
+        let declared = {};
+        let nodes = (out.nodes && typeof out.nodes === 'object' && !Array.isArray(out.nodes)) ? out.nodes : {};
+        Object.keys(nodes).forEach(function(k) { if (nodes[k] && typeof nodes[k] === 'object') declared[k] = true; });
+        ['delete', 'remove'].forEach(function(key) {
+            if (!Array.isArray(out[key])) return;
+            let kept = out[key].filter(function(a) { return !(typeof a === 'string' && declared[a.trim()]); });
+            if (kept.length !== out[key].length) { out = Object.assign({}, out); out[key] = kept; }
+        });
+        if (Array.isArray(out.connections)) {
+            let conns = out.connections.filter(function(c) {
+                return !(c && c.remove && typeof c.remove === 'object' && c.remove.from === c.remove.to);
+            });
+            if (conns.length !== out.connections.length) { out = Object.assign({}, out); out.connections = conns; }
+        }
         return out;
     }
 
