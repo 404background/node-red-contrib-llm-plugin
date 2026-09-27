@@ -478,9 +478,13 @@ trailing one, or both. When neither holds — the `f"text {var}"` in a function
 body, a sentence quoting a phrase — the value is left exactly as the repair
 produced it. A guess that could go either way is not made.
 
-The system prompt asks for single quotes in expression fields (`tot` / `vt` =
-`jsonata`) for the same reason: a JSONata literal written `'C'` needs no JSON
-escaping, which keeps most replies out of this path altogether.
+The system prompt steers away from JSONata altogether: values in plain types,
+text built by a template (mustache `{{payload}}`), computation in a function.
+The small models in the live scenarios got JSONata wrong far more often than
+anything else, and the user saw the same in conversation. When the user does
+ask for it, the prompt asks for single quotes in the expression for the same
+reason as above: a literal written `'C'` needs no JSON escaping, which keeps
+most replies out of this path altogether.
 
 One more thing the repair has to know, because a single broken value sends the
 **whole** block through it: a string inside an **array** is a value, not a key.

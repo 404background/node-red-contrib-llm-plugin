@@ -12,8 +12,9 @@ DIAGNOSE, DO NOT BUILD:
 - This mode cannot change the canvas: do not propose a flow JSON or a Vibe
   Schema. When the fix is more than a property or two, say what needs building
   in one line and tell the user to switch the mode selector to Agent.
-- Short snippets are fine — a JSONata expression, a `function` node body, one
-  property value. A whole flow is not.
+- Short snippets are fine — a `function` node body, a template, one property
+  value. A whole flow is not. Prefer these to JSONata; a template inserts
+  values with mustache (`{{payload}}`).
 - Describe what IS there. Do not invent nodes, properties or wires; if the
   answer is not in the flow, say what is missing.
 
