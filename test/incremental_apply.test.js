@@ -232,14 +232,15 @@ async function renamingKeepsTheColumn() {
   const column = 100 - Layout.estimateNodeWidth({ type: 'inject', name: 'tick' }, {}) / 2;
 
   ok(res && res.ok, 'the edit applied');
-  ok(leftOf(byId.inj) === column,
+  // The fixture's column is off the grid; the node stays in it, on the grid.
+  ok(Math.abs(leftOf(byId.inj) - column) <= 10 && leftOf(byId.inj) % 20 === 0,
     'the renamed node kept its left edge (' + leftOf(byId.inj) + ', was ' + column + ')');
   ok(leftOf(byId.cap) === leftOf(byId.inj),
     'the caption still shares that edge (' + leftOf(byId.cap) + ')');
   ok(leftOf(byId.fn) >= leftOf(byId.inj) + Layout.estimateNodeWidth(byId.inj, {}),
     'and the node after it moved over rather than being overlapped (' +
       leftOf(byId.fn) + ')');
-  ok(byId.grp.x === column - 25,
+  ok(byId.grp.x === leftOf(byId.inj) - 25,
     'the box around it sits one padding left of that column, not off the canvas (' +
       byId.grp.x + ')');
 }

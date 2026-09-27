@@ -369,8 +369,9 @@ async function scenarioRoutingFollowsTheBoxItServes() {
     'the junction feeding it kept its place beside it (' + (j1.x - b1.x) + ',' + (j1.y - b1.y) + ')');
   ok(!(j1.x > gA.x && j1.x < gA.x + gA.w && j1.y > gA.y && j1.y < gA.y + gA.h),
     'so it is not left inside the box that grew');
-  ok(li.x - b1.x === -160 && li.y === b1.y, 'the link in kept its place too (' + (li.x - b1.x) + ',' + (li.y - b1.y) + ')');
-  ok(lo.x === b1.x && lo.y - b1.y === 100, 'and so did the link out it feeds (' + (lo.x - b1.x) + ',' + (lo.y - b1.y) + ')');
+  // Within the half square the snap onto the grid may take.
+  ok(Math.abs(li.x - b1.x + 160) <= 10 && li.y === b1.y, 'the link in kept its place too (' + (li.x - b1.x) + ',' + (li.y - b1.y) + ')');
+  ok(Math.abs(lo.x - b1.x) <= 10 && lo.y - b1.y === 100, 'and so did the link out it feeds (' + (lo.x - b1.x) + ',' + (lo.y - b1.y) + ')');
 }
 
 // A on Flow 1 reaches B on Flow 2 through a link out / link in pair. The same

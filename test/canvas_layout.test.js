@@ -151,7 +151,7 @@ describe('Grid alignment', function() {
     // whenever the width is an odd grid multiple (e.g. the 100px minimum);
     // its `y` is derived from the row's top edge the same way, which is what
     // makes the gap above a flow the same as the gap beside it.
-    it('reflowCanvasNodes produces grid-aligned top and left edges', function() {
+    it('reflowCanvasNodes puts left edges and centres on the grid', function() {
         const nodes = [
             { id: 'a', type: 'inject', wires: [['b']] },
             { id: 'b', type: 'function', name: 'compute aggregated rolling average', wires: [['c']] },
@@ -160,12 +160,11 @@ describe('Grid alignment', function() {
         Layout.reflowCanvasNodes(nodes, WIDE);
         nodes.forEach(n => assert(leftEdge(n, WIDE) % 20 === 0,
             n.id + ' left edge not grid-aligned: ' + leftEdge(n, WIDE)));
-        nodes.forEach(n => assert((n.y - NODE_HEIGHT / 2) % 20 === 0,
-            n.id + ' top edge not grid-aligned: ' + (n.y - NODE_HEIGHT / 2)));
-        // The origin means the same thing on both axes: the first node's top
-        // edge is as far from y=0 as its left edge is from x=0.
-        assert((nodes[0].y - NODE_HEIGHT / 2) === WIDE.startY,
-            'first row top edge ' + (nodes[0].y - NODE_HEIGHT / 2) + ', startY ' + WIDE.startY);
+        nodes.forEach(n => assert(n.y % 20 === 0, n.id + ' centre not grid-aligned: ' + n.y));
+        // The first row's top edge is `startY`, moved down onto the grid.
+        const top = nodes[0].y - NODE_HEIGHT / 2;
+        assert(top >= WIDE.startY && top < WIDE.startY + 20,
+            'first row top edge ' + top + ', startY ' + WIDE.startY);
         assert(leftEdge(nodes[0], WIDE) === WIDE.startX,
             'first column left edge ' + leftEdge(nodes[0], WIDE));
     });
@@ -855,7 +854,9 @@ describe('Nothing is left hanging off the canvas', function() {
         ];
         Layout.ensureCanvasMargins(flow, OPTS);
         const left = flow[0].x - Layout.estimateNodeWidth(flow[0], OPTS) / 2;
-        assert(left === Layout.LAYOUT_DEFAULTS.leftMargin, 'leftmost edge at ' + left);
+        const margin = Layout.LAYOUT_DEFAULTS.leftMargin;
+        assert(left >= margin && left < margin + 20, 'leftmost edge at ' + left);
+        assert((flow[0].x + 40) % 20 === 0, 'moved in whole grid squares (' + flow[0].x + ')');
         assert(flow[1].x - flow[0].x === 200, 'the gap between them is unchanged');
     });
 
@@ -871,8 +872,9 @@ describe('Nothing is left hanging off the canvas', function() {
         }));
         Layout.fitGroups(flow, opts);
         Layout.ensureCanvasMargins(flow, opts);
+        // Equal up to the 5px a 30px-tall node centred on the grid leaves.
         const box = flow.find((n) => n.id === 'g1');
-        assert(box.x === box.y, 'box at (' + box.x + ',' + box.y + ')');
+        assert(Math.abs(box.x - box.y) <= 5, 'box at (' + box.x + ',' + box.y + ')');
     });
 
     it('a box counts as the leftmost thing, not its members', function() {
@@ -882,8 +884,9 @@ describe('Nothing is left hanging off the canvas', function() {
               x: -25, y: 70, w: 150, h: 80 },
         ];
         Layout.ensureCanvasMargins(flow, OPTS);
-        assert(flow[1].x === Layout.LAYOUT_DEFAULTS.leftMargin, 'box at ' + flow[1].x);
-        assert(flow[0].x === 155, 'and its member moved with it (' + flow[0].x + ')');
+        const margin = Layout.LAYOUT_DEFAULTS.leftMargin;
+        assert(flow[1].x >= margin && flow[1].x < margin + 20, 'box at ' + flow[1].x);
+        assert(flow[0].x - flow[1].x === 135, 'and its member moved with it (' + flow[0].x + ')');
     });
 
     it('a canvas that already clears the edge is not moved', function() {
@@ -1060,25 +1063,63 @@ describe('Every wire is edgeGap long, even into a merge', function() {
 // Stacked sequences are componentGap apart member to member, boxed or not.
 describe('Boxed sequences are as far apart as unboxed ones', function() {
     const D = Layout.LAYOUT_DEFAULTS;
+    // componentGap (3 squares) plus the node, rounded up to the grid.
+    const PITCH = Math.ceil((D.nodeHeight + D.componentGap) / D.gridSize) * D.gridSize;
     const seq = (p, y, g) => [
         { id: p + '1', type: 'inject', z: 'z', name: p, x: 110, y: y, g: g, wires: [[p + '2']] },
         { id: p + '2', type: 'debug', z: 'z', name: p + 'd', x: 310, y: y, g: g, wires: [[]] },
     ];
     const boxOf = (id, members) => ({ id: id, type: 'group', z: 'z', name: id, nodes: members, x: 0, y: 0, w: 0, h: 0 });
     it('two boxed sequences: members componentGap apart', function() {
-        const flow = seq('a', 100, 'gA').concat(seq('b', 110, 'gB'),
+        const flow = seq('a', 100, 'gA').concat(seq('b', 120, 'gB'),
             [boxOf('gA', ['a1', 'a2']), boxOf('gB', ['b1', 'b2'])]);
         Layout.fitGroups(flow, {});
         Layout.settleCollisions(flow, {});
-        const gapY = flow[2].y - flow[0].y - D.nodeHeight;
-        assert(gapY === D.componentGap, 'member to member ' + gapY);
+        assert(flow[2].y - flow[0].y === PITCH, 'centre to centre ' + (flow[2].y - flow[0].y));
     });
     it('a boxed sequence over a plain one: members componentGap apart', function() {
-        const flow = seq('a', 100, 'gA').concat(seq('b', 110), [boxOf('gA', ['a1', 'a2'])]);
+        const flow = seq('a', 100, 'gA').concat(seq('b', 120), [boxOf('gA', ['a1', 'a2'])]);
         Layout.fitGroups(flow, {});
         Layout.settleCollisions(flow, {});
-        const gapY = flow[2].y - flow[0].y - D.nodeHeight;
-        assert(gapY === D.componentGap, 'member to node ' + gapY);
+        assert(flow[2].y - flow[0].y === PITCH, 'centre to centre ' + (flow[2].y - flow[0].y));
+    });
+    it('unboxed sequences from a reflow: the same pitch', function() {
+        const flow = [
+            { id: 'a1', type: 'inject', wires: [['a2']] }, { id: 'a2', type: 'debug', wires: [] },
+            { id: 'b1', type: 'inject', wires: [['b2']] }, { id: 'b2', type: 'debug', wires: [] },
+        ];
+        Layout.reflowCanvasNodes(flow, {});
+        assert(flow[2].y - flow[0].y === PITCH, 'centre to centre ' + (flow[2].y - flow[0].y));
+    });
+});
+
+// The editor snaps a node's centre y and its left edge; a layout that leaves
+// them anywhere else cannot be lined up by dragging.
+describe('Everything the layout moves lands on the grid', function() {
+    it('an off-grid node snaps: left edge and centre', function() {
+        const flow = [{ id: 'n', type: 'inject', z: 'z', name: 'a', x: 113, y: 107, wires: [[]] }];
+        Layout.snapToGrid(flow, {});
+        const left = flow[0].x - Layout.getNodeWidth(flow[0], {}) / 2;
+        assert(left % 20 === 0 && flow[0].y % 20 === 0, 'at (' + flow[0].x + ',' + flow[0].y + ')');
+    });
+    it('what the edit left where it was stays there', function() {
+        const flow = [{ id: 'n', type: 'inject', z: 'z', name: 'a', x: 113, y: 107, wires: [[]] }];
+        Layout.snapToGrid(flow, { keep: { n: true } });
+        assert(flow[0].x === 113 && flow[0].y === 107, 'at (' + flow[0].x + ',' + flow[0].y + ')');
+    });
+    it('a caption moves with the node it heads', function() {
+        const flow = [
+            { id: 'n', type: 'inject', z: 'z', name: 'a', x: 113, y: 107, wires: [[]] },
+            { id: 'c', type: 'comment', z: 'z', name: 'about a', x: 113, y: 67, _llmAboveId: 'n', wires: [] },
+        ];
+        Layout.snapToGrid(flow, {});
+        assert(flow[1].x - flow[0].x === 0 && flow[0].y - flow[1].y === 40,
+            'caption at (' + flow[1].x + ',' + flow[1].y + '), node at (' + flow[0].x + ',' + flow[0].y + ')');
+    });
+    it('a junction stays where its wires put it', function() {
+        const flow = [{ id: 'j', type: 'junction', z: 'z', x: 113, y: 107, wires: [[]] }];
+        Layout.snapToGrid(flow, {});
+        assert(flow[0].x === 113 && flow[0].y === 107, 'at (' + flow[0].x + ',' + flow[0].y + ')');
     });
 });
 

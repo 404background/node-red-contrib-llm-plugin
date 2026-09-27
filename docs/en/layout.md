@@ -91,8 +91,9 @@ another.
 | 4 | `fitGroups` | (2) and (3). A box is fitted to where its members ended up, so it cannot run before they are placed. Every box is fitted tightly. |
 | 5 | `separateGroups` | (4). Aligns each boxed sequence by its members' left edge, then settles collisions (below), which is what keeps the boxes `groupGap` apart. Both read box bounds, which only exist once the boxes are fitted. |
 | 6 | `applyCommentAnchors` | (5). Every caption onto the node it heads, re-read from where the passes above left it: one that would sit on its node is clamped to a full row above it. |
+| 6½ | `snapToGrid` | (6). Everything the edit placed or moved goes onto the grid (see [Everything on the grid](#everything-on-the-grid)). Before step 7, so a node the snap moved is still kept clear; step 7 pushes in whole squares, and what a push moved off its old place is snapped in turn, until nothing moves. |
 | 7 | `settleCollisions` | (6). The invariant, checked on the result rather than trusted to the passes above: no node on a node, no box on a box (closer than `groupGap`), no node inside a box it is not a member of. Comments count too. Siblings are compared level by level, and every collision counts, whoever placed the things involved. The lower party goes under the upper one as a whole (a box with its contents, a wired chain with its captions), except inside one chain, where the lower node steps off alone with its captions. A comment that heads nothing is the one that moves. Routing outside a box moves with what it serves. A junction (measured at its real 10×10) is never moved on its own account: what lands on it steps off below, and one on a box edge is an ordinary route, left alone. A link node on what it serves steps off alone. A caption outside a box that heads a member from on top of the frame joins that box. Boxes are refitted after each move, and a push that lands on something else is resolved in turn. It is the last pass that moves anything apart, so captions are placed before it. |
-| 8 | `ensureCanvasMargins` | (7). One uniform shift on each axis, so it cannot disturb any spacing the passes above established. |
+| 8 | `ensureCanvasMargins` | (7). One uniform shift on each axis, in whole grid squares, so it cannot disturb any spacing the passes above established. When it shifts anything, 6½ and 7 run again: a node that was off the grid has now moved. |
 
 A box left at its old size is the case this order exists to avoid: step 5 would
 line up a stale rectangle instead of the sequence inside it.
@@ -106,7 +107,8 @@ line up a stale rectangle instead of the sequence inside it.
 | `placeAddedNodesNearNeighbors(nodes, existingIdMap, basePositions, options?)` | Incremental layout (keeps existing nodes pinned, places only the new ones). |
 | `estimateNodeWidth(node, options?)` | Label-based width estimate, snapped to `gridSize`. |
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
-| `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
+| `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?, gridSize?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`, each rounded up to `gridSize`. `nodeHeight` and `gridSize` default to `LAYOUT_DEFAULTS`. |
+| `snapToGrid(nodes, options?)` | Put every node's left edge and centre y on the grid, captions keeping the left edge of the node they head; `options.keep` names ids to leave alone. Refits boxes. See [Everything on the grid](#everything-on-the-grid). |
 | `fitGroups(nodes, options?)` | Fit every group box to its members. See [Group boxes](#group-boxes). |
 | `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it (`groupGap` from a box, one padding more from a plain node). Runs after `fitGroups`. |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
@@ -122,34 +124,51 @@ LAYOUT_DEFAULTS = {
     startX:         60,    // left edge of the first column
     startY:         60,    // TOP edge of the first row — an edge, like startX
     spacingY:       40,    // edge-to-edge clearance between stacked node rows
-    componentGap:   80,    // edge-to-edge clearance between disconnected components
+    componentGap:   60,    // edge-to-edge clearance between disconnected components
     edgeGap:        40,    // edge-to-edge clearance between adjacent node edges (horizontal)
     minNodeWidth:  100,    // Node-RED MIN_NODE_WIDTH
     nodeHeight:     30,    // Node-RED's standard rendered node height
-    gridSize:       20,    // Node-RED canvas grid (used by width estimate + comment stacking)
+    gridSize:       20,    // Node-RED canvas grid: widths, vertical pitches, every position
     topMargin:      20,    // min clearance between the canvas top (y=0) and the topmost edge
     leftMargin:     20,    // the same on the left edge (x=0), boxes included
     groupPadding:   25,    // the editor's own clearance between a group's box and its members
-    groupGap:       30     // box to box: componentGap between their members, less both paddings
+    groupGap:       10     // box to box: componentGap between their members, less both paddings
 };
 ```
 
 `spacingY`, `componentGap`, and `edgeGap` all describe **edge-to-edge**
 clearance (the visible whitespace), not centre-to-centre distance. The
 layout engine adds `nodeHeight` internally whenever a centre coordinate
-is needed, so setting `spacingY = 40` produces exactly two grid squares
-of vertical clearance between consecutive rows.
+is needed, and rounds the vertical pitch up to the grid (below).
 
-Derived `node.x` / `node.y` coordinates are NOT snapped to `gridSize`.
-Snapping centres would distort visible alignment: nodes whose widths
-are odd multiples of `gridSize` (e.g. 100 or 140 px wide) end up with
-their left edges shifted by half a grid square relative to nodes whose
-widths are even multiples (e.g. 120 px), even when both should share
-the same column. Instead the engine snaps **left edges** (always grid
-multiples by construction) and computes each centre as
-`leftEdge + width(node) / 2`, so siblings in a column visibly share
-the same left edge regardless of label width. The same logic gives a
-uniform `rowPitch = nodeHeight + spacingY` for vertical spacing.
+### Everything on the grid
+
+The editor snaps a dragged node by its **left (or right) edge** and its
+**centre y** (`RED.view.tools.calculateGridSnapOffsets`). A node the layout
+leaves anywhere else jumps when it is dragged, and cannot be lined up with its
+neighbours by hand. So:
+
+- **Horizontally**, left edges are grid multiples by construction: `startX`,
+  `edgeGap` and every width (`estimateNodeWidth`, and the editor's own `w`)
+  are. Each centre is `leftEdge + width / 2`. Snapping centres instead would
+  put a 100px node and a 120px one half a square apart in the same column.
+- **Vertically**, a node is 30px tall, so a gap in whole squares between two
+  nodes cannot have both centres on the grid. The pitch is rounded up instead:
+  `rowPitch = ceil((nodeHeight + spacingY) / grid) * grid` = 80 and the
+  component step `ceil((nodeHeight + componentGap) / grid) * grid` = 100.
+  Between two sequences that leaves 70px: three whole empty squares, and the
+  half square each node's centre line cuts off. The first row's centre is
+  `startY + nodeHeight / 2` rounded up the same way.
+- Every pass that moves something vertically moves it in **whole squares**:
+  `settleCollisions` rounds each push up, `ensureCanvasMargins` its shift,
+  the band push in `placeAddedNodesNearNeighbors` its `dy`; a node placed
+  between neighbours takes the grid line nearest their average.
+- `snapToGrid` then catches what arrived off the grid (an older layout, a
+  flow placed by hand): everything the edit **placed or moved** is snapped.
+  What the edit left exactly where it was stays there, off the grid or not —
+  a property edit moves nothing. A caption keeps the left edge of the node it
+  heads and rounds its y **up**, away from that node. Junctions are not
+  snapped: a junction stays where its wires put it.
 
 ### `ensureCanvasMargins` — the same gap above and beside
 
@@ -161,10 +180,11 @@ by one shared delta per axis, so relative geometry is untouched.
 
 **Both origins are edges.** `startX` is the left edge of the first column and
 `startY` is the top edge of the first row; the row's centre is half a node
-further down. They used to mean different things (`startY` was the centre),
-which put a flow 15px nearer the top of the canvas than its left side, and the
-box around it nearer still. Equal origins now produce equal gaps — for a plain
-flow and for a boxed one.
+further down, rounded onto the grid. They used to mean different things
+(`startY` was the centre), which put a flow 15px nearer the top of the canvas
+than its left side, and the box around it nearer still. Equal origins now
+produce gaps equal up to the 5px the grid rounding leaves — for a plain flow
+and for a boxed one.
 
 ## Width changes keep the left edge
 
@@ -259,9 +279,9 @@ behind. `fitGroups` runs after the layout passes and settles it:
   bigger than its contents cannot be lined up or spaced by what is in it.
 - Groups are not laid out as nodes (`isLayoutNode` excludes them), so they never
   displace anything — which also means nothing keeps two boxes apart. The node
-  layout spaces MEMBERS: `componentGap` (80) minus two paddings leaves exactly
-  `groupGap` (30px) between two boxed sequences, but a caption that joined a
-  group grows its box 40px further up, so the boxes overlapped by 10px. `separateGroups` runs after
+  layout spaces MEMBERS: `componentGap` minus two paddings leaves 20px
+  between two boxed sequences, but a caption that joined a group grows its box
+  40px further up, so the boxes overlap. `separateGroups` runs after
   `fitGroups` and is the guarantee that a box clears what is outside it.
 
 ### `separateGroups` — lining the boxes up, and keeping them apart
@@ -282,10 +302,11 @@ behind. `fitGroups` runs after the layout passes and settles it:
 - Every stacked box is aligned, whoever drew it, to the **leftmost** sequence.
   The canvas margin is restored afterwards by `ensureCanvasMargins`, for
   everything at once.
-- Every box ends up clear of anything outside it: `groupGap` (30) from another
-  box and one padding more (55) from a plain node, so stacked sequences are
-  `componentGap` (80, four grid squares) apart member to member whether they
-  are boxed or not — removing a box does not leave a wider gap behind. Routing
+- Every box ends up clear of anything outside it: `groupGap` (10) from another
+  box and one padding more (35) from a plain node, and with pushes rounded up
+  to the grid, stacked sequences are 100px apart centre to centre (three empty
+  squares between members) whether they are boxed or not — removing a box does
+  not leave a wider gap behind. Routing
   serving a box keeps only `groupGap`. That is `settleCollisions`' job: it moves each box with everything it holds, so two
   boxes interlocked by a wire are still pulled apart.
 - Pushes only ever go **down**, so the pass is idempotent: a canvas that
@@ -310,7 +331,10 @@ junction with nothing downstream follows what feeds it.
 - After the node passes, each routing node that was already on the canvas goes
   back to where it was, **shifted by as much as what it serves moved**. When
   those moved by different amounts there is no one place it belongs, and it
-  stays where it was.
+  stays where it was. A junction inside one sequence (what feeds it in the same
+  box as what it serves, or both in none) also counts what feeds it: when a
+  chain is reflowed around it, its two sides move differently and it stays;
+  one moving with only the side it serves would land on the side feeding it.
 - `settleCollisions` and the box alignment move routing along with the box or
   chain it serves, when everything it serves is moving. In a collision it counts
   as part of that thing, so it is never pushed apart from it on its own.
@@ -404,31 +428,33 @@ in the `nodes` map.
      different widths into one node thus both end `edgeGap` before it: the
      narrower one is right-aligned, and column-0 nodes no longer share
      `startX` in that case. Every wire is `edgeGap` long.
-5. `computeComponentYOffsets` stacks components with `componentGap` of
-   edge-to-edge clearance (component step = `nodeHeight + componentGap`).
+5. `computeComponentYOffsets` stacks components with at least
+   `componentGap` of edge-to-edge clearance (component step =
+   `nodeHeight + componentGap`, rounded up to the grid).
 6. `node.x = leftEdge + width(node) / 2`,
-   `node.y = row * (nodeHeight + spacingY) + componentYOffset[comp]`.
+   `node.y = row * rowPitch + componentYOffset[comp]`.
 7. `repositionCommentsByLlmOrder` for any leading comments.
 
 #### Worked example: parallel flows of different widths
 
-`edgeGap = 40`, `spacingY = 40`, `componentGap = 80`, `startX = 200`,
+`edgeGap = 40`, `spacingY = 40`, `componentGap = 60`, `startX = 200`,
 `startY = 200`. Flow A has a wide label; Flow B is narrow.
 
 | Node | width | leftEdge | x (centre) | y |
 |------|------:|---------:|----------:|--:|
-| `a1` (inject, "Sensor")                | 120 | 200 | 260 | 200 |
-| `a2` (function, "Compute aggregated…") | 320 | 360 | 520 | 200 |
-| `a3` (debug)                           | 120 | 720 | 780 | 200 |
-| `b1` (inject)                          | 120 | 200 | 260 | 310 |
-| `b2` (function, "fn")                  | 100 | 360 | 410 | 310 |
-| `b3` (debug)                           | 120 | 500 | 560 | 310 |
+| `a1` (inject, "Sensor")                | 120 | 200 | 260 | 220 |
+| `a2` (function, "Compute aggregated…") | 320 | 360 | 520 | 220 |
+| `a3` (debug)                           | 120 | 720 | 780 | 220 |
+| `b1` (inject)                          | 120 | 200 | 260 | 320 |
+| `b2` (function, "fn")                  | 100 | 360 | 410 | 320 |
+| `b3` (debug)                           | 120 | 500 | 560 | 320 |
 
 `b3` lands at leftEdge 500 (= 360 + 100 + 40), not at 720 — it follows
 Flow B's own width, not Flow A's. `a1` and `b1` share leftEdge 200; `a2`
 and `b2` share leftEdge 360 (both downstream of a default-width inject);
-deeper columns diverge. Vertical gap between Flow A's bottom (215) and
-Flow B's top (295) is exactly `componentGap = 80` px.
+deeper columns diverge. The first row's centre is `200 + 15` rounded up to
+220; Flow B is one component step (`30 + 60` rounded up to 100) below, so
+the gap between Flow A's bottom (235) and Flow B's top (305) is 70px.
 
 ### `placeAddedNodesNearNeighbors` — incremental layout
 
@@ -438,12 +464,12 @@ Flow B's top (295) is exactly `componentGap = 80` px.
 |------|--------------|
 | 1 | Restore `basePositions[id]` for every id in `existingIdMap`. |
 | 2 | `buildWireAdjacency` over the canvas-node set. |
-| 3 | Iteratively place each new node next to its positioned neighbours: both → `x = max(rightEdge(pred)) + edgeGap + width(N)/2`, `y = mid(avg(pred.y), avg(succ.y))`. Only preds → above, right of preds. Only succs → above, left of succs. |
+| 3 | Iteratively place each new node next to its positioned neighbours: both → `x = max(rightEdge(pred)) + edgeGap + width(N)/2`, `y = mid(avg(pred.y), avg(succ.y))` on the nearest grid line. Only preds → above, right of preds. Only succs → above, left of succs. |
 | 3.4 | For each `(new node N, existing succ S)` pair, if `rightEdge(N) + edgeGap > leftEdge(S)`, BFS forward through `outgoing` from S and shift every reachable node's x by `needed`. Max shift wins on converging paths. IDs touched here are recorded as "shifted" and feed into Step 3.5b. |
-| 3.5a | **Within-component nudge** — push any newly placed node down by one row pitch (`nodeHeight + spacingY`) if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of a **same-component** positioned node AND their Y centres are within `nodeHeight`. Re-runs until stable. Cross-component collisions are deliberately ignored here (handled by 3.5b). |
+| 3.5a | **Within-component nudge** — push any newly placed node down by one row pitch (`nodeHeight + spacingY` rounded up to the grid) if its horizontal centre is within `(width(cur)+width(other))/2 + edgeGap*0.5` of a **same-component** positioned node AND their Y centres are within `nodeHeight`. Re-runs until stable. Cross-component collisions are deliberately ignored here (handled by 3.5b). |
 | 3.6 | **Insertion reflow** — for every component containing a node from `newlyPlaced` (i.e. a NEW node that `tryPlace` successfully wired to a positioned neighbour), call `reflowComponentInPlace`: `reflowCanvasNodes` pinned to the component's current top-left. The pre-existing user-placed nodes in that component move too, which is the only way to give the inserted node a uniform width-aware cadence. Orphan-band new nodes (no positioned neighbour) are excluded — they get a fresh layout from Step 4 and have no chain to honour. The "always reflow on connection" trigger is the user-specified contract; the cheaper directional pushes in 3.4 / 3.5a still run first so 3.6 always operates on a sane starting point. |
-| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)` (bboxes use edges, so `bandGap` is delivered exactly edge-to-edge) and shift every collected `O` by that same `dy`. **Comments are never moved by this pass** — they ride along with their target via the comment-anchor mechanism, or stay put if they are standalone. Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
-| 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes. The first orphan row's centre is `maxBottomEdge + bandGap + nodeHeight/2`, so there is exactly `bandGap` of edge-to-edge clearance between the previous flow's bottom and the orphan's top — matching the formula Step 3.5b uses. Horizontally, orphan column 0 starts at the **leftmost left edge** of the positioned set (not the leftmost centre). **Comments are always excluded** from the orphan band — captions keep whatever x/y they came in with, or are placed onto their schema-named target by the final comment pass. |
+| 3.5b | **Cross-component push-down** — group nodes by connected component over the live wire adjacency. A component is "modified" if it contains a new node or a Step 3.4-shifted node. For each modifier `M`, collect every unmodified component `O` whose bbox overlaps `M` in both axes and whose `O.minY ≥ M.minY`. Compute one **uniform** `dy = (M.maxY + bandGap) − min(O.minY across the collected set)`, rounded up to the grid (bboxes use edges, so at least `bandGap` is delivered edge-to-edge) and shift every collected `O` by that same `dy`. **Comments are never moved by this pass** — they ride along with their target via the comment-anchor mechanism, or stay put if they are standalone. Pushed components become propagators for the next pass (cascade). Components that started entirely above `M` are never pushed — we only ever move things down. |
+| 4 | Orphans (new nodes with no positioned neighbour): a fresh `layoutNodes` lays them out as their own graph below all positioned nodes. The first orphan row's centre is `maxBottomEdge + bandGap + nodeHeight/2` rounded up to the grid, so there is at least `bandGap` of edge-to-edge clearance between the previous flow's bottom and the orphan's top — matching the formula Step 3.5b uses. Horizontally, orphan column 0 starts at the **leftmost left edge** of the positioned set (not the leftmost centre). **Comments are always excluded** from the orphan band — captions keep whatever x/y they came in with, or are placed onto their schema-named target by the final comment pass. |
 | 5 | `applyCommentAnchors`: re-glue each comment that was *directly touching* a canvas node (or another comment in such a stack) to that node's new position, preserving the original offset. Standalone comments — anything beyond `stackStep + gridSize` below the nearest target, or outside its rendered bbox + one grid square — are NOT anchored and stay where the user put them. |
 | 6 | Final `repositionCommentsByLlmOrder`: position every new schema comment, and every existing one the reply gave an `above`, over its resolved target (now that all targets, including orphan-band ones, have final coordinates). |
 
@@ -477,7 +503,7 @@ Wide N (label "Compute aggregated rolling average" → 320 px):
 | Step 3 | (100, 100) | (360, 100) ← leftEdge=200 | (280, 100) |
 | Step 3.4 | (100, 100) | (360, 100) | (620, 100) ← leftEdge=560 |
 
-Cross-component push (Step 3.5b), `bandGap = 80`, `nodeHeight = 30`:
+Cross-component push (Step 3.5b), `bandGap = 60`, `nodeHeight = 30`:
 
 Flow 1 (component M, edited): `A(100,100) → B(280,100) → C-new(460,100)`.
 Flow 2 (component O, untouched): `D(100,180) → E(280,180)`.
@@ -487,6 +513,7 @@ Flow 2 (component O, untouched): `D(100,180) → E(280,180)`.
   overlap → no shift required. `D`/`E` stay at `y=180`.
 
 Now insert a tall stack so M grows downward to `y=200`:
-- `M.bbox.maxY = 215`, `O.minY = 165` → `dy = 215 + 80 − 165 = 130`.
-- `D`/`E` both shift by `+130` → `y=310`. O's shape (its internal
+- `M.bbox.maxY = 215`, `O.minY = 165` → `dy = 215 + 60 − 165 = 110`,
+  rounded up to 120.
+- `D`/`E` both shift by `+120` → `y=300`. O's shape (its internal
   horizontal layout) is preserved exactly.

@@ -825,9 +825,10 @@
         // spacingY / componentGap are EDGE-TO-EDGE clearances; the helper
         // turns them into the centre-to-centre pitch internally.
         let nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
-        let rowPitch = nodeHeight + spacingY;
+        let gridSize = LAYOUT_DEFAULTS.gridSize;
+        let rowPitch = Math.ceil((nodeHeight + spacingY) / gridSize) * gridSize;
         let compYOffsets = computeComponentYOffsets(
-            canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap, nodeHeight
+            canvasAliases, layout, startY, spacingY, LAYOUT_DEFAULTS.componentGap, nodeHeight, gridSize
         );
 
         // The same pass reflowCanvasNodes runs, keyed by alias because there

@@ -10,7 +10,7 @@
         startX:       200,   // canvas origin X (px) - left edge of first column
         startY:       200,   // canvas origin Y (px) - top edge of first row
         spacingY:      40,   // 2 grid squares between stacked node edges (within a flow)
-        componentGap:  80,   // 4 grid squares between disconnected flow components
+        componentGap:  60,   // 3 grid squares between disconnected flow components
         edgeGap:       40    // 2 grid squares between adjacent node edges (horizontal)
     };
 
@@ -733,11 +733,27 @@
             repositionSubsetByAliases(rebuilt, directives.repositionTokens, layoutOpts);
         }
         let servedBy = layout.routingAnchors(rebuilt);
+        // A junction inside one sequence sits between what feeds it and what
+        // it serves, so it moves only when both sides moved alike. One that
+        // leads from one box into another belongs to the box it leads into.
+        let feedsJunction = {};
+        rebuilt.forEach(function(n) {
+            (n && Array.isArray(n.wires) ? n.wires : []).forEach(function(port) {
+                (Array.isArray(port) ? port : []).forEach(function(to) {
+                    if (routingAt[to]) (feedsJunction[to] = feedsJunction[to] || []).push(n);
+                });
+            });
+        });
         rebuilt.forEach(function(n) {
             let at = n && routingAt[n.id];
             if (!at) return;
             let d = null, even = true;
-            (servedBy[n.id] || []).forEach(function(a) {
+            let served = servedBy[n.id] || [];
+            let feeders = (n.type === 'junction' ? (feedsJunction[n.id] || []) : []).filter(function(f) {
+                return served.some(function(s) { return (s.g || '') === (f.g || ''); });
+            });
+            let around = served.concat(feeders);
+            around.forEach(function(a) {
                 let was = placedAt[a.id];
                 if (!was) return;
                 let dx = a.x - was.x, dy = a.y - was.y;
@@ -764,16 +780,40 @@
         let finalAnchors = layout.captureCommentAnchors(rebuilt, layoutOpts);
         layout.applyCommentAnchors(rebuilt, finalAnchors, layoutOpts);
 
+        // What the layout placed or moved goes onto the grid; what the edit
+        // left where it was stays there. The snap comes before collisions are
+        // settled, so it cannot leave anything touching, and settling pushes
+        // in whole squares; what a push moved off its old place is snapped in
+        // turn, until nothing moves.
+        function snapMoved() {
+            let unmoved = {};
+            rebuilt.forEach(function(n) {
+                let b = n && n.id && baseIds[n.id] && basePositions[n.id];
+                if (b && n.x === b.x && n.y === b.y) unmoved[n.id] = true;
+            });
+            layout.snapToGrid(rebuilt, Object.assign({}, layoutOpts, { keep: unmoved }));
+        }
+
         // The invariant, checked on the result rather than trusted to the
         // passes above, and the last thing that moves anything apart: nothing
         // sits on a node, a caption or a box it does not belong to.
-        layout.settleCollisions(rebuilt, layoutOpts);
+        function settle() {
+            for (let round = 0; round < 8; round++) {
+                snapMoved();
+                if (layout.settleCollisions(rebuilt, layoutOpts).length === 0) break;
+            }
+        }
+        settle();
 
         // Last: the canvas edges. A box hangs one padding further out than
         // its members, so this is the pass that sees it — on both edges, so
-        // the gap above the flow is the gap beside it. One shared shift, so
-        // nothing it moves can start overlapping.
+        // the gap above the flow is the gap beside it. One shared shift, in
+        // whole squares, so nothing it moves can start overlapping; what it
+        // moved off the grid goes onto it like everything else.
+        let probe = rebuilt.find(function(n) { return n && typeof n.x === 'number' && typeof n.y === 'number'; });
+        let probeAt = probe && { x: probe.x, y: probe.y };
         layout.ensureCanvasMargins(rebuilt, layoutOpts);
+        if (probe && (probe.x !== probeAt.x || probe.y !== probeAt.y)) settle();
         return rebuilt;
     }
 

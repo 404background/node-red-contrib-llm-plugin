@@ -13,13 +13,14 @@
     'use strict';
 
     // `spacingY`, `componentGap` and `edgeGap` are EDGE-TO-EDGE clearances
-    // (visible whitespace), not centre-to-centre distances; the pitch is
-    // `nodeHeight + gap`. See docs/{en,jp}/layout.md for the spacing rule.
+    // (visible whitespace), not centre-to-centre distances; the vertical
+    // pitch is `nodeHeight + gap` rounded up to the grid. See
+    // docs/{en,jp}/layout.md — Everything on the grid.
     let LAYOUT_DEFAULTS = {
         startX:        60,
         startY:        60,
         spacingY:      40,    // 2 grid squares between stacked node edges (within a flow)
-        componentGap:  80,    // 4 grid squares between disconnected flow components
+        componentGap:  60,    // 3 grid squares between disconnected flow components
         edgeGap:       40,    // 2 grid squares between adjacent node edges (horizontal)
         minNodeWidth: 100,
         nodeHeight:    30,    // Node-RED's standard rendered node height
@@ -27,7 +28,7 @@
         topMargin:     20,    // min clearance between canvas top (y=0) and the topmost node edge
         leftMargin:    20,    // the same on the left edge (x=0)
         groupPadding:  25,    // the editor's own clearance between a group's box and its members
-        groupGap:      30     // box to box: componentGap between their members, less both paddings
+        groupGap:      10     // box to box: componentGap between their members, less both paddings
     };
 
     // Default predicate when caller doesn't supply `options.isCanvasNode`.
@@ -217,16 +218,17 @@
 
     // `spacingY` and `gap` are EDGE-TO-EDGE clearances, so each pitch is
     // `nodeHeight + `the clearance. See docs/{en,jp}/layout.md — Defaults.
-    function computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight) {
+    function computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight, gridSize) {
         if (typeof nodeHeight !== 'number') nodeHeight = LAYOUT_DEFAULTS.nodeHeight;
-        let rowPitch = nodeHeight + spacingY;
-        let compStep = nodeHeight + gap;
+        if (typeof gridSize !== 'number') gridSize = LAYOUT_DEFAULTS.gridSize;
+        let rowPitch = gridCeil(nodeHeight + spacingY, gridSize);
+        let compStep = gridCeil(nodeHeight + gap, gridSize);
         // `startY` is the top EDGE of the first row, the way `startX` is the
         // left edge of the first column — the row's centre is half a node
         // further down. They used to mean different things, which is why a
         // flow sat 15px nearer the top of the canvas than its left side, and
         // the group box around it nearer still.
-        startY = startY + nodeHeight / 2;
+        startY = gridCeil(startY + nodeHeight / 2, gridSize);
         let info = {};
         ids.forEach(function(id) {
             let pos = positions[id] || { col: 0, row: 0 };
@@ -311,6 +313,16 @@
 
     function pickOption(opts, key, fallback) {
         return (opts && typeof opts[key] === 'number') ? opts[key] : fallback;
+    }
+
+    // The editor snaps a node's centre y, and its left or right edge, to the
+    // grid; a layout that leaves them anywhere else cannot be lined up by hand.
+    function gridCeil(v, grid) { return grid > 0 ? Math.ceil(v / grid - 1e-9) * grid : v; }
+    function gridRound(v, grid) { return grid > 0 ? Math.round(v / grid) * grid : v; }
+    function rowPitchOf(opts) {
+        return gridCeil(pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight)
+            + pickOption(opts, 'spacingY', LAYOUT_DEFAULTS.spacingY),
+            pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize));
     }
 
     // True if the label contains any non-ASCII char (Japanese, Chinese,
@@ -720,7 +732,8 @@
         let componentGap = pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
         let edgeGap      = pickOption(opts, 'edgeGap',      LAYOUT_DEFAULTS.edgeGap);
         let nodeHeight   = pickOption(opts, 'nodeHeight',   LAYOUT_DEFAULTS.nodeHeight);
-        let rowPitch     = nodeHeight + spacingY;
+        let gridSize     = pickOption(opts, 'gridSize',     LAYOUT_DEFAULTS.gridSize);
+        let rowPitch     = rowPitchOf(opts);
 
         let canvasNodes = (nodes || []).filter(isCanvas);
         if (canvasNodes.length < 2) return nodes;
@@ -747,7 +760,7 @@
             return getNodeWidth(byId[id], opts);
         }, startX, edgeGap);
 
-        let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight);
+        let compOffsets = computeComponentYOffsets(ids, positions, startY, spacingY, componentGap, nodeHeight, gridSize);
 
         // No grid snap on the derived centre: left edges are what align, so
         // each is kept exactly and the centre derived from it.
@@ -804,7 +817,8 @@
         let bandGap = (typeof opts.bandGap === 'number')
             ? opts.bandGap
             : pickOption(opts, 'componentGap', LAYOUT_DEFAULTS.componentGap);
-        let rowPitch = nodeHeight + spacingY;
+        let gridSize = pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize);
+        let rowPitch = rowPitchOf(opts);
 
         existingIdMap = existingIdMap || {};
         basePositions = basePositions || {};
@@ -857,17 +871,17 @@
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
                 n.x = maxPredRight + edgeGap + nHalf;
-                n.y = (avgPredY + avgSuccY) / 2;
+                n.y = gridRound((avgPredY + avgSuccY) / 2, gridSize);
             } else if (preds.length > 0) {
                 let maxPredRight = Math.max.apply(null, preds.map(function(id) { return nodeRightEdge(byId[id], opts); }));
                 let avgPredY = preds.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / preds.length;
                 n.x = maxPredRight + edgeGap + nHalf;
-                n.y = avgPredY;
+                n.y = gridRound(avgPredY, gridSize);
             } else {
                 let minSuccLeft = Math.min.apply(null, succs.map(function(id) { return nodeLeftEdge(byId[id], opts); }));
                 let avgSuccY = succs.reduce(function(s, id) { return s + (byId[id].y || 0); }, 0) / succs.length;
                 n.x = minSuccLeft - edgeGap - nHalf;
-                n.y = avgSuccY;
+                n.y = gridRound(avgSuccY, gridSize);
             }
             positioned[n.id] = true;
             return true;
@@ -1083,15 +1097,12 @@
                         if (oBox.minY < topMinY) topMinY = oBox.minY;
                     }
                     if (candidates.length === 0) continue;
-                    // `dy` is the exact amount needed to leave `bandGap` of
-                    // edge-to-edge clearance between the modifier's bottom
-                    // and the topmost candidate's top. We apply it as-is
-                    // (no snap) so the clearance is exactly `bandGap`
-                    // regardless of where modifier's bbox falls relative
-                    // to the grid.
+                    // At least `bandGap` of edge-to-edge clearance between
+                    // the modifier's bottom and the topmost candidate's top,
+                    // in whole grid squares so the candidates stay on it.
                     let dy = (mBox.maxY + bandGap) - topMinY;
                     if (dy <= 0) continue;
-                    let dyR = dy;
+                    let dyR = gridCeil(dy, gridSize);
                     candidates.forEach(function(oid) {
                         nodesByComp[oid].forEach(function(n) {
                             // Anchored captions shift with their component
@@ -1164,7 +1175,7 @@
             });
             let orphanPositions = layoutNodes(orphanIds, orphanOut, orphanIn);
             let orphanOffsets = computeComponentYOffsets(
-                orphanIds, orphanPositions, orphanStartY, spacingY, bandGap, nodeHeight
+                orphanIds, orphanPositions, orphanStartY, spacingY, bandGap, nodeHeight, gridSize
             );
 
             // Per-predecessor left-edge placement (same idea as
@@ -1500,6 +1511,7 @@
         };
         let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let isCanvasNode = resolveCanvasFilter(opts);
 
         let all = (nodes || []).filter(function(n) {
@@ -1684,7 +1696,7 @@
                 mover = aIsUpper ? ub : ua;
                 delta = (aIsUpper ? ea : eb).bottom + clear - (aIsUpper ? eb : ea).top;
             }
-            if (delta <= 0) delta = nodeHeight + spacingY;
+            delta = (delta <= 0) ? rowPitchOf(opts) : gridCeil(delta, gridSize);
             let stays = mover.indexOf(a) === -1 ? a : b;
             mover = mover.concat(routingAlong(mover, routing, byId).filter(function(r) { return r !== stays; }));
             mover.forEach(function(n) { n.y = n.y + delta; moved[n.id] = true; });
@@ -1704,6 +1716,7 @@
         let leftMargin = pickOption(opts, 'leftMargin', LAYOUT_DEFAULTS.leftMargin);
         let topMargin  = pickOption(opts, 'topMargin',  LAYOUT_DEFAULTS.topMargin);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
 
         let positioned = (nodes || []).filter(function(n) {
             return n && typeof n.x === 'number' && typeof n.y === 'number';
@@ -1721,8 +1734,8 @@
         // Both edges measured the same way, so the gap the user sees above the
         // flow is the gap they see to the left of it. Only ever outwards: the
         // margins are a floor, not a position.
-        let dx = (minLeft < leftMargin) ? leftMargin - minLeft : 0;
-        let dy = (minTop < topMargin) ? topMargin - minTop : 0;
+        let dx = (minLeft < leftMargin) ? gridCeil(leftMargin - minLeft, gridSize) : 0;
+        let dy = (minTop < topMargin) ? gridCeil(topMargin - minTop, gridSize) : 0;
         if (!dx && !dy) return nodes;
         positioned.forEach(function(n) {
             n.x = n.x + dx;
@@ -1731,8 +1744,45 @@
         return nodes;
     }
 
+    // Every node onto the grid the way the editor snaps one: centre y, left
+    // edge x. The passes above only ever step in whole squares, so this moves
+    // only what arrived off the grid (placed by an older layout, or by hand).
+    // `options.keep` ({ id: true }) names what this edit left where it was,
+    // which stays put. Boxes are refitted to what moved. A junction is a
+    // routing point, and stays where its wires put it.
+    function snapToGrid(nodes, options) {
+        let opts = options || {};
+        let gridSize = pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize);
+        if (!(gridSize > 0)) return nodes;
+        let isCanvas = resolveCanvasFilter(opts);
+        let keep = opts.keep || {};
+        let placed = (nodes || []).filter(function(n) {
+            return n && typeof n.x === 'number' && typeof n.y === 'number' &&
+                n.type !== 'group' && n.type !== 'junction' && isCanvas(n);
+        });
+        // A caption keeps the left edge of the node it heads.
+        let anchors = captureCommentAnchors(placed, opts);
+        let shift = {};
+        let moved = false;
+        function snap(n) {
+            if (keep[n.id]) { shift[n.id] = { x: 0, y: 0 }; return; }
+            let half = getNodeWidth(n, opts) / 2;
+            // A caption rounds up, away from what it heads below it.
+            let y = (n.type === 'comment') ? Math.floor(n.y / gridSize) * gridSize : gridRound(n.y, gridSize);
+            let d = { x: gridRound(n.x - half, gridSize) + half - n.x, y: y - n.y };
+            if (anchors[n.id] && shift[anchors[n.id].targetId]) d.x = shift[anchors[n.id].targetId].x;
+            shift[n.id] = d;
+            if (d.x || d.y) { n.x += d.x; n.y += d.y; moved = true; }
+        }
+        placed.filter(function(n) { return n.type !== 'comment'; }).forEach(snap);
+        placed.filter(function(n) { return n.type === 'comment'; }).forEach(snap);
+        if (moved) fitGroups(nodes, opts);
+        return nodes;
+    }
+
     return {
         LAYOUT_DEFAULTS:              LAYOUT_DEFAULTS,
+        snapToGrid:                   snapToGrid,
         estimateNodeWidth:            estimateNodeWidth,
         getNodeWidth:                 getNodeWidth,
         layoutNodes:                  layoutNodes,
