@@ -73,6 +73,31 @@
         if (typeof fn === 'function') newChatListeners.push(fn);
     };
 
+    // Opening a chat hands back the flows it was working on: the ones last
+    // selected in it, else the ones its last reply was aimed at.
+    let chatLoadedListeners = [];
+    ChatManager.onChatLoaded = function(fn) {
+        if (typeof fn === 'function') chatLoadedListeners.push(fn);
+    };
+    function flowIdsOf(chat) {
+        if (Array.isArray(chat.flowIds) && chat.flowIds.length > 0) return chat.flowIds.slice();
+        let msgs = chat.messages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            let ids = msgs[i] && msgs[i].meta && msgs[i].meta.targetFlowIds;
+            if (Array.isArray(ids) && ids.length > 0) return ids.slice();
+        }
+        return null;
+    }
+
+    // The selection is kept on the chat, so it comes back with it. Saved
+    // with the chat's next message; a chat with messages is saved now.
+    ChatManager.setFlowIds = function(ids) {
+        let chat = chatHistory[ChatManager.getCurrentChatId()];
+        if (!chat) return;
+        chat.flowIds = Array.isArray(ids) ? ids.slice() : [];
+        if (chat.messages && chat.messages.length > 0) ChatManager.saveChatToServer(currentChatId);
+    };
+
     ChatManager.startNewChat = function() {
         currentChatId = generateChatId();
         chatHistory[currentChatId] = newChatObject(currentChatId);
@@ -242,6 +267,10 @@
         clearChatArea();
         (chat.messages || []).forEach(function(msg) {
             LLMPlugin.UI.addMessageToUI(msg.content, msg.isUser, msg);
+        });
+        let flowIds = flowIdsOf(chat);
+        chatLoadedListeners.forEach(function(fn) {
+            try { fn(chatId, flowIds); } catch (e) { /* ignore */ }
         });
     };
 

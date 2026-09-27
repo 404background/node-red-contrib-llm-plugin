@@ -375,8 +375,21 @@ templates in `llm_plugin.html`; `initializeClientApp()` wires events:
   (`ChatManager.onNewChat` → `selectActiveFlowOnly`). The flow context
   belongs to the conversation: it is the scope every edit may write to
   and the scope each checkpoint covers, so inheriting a selection made
-  for an earlier question silently widens both. Loading an existing
-  chat does not touch the selection.
+  for an earlier question silently widens both.
+- **Opening a chat brings back its flows** (`ChatManager.onChatLoaded` →
+  `restoreChatFlows`): the selection is kept on the chat (`chat.flowIds`,
+  written by `ChatManager.setFlowIds` on every change), and a chat saved
+  before that falls back to the flows its last reply was aimed at. A chat
+  that names none leaves the selection alone. The editor opens the latest
+  chat on start, so a restart comes back to the flows last worked on.
+- **Nothing is pruned before `flows:loaded`.** The editor adds the tabs one
+  at a time while it loads (`flows:add` per tab), so pruning on the first
+  of them dropped every other saved flow and saved the empty result: the
+  sidebar started with no flow at all. Until then there is no open flow
+  either, so a new chat started that early (`wantActiveFlow`) and a start
+  with nothing saved both take the open flow when `flows:loaded` arrives.
+  A selection whose flows were all deleted becomes the open flow rather
+  than no context.
 - **Session preferences** (browser `localStorage`): model input
   (`llm-plugin-last-model`), mode dropdown (`llm-plugin-last-mode`),
   and flow selection (`llm-plugin-selected-flows`) are restored on

@@ -96,6 +96,11 @@
         // even before RED is fully ready.
         let selectedFlowIds = {};
         let selectionInitialized = false;
+        // The editor adds the tabs one by one while it loads the flows, so
+        // until `flows:loaded` a tab missing from the list may just not be
+        // there yet: nothing is pruned, and "the open flow" is not known.
+        let flowsLoaded = false;
+        let wantActiveFlow = false;
 
         // --- Chat history bootstrap ---
         LLMPlugin.ChatManager.loadChatHistoriesFromServer();
@@ -328,10 +333,12 @@
         // the model/mode behaviour. We store the IDs as a JSON array; invalid
         // (e.g., deleted) IDs are filtered out lazily by pruneSelectedFlows.
         function saveSelectedFlows() {
+            let ids = Object.keys(selectedFlowIds);
             try {
-                let ids = Object.keys(selectedFlowIds);
                 localStorage.setItem('llm-plugin-selected-flows', JSON.stringify(ids));
             } catch (e) { /* ignore localStorage errors */ }
+            // The chat keeps it too, so reopening the chat brings it back.
+            LLMPlugin.ChatManager.setFlowIds(ids);
         }
         function loadSelectedFlows() {
             try {
@@ -370,7 +377,7 @@
         // transient "RED not ready yet" state, which reports no workspaces.
         function pruneSelectedFlows(workspaces) {
             let ws = workspaces || listWorkspaces();
-            if (ws.length === 0) return;
+            if (!flowsLoaded || ws.length === 0) return;
             let valid = {};
             ws.forEach(function(w) { valid[w.id] = true; });
             let changed = false;
@@ -380,6 +387,11 @@
                     changed = true;
                 }
             });
+            // Every flow it named is gone: the open flow, not no context.
+            if (changed && Object.keys(selectedFlowIds).length === 0) {
+                let active = getActiveWorkspaceId();
+                if (active) selectedFlowIds[active] = true;
+            }
             if (changed) saveSelectedFlows();
         }
 
@@ -561,14 +573,43 @@
         // Back to just the open flow: the selection is the scope every edit
         // and checkpoint is confined to. See docs/{en,jp}/architecture.md.
         function selectActiveFlowOnly() {
+            let active = flowsLoaded ? getActiveWorkspaceId() : null;
+            // Before the flows are loaded there is no open flow yet.
+            if (!active) { wantActiveFlow = true; return; }
+            wantActiveFlow = false;
+            replaceSelection([active]);
+        }
+
+        // `fromChat`: the ids came from the chat, which need not be told.
+        function replaceSelection(ids, fromChat) {
             Object.keys(selectedFlowIds).forEach(function(id) {
                 delete selectedFlowIds[id];
             });
-            let active = getActiveWorkspaceId();
-            if (active) selectedFlowIds[active] = true;
+            ids.forEach(function(id) { if (typeof id === 'string' && id) selectedFlowIds[id] = true; });
             selectionInitialized = true;
-            saveSelectedFlows();
+            if (fromChat) {
+                try { localStorage.setItem('llm-plugin-selected-flows', JSON.stringify(Object.keys(selectedFlowIds))); }
+                catch (e) { /* ignore localStorage errors */ }
+            } else {
+                saveSelectedFlows();
+            }
             refreshFlowSelector();
+        }
+
+        // A chat that is opened (the latest one, when the editor starts)
+        // brings back the flows it was working on.
+        function restoreChatFlows(chatId, flowIds) {
+            if (!Array.isArray(flowIds) || flowIds.length === 0) return;
+            wantActiveFlow = false;
+            replaceSelection(flowIds, true);
+        }
+
+        // Nothing chosen yet (no saved selection, no chat that names one), or
+        // a new chat started before there was an open flow: the open flow.
+        function onFlowsLoaded() {
+            flowsLoaded = true;
+            if (wantActiveFlow || !selectionInitialized) selectActiveFlowOnly();
+            else refreshFlowSelector();
         }
 
         function initFlowSelector() {
@@ -576,6 +617,9 @@
             updateFlowLabel();
             if (typeof LLMPlugin.ChatManager.onNewChat === 'function') {
                 LLMPlugin.ChatManager.onNewChat(selectActiveFlowOnly);
+            }
+            if (typeof LLMPlugin.ChatManager.onChatLoaded === 'function') {
+                LLMPlugin.ChatManager.onChatLoaded(restoreChatFlows);
             }
             flowToggleBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
@@ -594,6 +638,12 @@
                 RED.events.on('flows:add', refreshFlowSelector);
                 RED.events.on('flows:change', refreshFlowSelector);
                 RED.events.on('flows:remove', refreshFlowSelector);
+                RED.events.on('flows:loaded', onFlowsLoaded);
+            }
+            // Opened after the editor finished loading: nothing more will come.
+            if (window.RED && RED.workspaces && typeof RED.workspaces.count === 'function' &&
+                RED.workspaces.count() > 0 && getActiveWorkspaceId()) {
+                onFlowsLoaded();
             }
         }
 

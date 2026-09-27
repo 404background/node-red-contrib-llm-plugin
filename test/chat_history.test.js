@@ -55,8 +55,29 @@ async function scenarioCancelDeletesNothing() {
   ok(ids.every((id) => !!P.ChatManager.getChatHistory()[id]), 'and every chat is still there');
 }
 
+// The sidebar's flow selection belongs to the chat: opening a chat (the latest
+// one, when the editor starts) hands back the flows it was working on.
+async function scenarioAChatBringsBackItsFlows() {
+  console.log('\nOpening a chat brings back the flows it was working on');
+  const { P, ids } = load(true);
+  const heard = [];
+  P.ChatManager.onChatLoaded((id, flowIds) => heard.push([id, flowIds]));
+  P.ChatManager.loadChat(ids[0]);
+  P.ChatManager.setFlowIds(['tab1', 'tab2']);
+  P.ChatManager.loadChat(ids[1]);
+  P.ChatManager.loadChat(ids[0]);
+  ok(JSON.stringify(heard[2]) === JSON.stringify([ids[0], ['tab1', 'tab2']]),
+    'the flows selected in a chat come back when it is opened (' + JSON.stringify(heard[2]) + ')');
+  ok(heard[1][1] === null, 'a chat that never named a flow hands back none, so the selection stays');
+  const chat = P.ChatManager.getChatHistory()[ids[2]];
+  chat.messages.push({ id: 'm', content: 'r', isUser: false, meta: { targetFlowIds: ['tab3'] } });
+  P.ChatManager.loadChat(ids[2]);
+  ok(JSON.stringify(heard[3][1]) === '["tab3"]', 'an older chat falls back to the flows its last reply was aimed at');
+}
+
 (async () => {
   await scenarioSeveralChatsGoInOneDelete();
+  await scenarioAChatBringsBackItsFlows();
   await scenarioAllIncludingTheOpenChat();
   await scenarioCancelDeletesNothing();
   summary();
