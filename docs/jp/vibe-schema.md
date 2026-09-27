@@ -136,8 +136,10 @@ const flow = Cfg.toNodeRed(schema, { workspace: 'tabId' });
 ```
 {
   description? : string                 // toIntermediate が自動生成
-  nodes        : { <alias>: NodeEntry | null }
-  connections  : Array<ConnEntry | RemoveEntry>
+  nodes        : { <alias>: NodeEntry }
+  connections  : Array<ConnEntry | DeleteEntry>
+  delete?      : alias[]                // 削除するノード
+  reposition?  : alias[]                // 配置し直すノード
 }
 
 NodeEntry = {
@@ -154,7 +156,7 @@ NodeEntry = {
 }
 
 ConnEntry   = { from: alias, to: alias, fromPort?: number }
-RemoveEntry = { remove: { from: alias, to: alias } }
+DeleteEntry = { delete: { from: alias, to: alias } }
 ```
 
 ### メタデータキー(アンダースコア始まり)
@@ -215,15 +217,21 @@ LLM も中身を確認して編集できる。
 ### 編集の意味づけ
 
 インポートは常にマージである。列挙されたノードと接続は、エイリアスで突き合わせて追加または更新し、
-空を指定されたエイリアスは削除し、言及されなかったものはそのまま残す。1つのスキーマの中で、
+`delete` に挙げられたものは削除し、言及されなかったものはそのまま残す。1つのスキーマの中で、
 追加・更新・削除を任意に組み合わせてよい。
 
 ### 削除ディレクティブ
 
 ```json
-{ "nodes": { "inject_old": null } }                                 // ノード削除
-{ "connections": [ { "remove": { "from": "a", "to": "b" } } ] }     // エッジ削除
+{ "delete": ["inject_old"] }                                        // ノード削除
+{ "connections": [ { "delete": { "from": "a", "to": "b" } } ] }     // エッジ削除
 ```
+
+どちらも `delete` と書く。応答はチャットに表示されて人も読むので、`"inject_old": null` では
+何をするのか分からないからである。古い書き方もモデルが書くことがあるので引き続き読む:
+`nodes` でエイリアスに `null`(または `"delete"`)を指定する形、どちらの一覧でも `remove`、
+トップレベルの `delete` に接続を混ぜる形である。内部では、接続の削除はパーサ以降
+`{ remove: { from, to } }` として運ぶ。
 
 **junction と `link in` / `link out` ノードはスキーマに含めない。** これらはユーザーの配線の
 中継で、コンテキストではそれらを通るワイヤをその先への接続として見せる(`A → junction → B` も

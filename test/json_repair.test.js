@@ -326,6 +326,17 @@ function scenarioAnAliasListReadsAsTheMap() {
   ok(nodeRemove && JSON.stringify(nodeRemove.remove) === '["debug_b"]',
     'while a remove of aliases stays a node delete');
 
+  // The prompt teaches `delete`; `null` and `remove` are still read.
+  const taught = schema(JSON.stringify({ delete: ['debug_a'], connections: [{ delete: { from: 'inject_tick', to: 'debug_b' } }] }));
+  ok(taught && JSON.stringify(taught.delete) === '["debug_a"]' && taught.connections[0].remove &&
+     taught.connections[0].remove.to === 'debug_b' && !('delete' in taught.connections[0]),
+    '`delete` lists node deletes, and `{ delete: { from, to } }` in connections is a connection delete');
+  const mixed = schema(JSON.stringify({ delete: ['debug_a', { from: 'inject_tick', to: 'debug_b' }] }));
+  ok(mixed && JSON.stringify(mixed.delete) === '["debug_a"]' && mixed.connections[0].remove.to === 'debug_b',
+    'a connection among the aliases in a top-level `delete` reads as a connection delete');
+  const word = schema(JSON.stringify({ nodes: { debug_a: 'delete', debug_log: { type: 'debug' } } }));
+  ok(word && word.nodes.debug_a === null, '`"debug_a": "delete"` reads as a delete of debug_a');
+
   const aliasNull = schema(JSON.stringify({ nodes: { debug_extra: { alias: null }, debug_log: { type: 'debug' } } }));
   ok(aliasNull && aliasNull.nodes.debug_extra === null && aliasNull.nodes.debug_log.type === 'debug',
     '`"debug_extra": { "alias": null }` reads as a delete of debug_extra');

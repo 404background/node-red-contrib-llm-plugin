@@ -143,7 +143,7 @@ async function aNewNodeTakesItsTypeDefaults() {
 async function deletingANodeRemovesOnlyThatNode() {
   console.log('\nDeleting a node removes that node and nothing else');
   const { res, byId, captured, importedIds } = await apply(
-    'Dropping the logger.\n' + fence({ remove: ['debug_out'] })
+    'Dropping the logger.\n' + fence({ delete: ['debug_out'] })
   );
 
   ok(res && res.ok, 'the edit applied');
@@ -165,7 +165,7 @@ async function rewiringOnlyMovesLinks() {
     'Bypassing the function.\n' + fence({
       connections: [
         { from: 'inject_tick', to: 'debug_out' },
-        { remove: { from: 'inject_tick', to: 'function_shape' } },
+        { delete: { from: 'inject_tick', to: 'function_shape' } },
       ],
     })
   );

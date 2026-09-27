@@ -359,6 +359,18 @@
             return !!c && typeof c === 'object' &&
                 ((typeof c.from === 'string' && typeof c.to === 'string') || (c.remove && typeof c.remove === 'object'));
         }
+        // `{ "delete": { from, to } }` is the connection delete the prompt
+        // teaches; `remove` is how it is carried from here on.
+        function readDelete(c) {
+            if (!c || typeof c !== 'object' || Array.isArray(c) || !c.delete || typeof c.delete !== 'object' || c.remove) return c;
+            let copy = Object.assign({}, c, { remove: c.delete });
+            delete copy.delete;
+            return copy;
+        }
+        if (Array.isArray(parsed)) parsed = parsed.map(readDelete);
+        else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.connections)) {
+            parsed = Object.assign({}, parsed, { connections: parsed.connections.map(readDelete) });
+        }
         function toMap(list) {
             let map = {};
             list.forEach(function(n) {
@@ -415,28 +427,31 @@
             }
         }
         // `"debug_old": { "alias": null }` — the key already is the alias, so
-        // a null alias inside can only mean delete.
+        // a null alias inside can only mean delete; so can `"debug_old": "delete"`.
         if (out && out.nodes && typeof out.nodes === 'object' && !Array.isArray(out.nodes)) {
             Object.keys(out.nodes).forEach(function(k) {
                 let spec = out.nodes[k];
-                if (spec && typeof spec === 'object' && !Array.isArray(spec) &&
-                    Object.prototype.hasOwnProperty.call(spec, 'alias') && spec.alias === null) {
+                if (spec === 'delete' || (spec && typeof spec === 'object' && !Array.isArray(spec) &&
+                    Object.prototype.hasOwnProperty.call(spec, 'alias') && spec.alias === null)) {
                     out = (out === parsed) ? Object.assign({}, out, { nodes: Object.assign({}, out.nodes) }) : out;
                     out.nodes[k] = null;
                 }
             });
         }
-        // A connection delete written at the top level (`remove: { from, to }`)
-        // instead of inside `connections`. A `remove` of alias strings is a
-        // node delete and stays where it is.
-        let rm = out && !Array.isArray(out) && typeof out === 'object' ? out.remove : null;
-        let rmList = Array.isArray(rm) ? rm : (rm ? [rm] : []);
-        if (rmList.length > 0 && rmList.every(function(r) { return isConnection(r) && !r.remove; })) {
+        // A connection delete written at the top level (`delete: { from, to }`)
+        // instead of inside `connections`, alone or among the aliases of
+        // node deletes, which stay where they are.
+        ['delete', 'remove'].forEach(function(key) {
+            let rm = out && !Array.isArray(out) && typeof out === 'object' ? out[key] : null;
+            let rmList = Array.isArray(rm) ? rm : (rm ? [rm] : []);
+            let edges = rmList.filter(function(r) { return isConnection(r) && !r.remove; });
+            if (edges.length === 0 || edges.length + rmList.filter(function(r) { return typeof r === 'string'; }).length !== rmList.length) return;
             out = Object.assign({}, out);
-            delete out.remove;
+            let aliases = rmList.filter(function(r) { return typeof r === 'string'; });
+            if (aliases.length) out[key] = aliases; else delete out[key];
             out.connections = (Array.isArray(out.connections) ? out.connections : [])
-                .concat(rmList.map(function(r) { return { remove: r }; }));
-        }
+                .concat(edges.map(function(r) { return { remove: r }; }));
+        });
         return out;
     }
 

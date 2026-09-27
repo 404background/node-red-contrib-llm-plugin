@@ -210,7 +210,7 @@ reach unmentioned nodes.
 Full import workflow with these guarantees:
 
 1. **Merge semantics** — every import adds/updates listed nodes,
-   deletes aliases mapped to `null`, and leaves everything not mentioned
+   deletes what `delete` names, and leaves everything not mentioned
    alone. Merge is the only apply mode — the schema has no field that
    selects a different one — so one schema can freely combine adds,
    updates, and deletions.
