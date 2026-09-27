@@ -107,7 +107,7 @@ const positions = Layout.layoutNodes(
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` があればそれ、なければ `estimateNodeWidth`。 |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | 縦積みのためのコンポーネントごとの Y オフセット。`spacingY` と `gap` はエッジ間。行ピッチは `nodeHeight + spacingY`、コンポーネントステップは `nodeHeight + gap`。`nodeHeight` のデフォルトは `LAYOUT_DEFAULTS.nodeHeight`。 |
 | `fitGroups(nodes, options?)` | すべてのグループの枠をメンバーに合わせる。[グループの枠](#グループの枠)を参照。 |
-| `separateGroups(nodes, options?)` | グループの枠の左端を揃え、外側のものから `groupGap` 以上離れるまでブロックを押し下げる。`fitGroups` のあとに走る。 |
+| `separateGroups(nodes, options?)` | グループの枠の左端を揃え、外側のもの(枠なら `groupGap`、素のノードならパディング1つ分多く)から離れるまでブロックを押し下げる。`fitGroups` のあとに走る。 |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | 幅が変わったノードの中心を計算し直し、**左端**を元の位置に保つ。動かした ID を返す。 |
 | `ensureCanvasMargins(nodes, options?)` | いちばん上/左の端(枠を含む)がキャンバスの端から `topMargin` / `leftMargin` より近いとき、軸ごとに全体を同じ量だけずらす。 |
 | `settleCollisions(nodes, options?)` | キャンバス上のすべての衝突を解消する。ノードやキャプション同士、枠同士、メンバーでない枠の中のノード。動かした ID を返す。 |
@@ -129,7 +129,7 @@ LAYOUT_DEFAULTS = {
     topMargin:      20,    // キャンバス上端(y=0)と最上端の実体との最小の間隔
     leftMargin:     20,    // 左端(x=0)側も同じ。グループの枠も対象
     groupPadding:   25,    // the editor's own clearance between a group's box and its members
-    groupGap:       40     // clearance between a group's box and whatever is outside it
+    groupGap:       30     // box to box: componentGap between their members, less both paddings
 };
 ```
 
@@ -246,7 +246,7 @@ w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
 - グループはノードとしてはレイアウトしない(`isLayoutNode` が除外する)ので、何かを
   押しのけることはない。裏を返すと、枠同士を離しておくものも何もない。ノードの
   レイアウトが空けるのは**メンバー**の間隔であり、`componentGap`(80)からパディング
-  2つ分を引くと枠と枠の間は 30px しか残らない。さらにグループに入ったコメントが枠を
+  2つ分を引くと枠と枠の間はちょうど `groupGap`(30px)になる。しかしグループに入ったコメントが枠を
   40px 上へ伸ばすので、枠は 10px 重なっていた。`separateGroups` は `fitGroups` の
   あとに走り、枠が外側のものと離れていることを保証する。
 
@@ -266,8 +266,10 @@ w = max(node_width, 20 * ceil((labelTextWidth + 50 + (inputs>0 ? 7 : 0)) / 20))
   それらを同じ列へ引き寄せると、シーケンスが別のシーケンスの上に落ちてしまう。
 - 誰が描いたかに関係なく、縦に積まれた枠はすべて**いちばん左**のシーケンスに揃える。
   キャンバスの余白は、そのあと `ensureCanvasMargins` が全体をまとめて戻す。
-- どの枠も、その外側にあるもの(別の枠でも素のノードでも)から最低 `groupGap`
-  (40 = 2マス)離れた位置に収まる。これは `settleCollisions` の役目で、各枠を中身ごと
+- どの枠も、その外側にあるものから離れた位置に収まる。別の枠からは `groupGap`(30)、
+  素のノードからはパディング1つ分多い 55 である。したがって縦に積まれたシーケンスは、
+  枠の有無にかかわらずメンバー同士で `componentGap`(80 = 4マス)離れ、枠を消しても
+  間隔が広く残ることはない。枠につながる中継は `groupGap` だけ空ける。これは `settleCollisions` の役目で、各枠を中身ごと
   動かすので、ワイヤで噛み合った2つの枠でも引き離せる。
 - **下方向にしか**押さない。したがってこのパスは冪等である。すでに離れているキャンバスは
   何も動かさずに終わり、もう一度走らせてもずり下がらない。
@@ -361,6 +363,10 @@ junction と link ノードはユーザーの配線の中継であり、レイ�
    - 同じ親から枝分かれした兄弟は、その親の右端に余白を足した同じ左端を共有するので、これも揃う。
    - 鎖の下流ノードは**その鎖自身の**幅だけで進んでいくので、並行する別のフローに幅広のラベルが
      あっても、こちらの鎖が右へ引きずられることはない。
+   - そのあと最後の列から順に、各ノードを、つながる先のうち最も近いノードの手前に横の余白
+     ちょうどが空くまで右へ寄せる(左へは動かさない)。幅の違う2つの入力が1つのノードに入る
+     場合も、どちらも余白ちょうどで手前に並ぶ。狭いほうは右揃えになり、その場合は列0の
+     ノードが同じ開始位置を共有しなくなる。どのワイヤも横の余白ちょうどの長さになる。
 5. かたまり同士を、指定した縦の余白ぶんだけ縁と縁を空けて積み上げる。
 6. 各ノードの中心座標を「左端 + 幅の半分」、縦位置を「行番号 × 行ピッチ + 所属かたまりの縦オフセット」
    として確定する。

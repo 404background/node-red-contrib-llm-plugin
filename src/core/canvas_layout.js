@@ -27,7 +27,7 @@
         topMargin:     20,    // min clearance between canvas top (y=0) and the topmost node edge
         leftMargin:    20,    // the same on the left edge (x=0)
         groupPadding:  25,    // the editor's own clearance between a group's box and its members
-        groupGap:      40     // 2 grid squares between a group's box and whatever is outside it
+        groupGap:      30     // box to box: componentGap between their members, less both paddings
     };
 
     // Default predicate when caller doesn't supply `options.isCanvasNode`.
@@ -282,6 +282,24 @@
                     if (r > maxRight) maxRight = r;
                 });
                 leftEdges[key] = maxRight + edgeGap;
+            });
+            // Right-align onto what each node feeds: the narrower of two
+            // inputs to one node would otherwise sit further out than
+            // `edgeGap`. Last column first, so a node's successors are final.
+            let colOf = function(k) { return (positions[k] || { col: 0 }).col; };
+            let succs = {};
+            ordered.forEach(function(key) {
+                (incoming[key] || []).forEach(function(p) {
+                    if (leftEdges[p] === undefined || colOf(key) <= colOf(p)) return;
+                    (succs[p] = succs[p] || []).push(key);
+                });
+            });
+            ordered.slice().reverse().forEach(function(key) {
+                if (!succs[key]) return;
+                let minLeft = Infinity;
+                succs[key].forEach(function(s) { if (leftEdges[s] < minLeft) minLeft = leftEdges[s]; });
+                let target = minLeft - edgeGap - widthOf(key);
+                if (target > leftEdges[key]) leftEdges[key] = target;
             });
         });
         return leftEdges;
@@ -1472,6 +1490,14 @@
     function settleCollisions(nodes, options) {
         let opts = options || {};
         let gap        = pickOption(opts, 'groupGap',   LAYOUT_DEFAULTS.groupGap);
+        let groupPad   = pickOption(opts, 'groupPadding', LAYOUT_DEFAULTS.groupPadding);
+        // Sequences are `componentGap` apart member to member, boxed or not:
+        // a box against a plain node gives back one padding. Routing belongs
+        // to the sequence it serves, so it only keeps the box gap.
+        let boxClear = function(a, b) {
+            let other = a.type === 'group' ? b : a;
+            return (other.type === 'group' || routing[other.id]) ? gap : gap + groupPad;
+        };
         let spacingY   = pickOption(opts, 'spacingY',   LAYOUT_DEFAULTS.spacingY);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let isCanvasNode = resolveCanvasFilter(opts);
@@ -1583,7 +1609,7 @@
                         if (junction && boxed) continue;
                         if (a.type === 'junction' && b.type === 'junction') continue;
                         let ra = rect(a), rb = rect(b);
-                        let clear = boxed ? gap : 0;
+                        let clear = boxed ? boxClear(a, b) : 0;
                         if (ra.right <= rb.left || rb.right <= ra.left) continue;
                         if (ra.bottom + clear <= rb.top || rb.bottom + clear <= ra.top) continue;
                         return { a: a, b: b, boxed: boxed };
@@ -1617,7 +1643,7 @@
             let hit = findCollision();
             if (!hit) break;
             let a = hit.a, b = hit.b;
-            let clear = hit.boxed ? gap
+            let clear = hit.boxed ? boxClear(a, b)
                 : (a.type === 'comment' || b.type === 'comment') ? 0 : spacingY;
             let mover, delta;
             let oa = ownerOf(a), ob = ownerOf(b);

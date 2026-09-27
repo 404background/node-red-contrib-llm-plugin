@@ -46,7 +46,7 @@ function boxHolds(group, members) {
 // asserts is that the shape an LLM actually proposes comes out of the
 // importer with it — the node layout spaces MEMBERS, and a caption that
 // joined a group used to grow its box 10px into the box above.
-const GROUP_GAP = 40;
+const GROUP_GAP = require('../src/core/canvas_layout.js').LAYOUT_DEFAULTS.groupGap;
 
 function boxGaps(groups) {
   const sorted = groups.slice().sort((a, b) => a.y - b.y);

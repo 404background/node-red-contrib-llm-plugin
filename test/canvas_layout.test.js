@@ -408,8 +408,9 @@ describe('Group boxes clear each other by groupGap', function() {
 
     const GAP = Layout.LAYOUT_DEFAULTS.groupGap;
 
-    it('two grid squares is the default (' + GAP + 'px)', function() {
-        assert(GAP === 40, 'groupGap is ' + GAP);
+    it('boxed sequences are componentGap apart member to member (' + GAP + 'px between boxes)', function() {
+        const D = Layout.LAYOUT_DEFAULTS;
+        assert(GAP + 2 * D.groupPadding === D.componentGap, 'groupGap is ' + GAP);
     });
 
     it('boxes that would overlap are pushed apart', function() {
@@ -918,8 +919,9 @@ describe('settleCollisions: nothing this edit placed sits on anything', function
         Layout.settleCollisions(flow, {});
         const A = flow[0], B = flow[2];
         assert(A.y === 0, 'the upper box stayed (' + A.y + ')');
-        assert(B.y >= A.y + A.h + 40, 'the lower one is below it by the gap (' + B.y + ')');
-        assert(flow[3].y === 160, 'and took its member along (' + flow[3].y + ')');
+        const GAP = Layout.LAYOUT_DEFAULTS.groupGap;
+        assert(B.y >= A.y + A.h + GAP, 'the lower one is below it by the gap (' + B.y + ')');
+        assert(flow[3].y === B.y + Layout.LAYOUT_DEFAULTS.groupPadding + 15, 'and took its member along (' + flow[3].y + ')');
     });
 
     it('a push that lands on a third box pushes that one too', function() {
@@ -930,7 +932,8 @@ describe('settleCollisions: nothing this edit placed sits on anything', function
         ];
         Layout.settleCollisions(flow, {});
         const [A, , B, , C] = flow;
-        assert(B.y >= A.y + A.h + 40 && C.y >= B.y + B.h + 40,
+        const GAP = Layout.LAYOUT_DEFAULTS.groupGap;
+        assert(B.y >= A.y + A.h + GAP && C.y >= B.y + B.h + GAP,
             'every box clears the one above (' + [A.y, B.y, C.y].join(',') + ')');
     });
 
@@ -951,7 +954,7 @@ describe('settleCollisions: nothing this edit placed sits on anything', function
         const [A, a1, a2, B] = flow;
         assert(!hits(a1, a2), 'the members no longer overlap');
         assert(A.y + A.h >= rectOf(a2).b, 'the box grew around the one that moved');
-        assert(B.y >= A.y + A.h + 40, 'and the box below was pushed clear (' + B.y + ')');
+        assert(B.y >= A.y + A.h + Layout.LAYOUT_DEFAULTS.groupGap, 'and the box below was pushed clear (' + B.y + ')');
     });
 
     it('an overlap already on the canvas is resolved too', function() {
@@ -1034,6 +1037,48 @@ describe('A long chain stays on one row', function() {
         const pos = Layout.layoutNodes(ids, outgoing, incoming);
         assert(ids.every((id, i) => pos[id].row === 0 && pos[id].col === i),
             'rows ' + ids.map((id) => pos[id].row).join(','));
+    });
+});
+
+// Two inputs of different widths into one node: both wires are edgeGap long,
+// the narrower input right-aligned onto what it feeds.
+describe('Every wire is edgeGap long, even into a merge', function() {
+    it('the narrower of two inputs sits edgeGap before the node it feeds', function() {
+        const flow = [
+            { id: 'w', type: 'inject', z: 'z', name: 'A much wider trigger name', x: 0, y: 0, wires: [['m']] },
+            { id: 'n', type: 'http in', z: 'z', name: 'GET /', url: '/', x: 0, y: 0, wires: [['m']] },
+            { id: 'm', type: 'change', z: 'z', name: 'merge', x: 0, y: 0, wires: [[]] },
+        ];
+        Layout.reflowCanvasNodes(flow, {});
+        const [w, n, m] = flow;
+        const W = (x) => Layout.getNodeWidth(x, {});
+        const gap = (a, b) => (b.x - W(b) / 2) - (a.x + W(a) / 2);
+        assert(gap(w, m) === 40 && gap(n, m) === 40, 'gaps ' + gap(w, m) + ' / ' + gap(n, m));
+    });
+});
+
+// Stacked sequences are componentGap apart member to member, boxed or not.
+describe('Boxed sequences are as far apart as unboxed ones', function() {
+    const D = Layout.LAYOUT_DEFAULTS;
+    const seq = (p, y, g) => [
+        { id: p + '1', type: 'inject', z: 'z', name: p, x: 110, y: y, g: g, wires: [[p + '2']] },
+        { id: p + '2', type: 'debug', z: 'z', name: p + 'd', x: 310, y: y, g: g, wires: [[]] },
+    ];
+    const boxOf = (id, members) => ({ id: id, type: 'group', z: 'z', name: id, nodes: members, x: 0, y: 0, w: 0, h: 0 });
+    it('two boxed sequences: members componentGap apart', function() {
+        const flow = seq('a', 100, 'gA').concat(seq('b', 110, 'gB'),
+            [boxOf('gA', ['a1', 'a2']), boxOf('gB', ['b1', 'b2'])]);
+        Layout.fitGroups(flow, {});
+        Layout.settleCollisions(flow, {});
+        const gapY = flow[2].y - flow[0].y - D.nodeHeight;
+        assert(gapY === D.componentGap, 'member to member ' + gapY);
+    });
+    it('a boxed sequence over a plain one: members componentGap apart', function() {
+        const flow = seq('a', 100, 'gA').concat(seq('b', 110), [boxOf('gA', ['a1', 'a2'])]);
+        Layout.fitGroups(flow, {});
+        Layout.settleCollisions(flow, {});
+        const gapY = flow[2].y - flow[0].y - D.nodeHeight;
+        assert(gapY === D.componentGap, 'member to node ' + gapY);
     });
 });
 

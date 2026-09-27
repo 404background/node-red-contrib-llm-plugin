@@ -108,7 +108,7 @@ line up a stale rectangle instead of the sequence inside it.
 | `getNodeWidth(node, options?)` | `options.getNodeWidth(node)` if provided, else `estimateNodeWidth`. |
 | `computeComponentYOffsets(ids, positions, startY, spacingY, gap, nodeHeight?)` | Y-offset per component for vertical stacking. `spacingY` and `gap` are edge-to-edge; the row pitch is `nodeHeight + spacingY` and the component step is `nodeHeight + gap`. `nodeHeight` defaults to `LAYOUT_DEFAULTS.nodeHeight`. |
 | `fitGroups(nodes, options?)` | Fit every group box to its members. See [Group boxes](#group-boxes). |
-| `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it by `groupGap`. Runs after `fitGroups`. |
+| `separateGroups(nodes, options?)` | Line the boxes up and push blocks apart until every group box clears what is outside it (`groupGap` from a box, one padding more from a plain node). Runs after `fitGroups`. |
 | `keepLeftEdges(nodes, widthsBefore, options?)` | Re-centre nodes whose width changed so their LEFT edge is where it was. Returns the ids it moved. |
 | `ensureCanvasMargins(nodes, options?)` | Slide everything by one shared delta per axis when the topmost or leftmost edge — a box included — is nearer the canvas edge than `topMargin` / `leftMargin`. |
 | `settleCollisions(nodes, options?)` | Resolve every collision on the canvas: node or caption on node, box on box, node inside a foreign box. Returns the ids it moved. |
@@ -130,7 +130,7 @@ LAYOUT_DEFAULTS = {
     topMargin:      20,    // min clearance between the canvas top (y=0) and the topmost edge
     leftMargin:     20,    // the same on the left edge (x=0), boxes included
     groupPadding:   25,    // the editor's own clearance between a group's box and its members
-    groupGap:       40     // clearance between a group's box and whatever is outside it
+    groupGap:       30     // box to box: componentGap between their members, less both paddings
 };
 ```
 
@@ -259,9 +259,9 @@ behind. `fitGroups` runs after the layout passes and settles it:
   bigger than its contents cannot be lined up or spaced by what is in it.
 - Groups are not laid out as nodes (`isLayoutNode` excludes them), so they never
   displace anything — which also means nothing keeps two boxes apart. The node
-  layout spaces MEMBERS: `componentGap` (80) minus two paddings leaves 30px
-  between two boxed sequences, and a caption that joined a group grows its box
-  40px further up, so the boxes overlapped by 10px. `separateGroups` runs after
+  layout spaces MEMBERS: `componentGap` (80) minus two paddings leaves exactly
+  `groupGap` (30px) between two boxed sequences, but a caption that joined a
+  group grows its box 40px further up, so the boxes overlapped by 10px. `separateGroups` runs after
   `fitGroups` and is the guarantee that a box clears what is outside it.
 
 ### `separateGroups` — lining the boxes up, and keeping them apart
@@ -282,9 +282,11 @@ behind. `fitGroups` runs after the layout passes and settles it:
 - Every stacked box is aligned, whoever drew it, to the **leftmost** sequence.
   The canvas margin is restored afterwards by `ensureCanvasMargins`, for
   everything at once.
-- Every box ends up at least `groupGap` (40, two grid squares) from anything
-  outside it, whether that is another box or a plain node. That is
-  `settleCollisions`' job: it moves each box with everything it holds, so two
+- Every box ends up clear of anything outside it: `groupGap` (30) from another
+  box and one padding more (55) from a plain node, so stacked sequences are
+  `componentGap` (80, four grid squares) apart member to member whether they
+  are boxed or not — removing a box does not leave a wider gap behind. Routing
+  serving a box keeps only `groupGap`. That is `settleCollisions`' job: it moves each box with everything it holds, so two
   boxes interlocked by a wire are still pulled apart.
 - Pushes only ever go **down**, so the pass is idempotent: a canvas that
   already clears settles with nothing moved, and running it again does not
@@ -397,6 +399,11 @@ in the `nodes` map.
      `rightEdge + edgeGap`, so they line up too.
    - Downstream nodes in a chain advance by THIS chain's widths only, so
      a wide label in a parallel flow does not drag this chain right.
+   - Then, last column first, each node moves right until it sits
+     `edgeGap` before the nearest node it feeds (never left). Two inputs of
+     different widths into one node thus both end `edgeGap` before it: the
+     narrower one is right-aligned, and column-0 nodes no longer share
+     `startX` in that case. Every wire is `edgeGap` long.
 5. `computeComponentYOffsets` stacks components with `componentGap` of
    edge-to-edge clearance (component step = `nodeHeight + componentGap`).
 6. `node.x = leftEdge + width(node) / 2`,
