@@ -614,6 +614,21 @@ function createLLMPluginServer(RED) {
         serveFile(res, markedPath, 'application/javascript; charset=utf-8');
     });
 
+    // DOMPurify, handed to the plugin alone: its UMD build would otherwise
+    // replace the editor's own global `DOMPurify`, which red.js relies on.
+    RED.httpAdmin.get('/llm-plugin/vendor/purify.js', function(req, res) {
+        let source;
+        try {
+            let dist = path.dirname(require.resolve('dompurify'));
+            source = fs.readFileSync(path.join(dist, 'purify.min.js'), 'utf8');
+        } catch (error) {
+            return res.status(404).send('/* purify.js not available */');
+        }
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        res.send('(function() { var module = { exports: {} }, exports = module.exports;\n' + source +
+            '\n;window.LLMPlugin = window.LLMPlugin || {}; window.LLMPlugin.DOMPurify = module.exports; })();\n');
+    });
+
     RED.httpAdmin.get('/llm-plugin/styles.css', function(req, res) {
         serveFile(res, path.join(__dirname, '..', 'llm-plugin_styles.css'), 'text/css; charset=utf-8');
     });

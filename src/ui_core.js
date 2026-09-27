@@ -8,18 +8,40 @@
     let Parser = window.LLMPlugin.LLMJsonParser;
     let escapeHtml = Common.escapeHtml;
 
-    // Messages render inside the editor, which holds admin privileges. URLs
-    // are resolved through the DOM, not matched by regex — entity encoding
-    // defeats a regex. See docs/{en,jp}/architecture.md — Security measures.
-    let SAFE_URL_SCHEMES = { 'http:': 1, 'https:': 1, 'mailto:': 1, 'tel:': 1 };
+    // Messages render inside the editor, which holds admin privileges, so the
+    // HTML marked produces goes through DOMPurify (the plugin's own copy)
+    // with only what Markdown needs. See docs/{en,jp}/architecture.md —
+    // Security measures.
+    let PURIFY_CONFIG = {
+        ALLOWED_TAGS: ['p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'del', 's',
+            'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'a', 'table', 'thead', 'tbody', 'tr', 'th',
+            'td', 'input', 'span'],
+        ALLOWED_ATTR: ['href', 'title', 'class', 'start', 'align', 'type', 'checked', 'disabled'],
+        // Links to http(s), mailto and tel, and relative ones; nothing else.
+        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i
+    };
+    let purifyReady = false;
+    function purifier() {
+        let purify = window.LLMPlugin.DOMPurify;
+        if (!purify || typeof purify.sanitize !== 'function') return null;
+        if (!purifyReady) {
+            purify.addHook('afterSanitizeAttributes', function(node) {
+                if (node.tagName === 'A') node.setAttribute('rel', 'noopener noreferrer');
+            });
+            purifyReady = true;
+        }
+        return purify;
+    }
+
+    // A Markdown image becomes a link: rendering it would fetch the URL, and
+    // a reply steered by text in the flow can put the flow's contents in that
+    // URL. A link sends nothing until it is clicked. Done in an inert
+    // document, before anything could load. Null without DOMPurify: the
+    // caller then shows the reply as plain text.
     function sanitizeRenderedHtml(html) {
-        // Inert document, not innerHTML on a live element: the allowlist below
-        // must run before anything can be fetched. There is deliberately no
-        // fallback — the only one available is the very thing this avoids.
+        let purify = purifier();
+        if (!purify) return null;
         let holder = new DOMParser().parseFromString(html, 'text/html').body;
-        // A Markdown image becomes a link: rendering it would fetch the URL,
-        // and a reply steered by text in the flow can put the flow's contents
-        // in that URL. A link sends nothing until it is clicked.
         holder.querySelectorAll('img').forEach(function(img) {
             let a = holder.ownerDocument.createElement('a');
             let src = img.getAttribute('src') || '';
@@ -27,17 +49,7 @@
             a.setAttribute('href', src);
             img.replaceWith(a);
         });
-        // Anchors: keep the text, drop an unsafe href (relative/#/http(s)
-        // resolve to http:/https: and are allowed).
-        holder.querySelectorAll('a[href]').forEach(function(a) {
-            let scheme = '';
-            try { scheme = (a.protocol || '').toLowerCase(); } catch (e) { scheme = ''; }
-            if (!SAFE_URL_SCHEMES[scheme]) a.removeAttribute('href');
-            a.setAttribute('rel', 'noopener noreferrer');
-        });
-        // Nothing else Markdown produces loads a resource.
-        holder.querySelectorAll('[src]').forEach(function(el) { el.removeAttribute('src'); });
-        return holder.innerHTML;
+        return purify.sanitize(holder.innerHTML, PURIFY_CONFIG);
     }
 
     // Raw HTML in a reply is text, not markup. Escaping it here rather than in
@@ -70,11 +82,13 @@
             let renderer = markdownRenderer();
             let html = renderer ? marked.parse(raw, { renderer: renderer })
                                 : marked.parse(raw.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
-            return sanitizeRenderedHtml(html);
+            let safe = sanitizeRenderedHtml(html);
+            if (safe !== null) return safe;
         }
 
         return escapeHtml(text);
     }
+    UI.formatMessage = formatMessage;
 
     // Focus a node the way the Debug sidebar does; config nodes have no
     // position, so they open their dialog instead. Best effort throughout.

@@ -39,7 +39,7 @@ Editor sidebar (vibe_ui)  ──Send──►  /llm-plugin/generate  ──►  
 
 ```
 llm_plugin.js           Node-RED プラグインのエントリポイント — server.js を読み込む
-llm_plugin.html         サイドバー + 設定の HTML テンプレート、marked.js の読み込み
+llm_plugin.html         サイドバー + 設定の HTML テンプレート、marked.js と DOMPurify の読み込み
 llm-plugin_styles.css   全プラグイン CSS
 docs/                   全開発者ドキュメント(このフォルダ) — en/ + jp/
 src/
@@ -96,6 +96,7 @@ common → canvas_layout → flow_converter_core → llm_json_parser
 | GET | `/llm-plugin/checkpoints/:id` | read | 保存済みチェックポイントの読み込み |
 | POST | `/llm-plugin/client-log` | write | ブラウザ側で起きた失敗を Node-RED のログへ報告 |
 | GET | `/llm-plugin/vendor/marked.js` | **なし** | 同梱の marked.js を提供(オフライン Markdown 描画) |
+| GET | `/llm-plugin/vendor/purify.js` | **なし** | 同梱の DOMPurify を `LLMPlugin.DOMPurify` として提供(エディタのグローバル `DOMPurify` には触れない) |
 | GET | `/llm-plugin/styles.css` | **なし** | プラグインスタイルシートの提供 |
 | GET | `/llm-plugin/src/<file>` | **なし** | `client.js` が読み込むクライアントモジュールの提供(1ファイル1ルート) |
 
@@ -301,7 +302,7 @@ function ノードのコード中に書かれた `//` は消えない。Agent �
 |-----|---------|
 | `addMessageToUI(content, isUser, messageMeta?)` | メッセージ本体とインポートのボタンを描画する。アシスタントの発言にはモード・モデル・所要秒数のバッジを添え、文中のノード名をクリック可能にする処理も併せて走らせる。最後に `refreshRetryButton()` を呼ぶ。 |
 | `refreshRetryButton()` | 再送ボタンを1つだけ、チャット欄の末尾のメッセージに置き直す(他にあれば取り除く)。再送は常に**直前のユーザープロンプト**を送り直すので、古いメッセージに付いたボタンは押したときの動きを偽ることになる。描画時ではなくこの一箇所で配置を決めているのは、履歴から読み直したチャット(以前はボタンが1つも出なかった)、`Error: …` の応答、ユーザーが停止した回にも同じようにボタンを行き渡らせるためである。`Generating...` の仮置きが末尾にある間は、まだ再送するものがないので置かない。`addMessageToUI` の末尾、仮置きに印を付けた直後、そしてリクエストの `finally`(停止すると仮置きだけが消えて応答が増えないため)から呼ぶ。 |
-| `formatMessage(text)` | Markdown として描画したうえで、URL の scheme を検査する。生の HTML を無効化するのはレンダラ側(`html()` でエスケープ)であり、元のテキストの山カッコを先に潰すやり方はやめた。先に `&lt;` にしてしまうと、コードブロックの中で marked がもう一度エスケープし、読む人の画面に `&lt;` がそのまま出るためである。応答が JSON だけのときは、`language-json` のコードブロック1つとして渡す。字下げされた行は散文ではないからである。 |
+| `formatMessage(text)` | Markdown として描画したうえで、DOMPurify で無害化する(DOMPurify が無ければエスケープしたテキストとして出す)。生の HTML を無効化するのはレンダラ側(`html()` でエスケープ)であり、元のテキストの山カッコを先に潰すやり方はやめた。先に `&lt;` にしてしまうと、コードブロックの中で marked がもう一度エスケープし、読む人の画面に `&lt;` がそのまま出るためである。応答が JSON だけのときは、`language-json` のコードブロック1つとして渡す。字下げされた行は散文ではないからである。 |
 | `collapseJsonBlocks(container)` | JSON のコードブロックを `<details class="json-collapsible">` に畳み、`Vibe Schema JSON` / `Flow JSON (n nodes)` / `JSON` のラベルを付ける。スキーマの `description` は畳みの外に散文として引き上げる。ブロックの読み取りは `LLMJsonParser.parseJsonBlock` なので、インポート側が修復した応答も畳める。その場合はラベルに `(repaired)` を付ける。畳んだ中身はモデルが送ってきた文字ではなく、その修復後の読み方だからである。`json` として囲まれていて、まったく読めないブロックも畳む(`JSON (could not be read)`)。モデルが壊した応答こそ、読む人が一番どかしたいものである。 |
 | `annotateNodeReferences(rootEl, targetFlowIds?)` | 応答中のノード名をクリック可能にする2段構えの走査。**1段目**は、バッククォートで囲まれた語をノード ID に解決し、当たったものをジャンプ用の要素に差し替える(コードブロック内は対象外)。**2段目**は残りの地の文を走査し、既知のエイリアス(3文字以上)と完全一致する語を拾う。LLM がバッククォートを付け忘れた言及を救うためである。単純な名前も複合的な名前も対象になる。長い候補から順に、かつ単語境界付きで照合するので、長い名前がその一部と同じ短い名前に負けることはない。タブは対象外、config ノードは対象に含め、クリックすると設定ダイアログが開く。対象フローが渡された場合、エイリアスの索引は LLM が見たのとまったく同じエクスポートから作り直す。こうしないと、同種ノードが複数あるときの連番が別のノードを指してしまう。渡されなければキャンバス上の全ノードから作る。システムプロンプト側でも LLM にノード名をバッククォートで囲ませているので、実際には1段目が主経路になる。 |
 | `focusCanvasNode(nodeId)` | Debug サイドバーと同じ操作感でノードを指し示す。そのノードのタブへ切り替え、ノードを一時的に光らせ、ビューポートを中央に寄せ、再描画をかけ、約 2.5 秒後に光らせるのをやめる。config ノードはキャンバス上に位置を持たないので、代わりに設定ダイアログを開く。すでに削除済みのノードなら、その旨を通知する。 |
@@ -416,7 +417,7 @@ messages[1] = { role: "user", content: <user prompt> }
   `needsPermission` を付けているだけで、後から足したものは同じことをしない限り
   素通しになる。`adminAuth` が未設定なら `needsPermission` は何もしないので、
   単独利用の環境の挙動は従来どおり。
-  静的アセットのルート(marked.js、スタイルシート、クライアントモジュール)は未認証の
+  静的アセットのルート(marked.js、DOMPurify、スタイルシート、クライアントモジュール)は未認証の
   まま残す。`<script>` / `<link>` タグはヘッダを送れないためである。各ルートが配るのは
   決まった1ファイルだけで、クライアントモジュールは `client.js` が読み込む一覧と
   一致する。同じ `src/` にあるサーバ側モジュールは配らない(一覧の一致は
@@ -427,12 +428,16 @@ messages[1] = { role: "user", content: <user prompt> }
   先に潰す方式はやめた。コードブロックに含まれる実体参照を二重にエスケープしてしまう
   副作用があったためである。Markdown の**画像はリンクに置き換える**。描画すればその URL を
   取得してしまい、フロー内のテキストに誘導された応答なら、その URL にフローの中身を
-  載せられるからである。リンクならクリックされるまで何も送らない。そのあと
-  `sanitizeRenderedHtml` が各 `href` を**不活性な DOM 上で解決**し、
-  `http(s)` / `mailto:` / `tel:` 以外を落とす。正規表現ではなく DOM で解決するからこそ、
-  実体参照で書かれた `javascript:` も素の綴りと同じに見える。フォールバック経路は
-  意図的に持たない。用意できる唯一のフォールバックが、まさにこれが避けている
-  `innerHTML` だからである。
+  載せられるからである。リンクならクリックされるまで何も送らない。この置き換えは、何かが
+  読み込まれる前に不活性な文書の上で行う。そのあと marked が出した HTML を **DOMPurify** に
+  通す。許すのは Markdown に必要なタグと属性だけで、リンク先は `http(s)` / `mailto:` /
+  `tel:` か相対 URL に限り、各リンクに `rel="noopener noreferrer"` を付ける。DOMPurify は
+  解析後の属性値を見るので、実体参照で書かれた `javascript:` も素の綴りと同じに扱われる。
+  DOMPurify はプラグインが自分の依存(`dompurify`)から配り、`LLMPlugin.DOMPurify` になる
+  ように包む。UMD 版をそのまま読み込むと、red.js が使うエディタのグローバル `DOMPurify` を
+  別のバージョンで、しかもこのプラグインのフック付きで置き換えてしまうからである。
+  DOMPurify が無いときは応答をエスケープしたテキストとして出し、手書きの代替処理は持たない。
+  `test/reply_rendering.test.js` が、エディタが読み込むスクリプトを jsdom 上で動かして確かめる。
 - API キー(OpenAI と Custom エンドポイント)は AES-256-GCM で暗号化し、
   `<userDir>/llm-plugin/credentials.json` に保存する。フローの認証情報ファイルではなく
   自前のファイルに置くのは、デプロイ時の認証情報クリーンアップの対象になって消されない

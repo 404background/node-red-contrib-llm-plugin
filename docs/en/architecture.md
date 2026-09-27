@@ -41,7 +41,7 @@ the module reference for each file.
 
 ```
 llm_plugin.js           Node-RED plugin entry point — loads server.js
-llm_plugin.html         Sidebar + settings HTML templates, marked.js include
+llm_plugin.html         Sidebar + settings HTML templates, marked.js and DOMPurify includes
 llm-plugin_styles.css   All plugin CSS
 docs/                   All developer docs (this folder) — en/ + jp/
 src/
@@ -99,6 +99,7 @@ everything above. All modules use the IIFE pattern and communicate via
 | GET | `/llm-plugin/checkpoints/:id` | read | Load saved checkpoint |
 | POST | `/llm-plugin/client-log` | write | Report a client-side failure into the Node-RED log |
 | GET | `/llm-plugin/vendor/marked.js` | **none** | Serve the bundled marked.js (offline Markdown rendering) |
+| GET | `/llm-plugin/vendor/purify.js` | **none** | Serve the bundled DOMPurify as `LLMPlugin.DOMPurify`, leaving the editor's global `DOMPurify` alone |
 | GET | `/llm-plugin/styles.css` | **none** | Serve plugin stylesheet |
 | GET | `/llm-plugin/src/<file>` | **none** | Serve the client modules `client.js` loads, one route per file |
 
@@ -331,7 +332,7 @@ restores before re-asking.
 |-----|---------|
 | `addMessageToUI(content, isUser, messageMeta?)` | Render message + import buttons; assistant messages show a `mode / model / 1.5s` badge. Also runs `annotateNodeReferences` on assistant messages so inline backtick'd node names become clickable, and ends with `refreshRetryButton()`. |
 | `refreshRetryButton()` | Move the single Retry button onto the last message in the panel, dropping every other copy. Retry always re-sends the **last** user prompt, so a button on an older message would lie about what it does; keeping placement in one pass — rather than at render time — is also what gives the button to a chat reloaded from history (rendered with no buttons at all before), to an `Error: …` reply, and to a turn the user stopped. Skipped while the `Generating...` placeholder is last, since there is nothing to retry yet. Called at the end of `addMessageToUI`, right after the placeholder is marked, and in the request's `finally` (the cancel path removes the placeholder without adding a reply). |
-| `formatMessage(text)` | `marked.parse` with a renderer whose `html()` escapes raw HTML to text, then `sanitizeRenderedHtml`. The escape belongs to the renderer, not to the source text: pre-escaping `<` / `>` before parsing put `&lt;` inside code blocks, where marked escapes again and the reader is shown `&lt;`. A reply that is nothing but JSON is emitted as one `language-json` block instead — its indented lines are not prose. |
+| `formatMessage(text)` | `marked.parse` with a renderer whose `html()` escapes raw HTML to text, then `sanitizeRenderedHtml` (DOMPurify; without it the reply is shown as plain text). The escape belongs to the renderer, not to the source text: pre-escaping `<` / `>` before parsing put `&lt;` inside code blocks, where marked escapes again and the reader is shown `&lt;`. A reply that is nothing but JSON is emitted as one `language-json` block instead — its indented lines are not prose. |
 | `collapseJsonBlocks(container)` | Fold each JSON code block into `<details class="json-collapsible">`, labelled `Vibe Schema JSON` / `Flow JSON (n nodes)` / `JSON`, and lift a schema's `description` out of the fold as prose. The block is read with `LLMJsonParser.parseJsonBlock`, so a reply the importer repaired folds too — labelled `(repaired)`, since the block then shows that reading and not the text the model sent. A block fenced as `json` that cannot be read at all still folds (`JSON (could not be read)`): a reply the model broke is the one a reader most needs out of the way. |
 | `annotateNodeReferences(rootEl, targetFlowIds?)` | Two-pass scan that makes node mentions clickable. **Pass 1**: every inline `<code>` (skipping `<pre>`-nested ones) is resolved via `LlmJsonParser.buildFlowLookup(...).resolve`; matches become `code.llm-node-ref` with a focus handler. **Pass 2**: walks the remaining text nodes (skipping `<code>/<pre>/<a>/<script>/<style>`) and replaces any token that exactly matches a known alias (length ≥ 3) — this catches plain-prose mentions when the LLM forgets to backtick. Both singleton aliases (`inject`, `debug`) and compound ones (`change_create_sensor_json`) are matched; sort-longest-first plus `\b` boundaries make sure `change_temperature_series` beats `change` on overlapping spans. Tabs are skipped; config nodes ARE included (they open the edit dialog on click). When `targetFlowIds` is provided, the alias map is rebuilt from `UI.getFlowsByIds(targetFlowIds)` — the exact same export the LLM saw — so numbered duplicate aliases (`change_2`, …) resolve back to the same node IDs. Without it, every node on the canvas is scanned. The system prompt also instructs the LLM to backtick node aliases, so Pass 1 is the primary path. |
 | `focusCanvasNode(nodeId)` | Debug-sidebar-style focus for canvas nodes: switch to the node's tab via `RED.workspaces.show`, set `node.highlighted = true` for a flash, call `RED.view.reveal(node.id)` to centre the viewport (matches the Debug sidebar's exact invocation), force `RED.view.redraw()`, then clear the flash after ~2.5 s. Config nodes have no canvas position, so they open via `RED.editor.editConfig('', node.type, node.id)`. Notifies if the node has since been deleted. A single try/catch wraps the whole routine — focus is best-effort, so every failure has the same answer (stop and log). |
@@ -460,7 +461,7 @@ No chat history is sent — each request is stateless to the LLM.
   `needsPermission` individually, and anything added afterwards is open
   unless it does the same. `needsPermission` is a no-op when `adminAuth`
   is unset, so single-user installs behave exactly as before.
-  The static-asset routes (`vendor/marked.js`, the stylesheet, the client
+  The static-asset routes (`vendor/marked.js`, `vendor/purify.js`, the stylesheet, the client
   modules) stay unauthenticated because `<script>` / `<link>` tags cannot
   send an auth header. Each serves one fixed file: the modules are exactly
   the list `client.js` loads, so the server-side modules beside them in
@@ -472,12 +473,18 @@ No chat history is sent — each request is stateless to the LLM.
   double-escaping every entity a code block contained. A Markdown **image
   becomes a link**: rendering it would fetch its URL, and a reply steered
   by text inside the flow could put the flow's contents in that URL. A link
-  sends nothing until clicked. `sanitizeRenderedHtml` then resolves each
-  `href` **through the DOM** of an inert document and drops any that is
-  not `http(s)` / `mailto:` / `tel:` — resolving through
-  the DOM rather than matching a regex is what makes entity-encoded
-  `javascript:` no different from the plain spelling. There is deliberately
-  no fallback path: the only one available is the `innerHTML` this avoids.
+  sends nothing until clicked; that is done in an inert document, before
+  anything could load. What marked produced then goes through **DOMPurify**,
+  allowed only the tags and attributes Markdown needs, links only to
+  `http(s)` / `mailto:` / `tel:` or relative, each anchor given
+  `rel="noopener noreferrer"`. DOMPurify reads the attributes as parsed, so
+  an entity-encoded `javascript:` is the same as the plain spelling. The
+  plugin serves its own copy (`dompurify` dependency) wrapped so that it
+  becomes `LLMPlugin.DOMPurify`: its UMD build would otherwise replace the
+  editor's global `DOMPurify`, which red.js uses, with another version and
+  with this plugin's hook on it. Without it the reply is shown as escaped
+  text; there is no hand-written fallback. `test/reply_rendering.test.js`
+  drives this in jsdom with the scripts the editor loads.
 - API keys (OpenAI and Custom-endpoint) are stored encrypted in
   `<userDir>/llm-plugin/credentials.json` using AES-256-GCM, in a
   plugin-owned file so `cleanCredentials` can't strip them on deploy.
