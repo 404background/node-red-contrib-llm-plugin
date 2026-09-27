@@ -1431,7 +1431,15 @@
         });
         let byId = {};
         all.forEach(function(n) { byId[n.id] = n; });
-        function container(n) { return (n.g && byId[n.g]) ? n.g : ''; }
+        // Either half of membership says it: `g` on the member, or the group's list.
+        let listedIn = {};
+        all.forEach(function(g) {
+            if (g.type !== 'group' || !Array.isArray(g.nodes)) return;
+            g.nodes.forEach(function(m) { let id = (m && m.id) || m; if (!listedIn[id]) listedIn[id] = g.id; });
+        });
+        function container(n) { return (n.g && byId[n.g]) ? n.g : (listedIn[n.id] || ''); }
+        // Pairs no push can part: both move with the one that would be pushed.
+        let stuck = {};
         let anchors = captureCommentAnchors(all, opts);
         let captionOf = {};
         Object.keys(anchors).forEach(function(id) {
@@ -1521,6 +1529,7 @@
                 for (let i = 0; i < list.length; i++) {
                     for (let j = i + 1; j < list.length; j++) {
                         let a = list[i], b = list[j];
+                        if (stuck[a.id + '|' + b.id]) continue;
                         // A caption and what it heads, or two captions on one node, are a stack
                         // for the comment pass; routing on what it serves still hides it.
                         if (ownerOf(a) === ownerOf(b) && !routing[a.id] && !routing[b.id]) continue;
@@ -1604,6 +1613,7 @@
                 delta = (aIsUpper ? ea : eb).bottom + clear - (aIsUpper ? eb : ea).top;
             }
             delta = (delta <= 0) ? rowPitchOf(opts) : gridCeil(delta, gridSize);
+            if (mover.indexOf(a) !== -1 && mover.indexOf(b) !== -1) { stuck[a.id + '|' + b.id] = true; continue; }
             let stays = mover.indexOf(a) === -1 ? a : b;
             mover = mover.concat(routingAlong(mover, routing, byId).filter(function(r) { return r !== stays; }));
             mover.forEach(function(n) { n.y = n.y + delta; moved[n.id] = true; });
@@ -1660,9 +1670,10 @@
             return n && typeof n.x === 'number' && typeof n.y === 'number' &&
                 n.type !== 'group' && n.type !== 'junction' && isCanvas(n);
         });
-        // A caption keeps the left edge of the node it heads.
+        // A caption in its node's column keeps it; any other goes onto the grid.
         let anchors = captureCommentAnchors(placed, opts);
-        let shift = {};
+        let shift = {}, leftBefore = {};
+        placed.forEach(function(n) { leftBefore[n.id] = n.x - getNodeWidth(n, opts) / 2; });
         let moved = false;
         function snap(n) {
             if (keep[n.id]) { shift[n.id] = { x: 0, y: 0 }; return; }
@@ -1670,7 +1681,8 @@
             // A caption rounds up, away from what it heads below it.
             let y = (n.type === 'comment') ? Math.floor(n.y / gridSize) * gridSize : gridRound(n.y, gridSize);
             let d = { x: gridRound(n.x - half, gridSize) + half - n.x, y: y - n.y };
-            if (anchors[n.id] && shift[anchors[n.id].targetId]) d.x = shift[anchors[n.id].targetId].x;
+            let t = anchors[n.id] && anchors[n.id].targetId;
+            if (t && shift[t] && Math.abs(leftBefore[n.id] - leftBefore[t]) < 0.5) d.x = shift[t].x;
             shift[n.id] = d;
             if (d.x || d.y) { n.x += d.x; n.y += d.y; moved = true; }
         }

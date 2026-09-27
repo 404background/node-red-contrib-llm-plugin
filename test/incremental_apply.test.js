@@ -259,6 +259,25 @@ async function renamingKeepsTheColumn() {
       byId.grp.x + ')');
 }
 
+// The fixture sits off the grid (left edges at 50, 250, 450). A reposition
+// is kept at the sequence's old top-left, but only to the nearest square:
+// the node already at that corner used to stay off the grid.
+async function repositionLandsOnTheGrid() {
+  console.log('\nA reposition puts the whole sequence on the grid');
+  const { res, byId } = await apply(fence({ reposition: ['inject_tick', 'function_shape', 'debug_out'] }));
+  const Layout = require('../src/core/canvas_layout.js');
+  const off = ['inj', 'fn', 'dbg'].filter((id) => {
+    const n = byId[id];
+    return (n.x - Layout.estimateNodeWidth(n, {}) / 2) % 20 !== 0 || n.y % 20 !== 0;
+  });
+  ok(res && res.ok && off.length === 0, 'every node of it is on the grid (' +
+    ['inj', 'fn', 'dbg'].map((id) => byId[id].x + ',' + byId[id].y).join(' ') + ')');
+  // The box holds only the inject, listed on the group but with no `g` on the
+  // node: read as outside its own box, it was pushed down by 40 000 px.
+  ok(['inj', 'fn', 'dbg'].every((id) => Math.abs(byId[id].y - 100) <= 20),
+    'and it stays where it was, to the nearest square');
+}
+
 (async () => {
   await propertyEditTouchesNothingElse();
   await addingANodeImportsOnlyThatNode();
@@ -267,5 +286,6 @@ async function renamingKeepsTheColumn() {
   await rewiringOnlyMovesLinks();
   await joiningAGroupIsStillADiff();
   await renamingKeepsTheColumn();
+  await repositionLandsOnTheGrid();
   summary();
 })();

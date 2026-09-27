@@ -1217,8 +1217,11 @@
 
         let placed = topLeftOf(clones);
 
-        let dx = origin.x - placed.x;
-        let dy = origin.y - placed.y;
+        // In whole grid squares: the reflow put the subset on the grid, and a
+        // top-left that was off it must not take the subset back off it.
+        let grid = layout.LAYOUT_DEFAULTS.gridSize;
+        let dx = Math.round((origin.x - placed.x) / grid) * grid;
+        let dy = Math.round((origin.y - placed.y) / grid) * grid;
 
         let cloneById = {};
         clones.forEach(function(c) { cloneById[c.id] = c; });

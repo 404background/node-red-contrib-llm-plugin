@@ -166,9 +166,20 @@ neighbours by hand. So:
 - `snapToGrid` then catches what arrived off the grid (an older layout, a
   flow placed by hand): everything the edit **placed or moved** is snapped.
   What the edit left exactly where it was stays there, off the grid or not —
-  a property edit moves nothing. A caption keeps the left edge of the node it
-  heads and rounds its y **up**, away from that node. Junctions are not
-  snapped: a junction stays where its wires put it.
+  a property edit moves nothing. A caption already in the column of the node
+  it heads keeps that column (off the grid only when the node was left there);
+  any other caption goes onto the grid itself. Either way its y rounds **up**,
+  away from the node. Junctions are not snapped: a junction stays where its
+  wires put it.
+- A **reposition** puts the subset back at its old top-left to the nearest
+  square, not exactly: the reflow placed it on the grid, and an exact shift back
+  to a corner that was off the grid left the node at that corner off it — the
+  one place a "tidy up" left something to line up by hand.
+- `settleCollisions` reads group membership from **either half** (`g` on the
+  member, or the group's `nodes` list), like everything else here. Read from
+  `g` alone, a member listed only on the group was outside its own box: every
+  push moved both, and the flow went tens of thousands of pixels down. A pair
+  that no push can part (both move with the pushed one) is left as it is.
 
 ### `ensureCanvasMargins` — the same gap above and beside
 

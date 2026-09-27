@@ -1113,6 +1113,15 @@ describe('Everything the layout moves lands on the grid', function() {
         assert(flow[1].x - flow[0].x === 0 && flow[0].y - flow[1].y === 40,
             'caption at (' + flow[1].x + ',' + flow[1].y + '), node at (' + flow[0].x + ',' + flow[0].y + ')');
     });
+    it('a caption out of its node\'s column goes onto the grid itself', function() {
+        const flow = [
+            { id: 'n', type: 'inject', z: 'z', name: 'a', x: 113, y: 107, wires: [[]] },
+            { id: 'c', type: 'comment', z: 'z', name: 'about a', x: 129, y: 67, _llmAboveId: 'n', wires: [] },
+        ];
+        Layout.snapToGrid(flow, {});
+        const left = flow[1].x - Layout.getNodeWidth(flow[1], {}) / 2;
+        assert(left % 20 === 0 && flow[1].y % 20 === 0, 'caption at (' + flow[1].x + ',' + flow[1].y + ')');
+    });
     it('a junction stays where its wires put it', function() {
         const flow = [{ id: 'j', type: 'junction', z: 'z', x: 113, y: 107, wires: [[]] }];
         Layout.snapToGrid(flow, {});
