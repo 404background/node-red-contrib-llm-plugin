@@ -17,7 +17,7 @@ NODES (`{ alias: { type, name?, flow?, config?, disabled?, props? } }`):
 - Function: set `func` and `outputs`; return an array with one entry per output to route.
 - Errors: a `catch` node receives them (there is no error port or error type).
 - Debug: omit `complete` to show msg.payload; `"complete": "true"` shows the whole message.
-- Comment: `name` = header, `props.info` = Markdown body, ALWAYS `above: <alias>` of the canvas node it sits above. Re-declare with another `above` to move it.
+- Comment: `name` = header, `props.info` = Markdown body, ALWAYS `above: <alias>` of the canvas node it sits above. To move it, re-declare it with the new `above`; `reposition` does not move comments.
 
 CONNECTIONS:
 - `{ "from": "a", "to": "b", "fromPort"?: n }`. Both ends must exist, in one tab; never into a source-only node.
@@ -27,4 +27,4 @@ SEQUENCES:
 - Asked for several flows / sequences: build that many INDEPENDENT sequences in one tab, each with its own trigger and end, never chained into one.
 
 LAYOUT:
-- To rearrange existing nodes, add top-level `"reposition": [aliases]`; never delete and recreate to move. Never mention coordinates.
+- To tidy existing nodes in place, add top-level `"reposition": [aliases]`; never delete and recreate to move. Never mention coordinates.
