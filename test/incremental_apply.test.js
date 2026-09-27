@@ -124,6 +124,20 @@ async function aNewNodeTakesItsTypeDefaults() {
   ok(res && res.ok && split && split.property === 'payload' && split.splt === '\\n',
     'the missing properties came from the type (' + JSON.stringify(split && { property: split.property, splt: split.splt }) + ')');
   ok(split && split.spltType === 'len', 'and what the reply set is kept');
+
+  // The edit dialog writes "" for a config reference left at "none"; left
+  // undefined, opening the node and closing it marks the flow changed.
+  const httpTypes = { 'http in': { category: 'network', defaults: {
+    name: { value: '' }, url: { value: '', required: true }, method: { value: 'get', required: true },
+    upload: { value: false }, skipBodyParsing: { value: false }, swaggerDoc: { type: 'swagger-doc', required: false },
+  } } };
+  const r2 = await apply(fence({
+    nodes: { http_in_hello: { type: 'http in', name: 'GET /hello', props: { url: '/hello' } } },
+  }), { types: httpTypes });
+  const httpIn = Object.values(r2.byId).find((n) => n.type === 'http in');
+  ok(r2.res && r2.res.ok && httpIn && httpIn.swaggerDoc === '' && httpIn.method === 'get',
+    'a config reference with no default is "", as the dialog writes it (' +
+      JSON.stringify(httpIn && { swaggerDoc: httpIn.swaggerDoc, method: httpIn.method }) + ')');
 }
 
 async function deletingANodeRemovesOnlyThatNode() {

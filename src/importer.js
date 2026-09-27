@@ -1488,14 +1488,18 @@
     // A property the reply left out gets its type's default, as a node dropped
     // from the palette does, instead of failing validation (a split with no
     // `property` shows the warning mark). Done here, not through an import
-    // option, so it does not depend on the editor version.
+    // option, so it does not depend on the editor version. A config reference
+    // with no default is "", which is what the edit dialog writes for "none":
+    // left undefined, merely opening the node and closing it marks the flow
+    // changed (http in's `swaggerDoc`).
     function applyTypeDefaults(n) {
         let def = (n && n.type && typeof RED.nodes.getType === 'function') ? RED.nodes.getType(n.type) : null;
         let defaults = def && def.defaults;
         if (!defaults) return;
         Object.keys(defaults).forEach(function(k) {
-            if (k === 'inputs' || k === 'outputs' || n[k] !== undefined) return;
-            if (defaults[k] && defaults[k].value !== undefined) n[k] = JSON.parse(JSON.stringify(defaults[k].value));
+            if (k === 'inputs' || k === 'outputs' || n[k] !== undefined || !defaults[k]) return;
+            if (defaults[k].value !== undefined) n[k] = JSON.parse(JSON.stringify(defaults[k].value));
+            else if (defaults[k].type) n[k] = '';
         });
     }
 
