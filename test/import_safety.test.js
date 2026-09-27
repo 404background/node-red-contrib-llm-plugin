@@ -375,6 +375,34 @@ async function scenarioUnknownRefKeyStillResolves() {
   ok(added && added.mode === 'fast', 'and a plain string property was left alone');
 }
 
+// A config node declared under a new alias is matched to the lone existing
+// one of its type so references reach it, but its properties never land on
+// it: an invented broker must not re-point the real one.
+async function scenarioInventedConfigDoesNotOverwrite() {
+  console.log('\nA config node the reply invents cannot overwrite the existing one');
+  const types = { 'mqtt-broker': { category: 'config', defaults: {} },
+    'mqtt out': { category: 'network', defaults: { broker: { type: 'mqtt-broker' } } },
+    inject: { category: 'common', defaults: {} } };
+  const { LLMPlugin, RED, snapshot } = loadSandbox({
+    tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }], activeId: 'tab1', types,
+    nodes: [{ id: 'inj', type: 'inject', z: 'tab1', name: 'tick', x: 150, y: 100, wires: [[]] },
+            { id: 'old', type: 'mqtt out', z: 'tab1', name: 'old', broker: 'brk', topic: 'x', x: 150, y: 200, wires: [] }],
+    configs: [{ id: 'brk', type: 'mqtt-broker', name: 'prod', broker: 'prod.example.com', port: '1883' }],
+  });
+  LLMPlugin.FlowConverterCore.setRuntimeGetType((t) => types[t] || null);
+  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({
+    nodes: { mqtt_out_pub: { type: 'mqtt out', name: 'pub', props: { broker: 'mqtt_broker_new', topic: 'a' } },
+             mqtt_broker_new: { type: 'mqtt-broker', config: true, props: { broker: 'evil.example' } } },
+    connections: [{ from: 'inject_tick', to: 'mqtt_out_pub' }],
+  }), { mode: 'agent', allowedWorkspaceIds: ['tab1'] });
+  const brk = RED.nodes.node('brk');
+  const pub = snapshot('tab1').find((n) => n.type === 'mqtt out' && n.id !== 'old');
+  ok(res && res.ok, 'the edit applied');
+  ok(brk && brk.broker === 'prod.example.com', 'the existing broker keeps its host (' + (brk && brk.broker) + ')');
+  ok(pub && pub.broker === 'brk', 'and the new node uses it (' + (pub && pub.broker) + ')');
+  ok(!snapshot('tab1').some((n) => n.type === 'mqtt-broker'), 'no broker lands on the canvas');
+}
+
 async function run() {
   await scenarioDeleteReachesItsOwnFlow();
   await scenarioNullAliasDeleteIsRoutedToo();
@@ -385,6 +413,7 @@ async function run() {
   await scenarioCrossFlowConfigAliasResolves();
   await scenarioUnknownConfigAliasIsClearedAndReported();
   await scenarioUnknownRefKeyStillResolves();
+  await scenarioInventedConfigDoesNotOverwrite();
   summary();
 }
 

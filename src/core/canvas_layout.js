@@ -417,11 +417,8 @@
     function repositionCommentsByLlmOrder(canvasNodes, opts, shouldReposition) {
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
-        // Stack comments at grid-aligned intervals: snap nodeHeight UP to
-        // the next grid multiple so each comment's y stays on the grid.
-        let stackStep = (gridSize > 0)
-            ? Math.ceil(nodeHeight / gridSize) * gridSize
-            : nodeHeight;
+        // A caption touches what it heads: one node height per step.
+        let stackStep = nodeHeight;
 
         let byId = {};
         canvasNodes.forEach(function(n) { if (n && n.id) byId[n.id] = n; });
@@ -627,7 +624,10 @@
         if (!anchors) return;
         let gridSize   = pickOption(opts, 'gridSize',   LAYOUT_DEFAULTS.gridSize);
         let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
-        let stackStep  = (gridSize > 0) ? Math.ceil(nodeHeight / gridSize) * gridSize : nodeHeight;
+        // Captions touch what they head. The grid-rounded step is how an older
+        // layout left them, a gap apart, and reads as the same slot.
+        let stackStep  = nodeHeight;
+        let looseStep  = (gridSize > 0) ? Math.ceil(nodeHeight / gridSize) * gridSize : nodeHeight;
 
         let byId = {};
         (canvasNodes || []).forEach(function(n) { if (n && n.id) byId[n.id] = n; });
@@ -642,25 +642,25 @@
             let target = byId[info.targetId];
             if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') return;
             c.x = (target.x - getNodeWidth(target, opts) / 2) + getNodeWidth(c, opts) / 2;
-            // Less than a row above the node is ON the node: both are a row
-            // tall. An offset like that is not a placement the user chose, it
-            // is one a layout pass left behind.
-            let dy = (info.dy > -stackStep) ? -stackStep : info.dy;
+            // Up to one grid-rounded step above is the standard slot: on the node.
+            let dy = (info.dy > -looseStep - 0.01) ? -stackStep : info.dy;
             c.y = target.y + dy;
             (onTarget[info.targetId] = onTarget[info.targetId] || []).push(c);
         });
 
-        // `snapCaptions`: every caption to the standard slot. A reposition asks for
-        // tidying, and a half-row offset left by a drag reads as sitting ON the node.
+        // A stack close enough to read as its node's captions sits on the node
+        // with no gap, one caption or several; `snapCaptions` (a reposition)
+        // does it whatever the gaps. One placed further off stays there.
         let snap = !!(opts && opts.snapCaptions);
+        let touchingTol = looseStep + gridSize;
         Object.keys(onTarget).forEach(function(targetId) {
             let stack = onTarget[targetId];
-            if (stack.length < 2 && !snap) return;
             stack.sort(function(a, b) { return a.y - b.y; });
-            let crowded = snap || stack.some(function(c, i) {
-                return i > 0 && (c.y - stack[i - 1].y) < stackStep - 0.01;
-            });
-            if (!crowded) return;
+            let target0 = byId[targetId];
+            let gaps = stack.map(function(c, i) { return (i + 1 < stack.length ? stack[i + 1].y : target0.y) - c.y; });
+            let close = snap || gaps.every(function(g) { return g <= touchingTol + 0.01; }) ||
+                gaps.some(function(g) { return g < stackStep - 0.01; });
+            if (!close) return;
             // Re-space them upward from the node, keeping the order they were
             // already in: the one nearest the node stays nearest.
             let target = byId[targetId];
@@ -1569,6 +1569,47 @@
         });
         fitGroups(all, opts);
 
+        // A push that would land the mover on something that started no lower
+        // than it goes on past it, so a pile settles in one move per thing
+        // rather than one per pair. What started below is pushed in turn, as
+        // before, so the order top to bottom is kept. Same test as findCollision.
+        function clearBelow(mover, delta, level) {
+            let inMover = {};
+            mover.forEach(function(m) { inMover[m.id] = true; });
+            let movers = mover.filter(function(m) { return solid(m) && container(m) === level; })
+                .map(function(m) { return { n: m, r: rect(m) }; });
+            let moverTop = Math.min.apply(null, movers.map(function(m) { return startTop[m.n.id]; }).concat([Infinity]));
+            let others = all.filter(function(n) { return solid(n) && !inMover[n.id] && container(n) === level; })
+                .filter(function(n) { return startTop[n.id] <= moverTop; })
+                .map(function(n) { return { n: n, r: rect(n) }; });
+            for (let pass = 0; pass <= others.length; pass++) {
+                let grown = false;
+                movers.forEach(function(m) {
+                    others.forEach(function(o) {
+                        let p = m.n, q = o.n;
+                        if (stuck[p.id + '|' + q.id] || stuck[q.id + '|' + p.id]) return;
+                        if (ownerOf(p) === ownerOf(q) && !routing[p.id] && !routing[q.id]) return;
+                        let boxed = p.type === 'group' || q.type === 'group';
+                        let junction = p.type === 'junction' || q.type === 'junction';
+                        if ((junction && boxed) || (p.type === 'junction' && q.type === 'junction')) return;
+                        if (m.r.right <= o.r.left || o.r.right <= m.r.left) return;
+                        let clear = boxed ? boxClear(p, q) : 0;
+                        if (m.r.bottom + delta + clear <= o.r.top || o.r.bottom + clear <= m.r.top + delta) return;
+                        let place = boxed ? boxClear(p, q)
+                            : (p.type === 'comment' || q.type === 'comment') ? 0 : spacingY;
+                        let need = gridCeil(o.r.bottom + place - m.r.top, gridSize);
+                        if (need > delta) { delta = need; grown = true; }
+                    });
+                });
+                if (!grown) break;
+            }
+            return delta;
+        }
+
+        // Where each thing started, which is what "no lower than" is read against.
+        let startTop = {};
+        all.forEach(function(n) { if (solid(n)) startTop[n.id] = rect(n).top; });
+
         let moved = {};
         // Each round puts one thing under another: up to n² when everything overlaps.
         let rounds = all.length * all.length + 20;
@@ -1621,6 +1662,7 @@
             if (mover.indexOf(a) !== -1 && mover.indexOf(b) !== -1) { stuck[a.id + '|' + b.id] = true; continue; }
             let stays = mover.indexOf(a) === -1 ? a : b;
             mover = mover.concat(routingAlong(mover, routing, byId).filter(function(r) { return r !== stays; }));
+            delta = clearBelow(mover, delta, container(stays));
             mover.forEach(function(n) { n.y = n.y + delta; moved[n.id] = true; });
             fitGroups(all, opts);
         }
@@ -1677,16 +1719,21 @@
         });
         // A caption in its node's column keeps it; any other goes onto the grid.
         let anchors = captureCommentAnchors(placed, opts);
-        let shift = {}, leftBefore = {};
-        placed.forEach(function(n) { leftBefore[n.id] = n.x - getNodeWidth(n, opts) / 2; });
+        let shift = {}, leftBefore = {}, yBefore = {};
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
+        placed.forEach(function(n) { leftBefore[n.id] = n.x - getNodeWidth(n, opts) / 2; yBefore[n.id] = n.y; });
         let moved = false;
         function snap(n) {
             if (keep[n.id]) { shift[n.id] = { x: 0, y: 0 }; return; }
             let half = getNodeWidth(n, opts) / 2;
-            // A caption rounds up, away from what it heads below it.
+            // A caption moves up or down with what it heads, so it stays touching
+            // it; one heading nothing rounds up onto the grid.
             let y = (n.type === 'comment') ? Math.floor(n.y / gridSize) * gridSize : gridRound(n.y, gridSize);
             let d = { x: gridRound(n.x - half, gridSize) + half - n.x, y: y - n.y };
             let t = anchors[n.id] && anchors[n.id].targetId;
+            // Only a caption ON its node (whole node heights above it) moves with it.
+            let rows = t ? (yBefore[t] - yBefore[n.id]) / nodeHeight : 0;
+            if (t && shift[t] && rows >= 1 && Math.abs(rows - Math.round(rows)) < 0.01) d.y = shift[t].y;
             if (t && shift[t] && Math.abs(leftBefore[n.id] - leftBefore[t]) < 0.5) d.x = shift[t].x;
             shift[n.id] = d;
             if (d.x || d.y) { n.x += d.x; n.y += d.y; moved = true; }

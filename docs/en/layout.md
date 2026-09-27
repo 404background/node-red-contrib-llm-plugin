@@ -168,8 +168,9 @@ neighbours by hand. So:
   What the edit left exactly where it was stays there, off the grid or not —
   a property edit moves nothing. A caption already in the column of the node
   it heads keeps that column (off the grid only when the node was left there);
-  any other caption goes onto the grid itself. Either way its y rounds **up**,
-  away from the node. Junctions are not snapped: a junction stays where its
+  any other caption goes onto the grid itself. A caption ON its node (whole
+  node heights above it) moves up or down with the node so it stays touching;
+  one further off rounds its y **up** onto the grid. Junctions are not snapped: a junction stays where its
   wires put it.
 - A **reposition** puts the subset back at its old top-left to the nearest
   square, not exactly: the reflow placed it on the grid, and an exact shift back
@@ -217,9 +218,14 @@ The caption side matches: `applyCommentAnchors` gives a caption its target's
 Replaying that offset kept a caption aligned only while both widths stayed the
 same.
 
-Comment stacking uses a step of `ceil(nodeHeight / gridSize) * gridSize`
-(= 40 px with the defaults) so a stack of comments rises at a regular
-visual cadence even though `nodeHeight` (30) is not a grid multiple.
+A caption **touches** what it heads: it sits one `nodeHeight` (30 px) above
+its node, and a stack of captions rises by the same step, with no gap anywhere.
+Since 30 is not a grid multiple, a caption's y is half a square off the grid;
+it is a heading that moves with its node, not something to line up on its own.
+A stack close enough to be recognised as its node's captions (each gap within
+`touchingTol`, one grid-rounded step plus a square) is always re-spaced onto
+the node — including the 40 px an older layout left — and one placed further
+off stays where it is.
 Comments are placed so their **left edge** matches the anchor target's
 left edge (`commentX = target.leftEdge + commentWidth / 2`) — no extra
 snap — so a wide caption visibly aligns under the column it heads

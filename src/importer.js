@@ -634,6 +634,28 @@
         let basePositions = ctx.basePositions;
         let directives = ctx.directives || {};
         let layout = LLMPlugin.CanvasLayout;
+        // Both halves of membership agree before any pass reads one: the
+        // layout reads `g`, and a member listed only on its group was outside
+        // its own box. applyGroupMembership writes both halves afterwards.
+        let groupById = {}, entityById = {};
+        rebuilt.forEach(function(n) {
+            if (!n) return;
+            entityById[n.id] = n;
+            if (n.type === 'group') groupById[n.id] = n;
+        });
+        rebuilt.forEach(function(n) {
+            if (!n || n.type === 'group') return;
+            if (n.g && groupById[n.g]) {
+                let list = groupById[n.g].nodes = Array.isArray(groupById[n.g].nodes) ? groupById[n.g].nodes : [];
+                if (list.indexOf(n.id) === -1) list.push(n.id);
+            }
+        });
+        Object.keys(groupById).forEach(function(gid) {
+            (groupById[gid].nodes || []).forEach(function(mid) {
+                let m = entityById[mid];
+                if (m && !m.g) m.g = gid;
+            });
+        });
         // The live `.w` is measured from the rendered SVG, so it is only
         // valid while the label is unchanged. See docs/{en,jp}/layout.md.
         function liveNodeWidth(n) {

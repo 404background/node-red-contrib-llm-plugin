@@ -90,9 +90,9 @@ describe('Step 3.5b cross-component push preserves comment/target gap', function
             WIDE);
         let bad = findOverlaps(nodes, WIDE);
         assert(bad.length === 0, 'overlaps found: ' + bad.join(', '));
-        // The cm2/c2a gap (40) must be preserved across the shift.
-        assert(c2a.y - cm2.y === 40,
-            'cm2 should remain 40px above c2a, got ' + (c2a.y - cm2.y));
+        // cm2 stays on c2a, touching it (an older layout's 40 is the same slot).
+        assert(c2a.y - cm2.y === 30,
+            'cm2 should sit on c2a, got ' + (c2a.y - cm2.y));
         // ...and the cascade must move every pushed component by the SAME
         // dy, so the chains it did not otherwise touch keep their original
         // 80px spacing. Deriving dy per component (the historical bug)
@@ -119,7 +119,7 @@ describe('Step 3.5b cross-component push preserves comment/target gap', function
         Layout.placeAddedNodesNearNeighbors(nodes,
             { change: 1 }, { change:{x:820,y:870} }, WIDE);
         assert(cmt.y !== inj.y, 'comment ended up at inject.y');
-        assert(inj.y - cmt.y === 40, 'comment should be 40px above inject');
+        assert(inj.y - cmt.y === 30, 'comment should touch the inject, one node height above');
         // Edge semantics: the inject aligns to its successor's row, sits
         // exactly edgeGap left of it, and the caption shares its left edge.
         assert(inj.y === change.y, 'inject should align to succ row, got ' + inj.y);
@@ -185,7 +185,7 @@ describe('Grid alignment', function() {
             nd.id + ' left edge not grid-aligned: ' + leftEdge(nd, WIDE)));
     });
 
-    it('comment placement uses grid-aligned stack step', function() {
+    it('comment placement stacks captions touching, one node height apart', function() {
         const t  = { id: 't',  type: 'function', x: 200, y: 200, wires: [], name: 'target' };
         const c1 = { id: 'c1', type: 'comment', name: 'top', wires: [],
                      _llmOrder: 1, _llmAlias: 'cmt_1', _llmAboveId: 't' };
@@ -198,10 +198,10 @@ describe('Grid alignment', function() {
             { t:1 }, { t:{x:200,y:200} }, WIDE);
         [c1, c2, c3].forEach(n => assert(leftEdge(n, WIDE) === leftEdge(t, WIDE),
             n.id + ' should left-align to target: ' + leftEdge(n, WIDE) + ' vs ' + leftEdge(t, WIDE)));
-        // Step = ceil(30/20)*20 = 40
-        assert(c3.y === 160, 'bottom comment should be 40px above target');
-        assert(c2.y === 120, 'middle comment should be 80px above target');
-        assert(c1.y === 80,  'top comment should be 120px above target');
+        // Step = nodeHeight = 30: no gap between captions or above the node.
+        assert(c3.y === 170, 'bottom comment should be 30px above target, got ' + c3.y);
+        assert(c2.y === 140, 'middle comment should be 60px above target, got ' + c2.y);
+        assert(c1.y === 110, 'top comment should be 90px above target, got ' + c1.y);
     });
 });
 
@@ -500,7 +500,7 @@ describe('A width change keeps the left edge', function() {
         const tLeft = target.x - Layout.estimateNodeWidth(target, OPTS) / 2;
         const cLeft = caption.x - Layout.estimateNodeWidth(caption, OPTS) / 2;
         assert(cLeft === tLeft, 'caption left ' + cLeft + ' vs node left ' + tLeft);
-        assert(caption.y === 60, 'and it kept its row (' + caption.y + ')');
+        assert(caption.y === 70, 'and it sits on the node, touching it (' + caption.y + ')');
     });
 });
 
@@ -793,7 +793,7 @@ describe('A caption never lands on the node it heads', function() {
         const caption = { id: 'c', type: 'comment', z: 'z', name: 'Heading', x: 250, y: 294 };
         Layout.applyCommentAnchors([caption, target],
             { c: { targetId: 't', dx: 0, dy: -6 } }, OPTS);
-        assert(target.y - caption.y >= 40, 'caption at ' + caption.y + ', node at ' + target.y);
+        assert(target.y - caption.y === 30, 'caption at ' + caption.y + ', node at ' + target.y);
     });
 
     it('a deliberate offset further up is left as it is', function() {
