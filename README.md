@@ -39,7 +39,7 @@ Requires Node-RED 4.0 or later on Node.js 22 or later.
 - Ollama: set URL (default `http://localhost:11434`)
 - OpenAI: set API key
 - Custom (OpenAI-compatible): set Base URL (e.g. `http://localhost:8080/v1`) and, if required, an API key. Use for llama.cpp, LM Studio, vLLM, LocalAI, or any other server speaking the OpenAI chat-completions API.
-3. Pick which flow tabs to include via the **flow selector** (defaults to *Current Open Flow*; check additional tabs in the dropdown to send them too).
+3. Pick which flow tabs to include via the **flow selector** (check additional tabs in the dropdown to send them too). A new chat starts on the open flow; a chat you come back to — including the latest one when Node-RED restarts — brings back the flows it was working on.
 4. Pick the mode: **Ask** reads the selected flows and explains them (it never proposes a flow), **Agent** changes them and applies the result.
 5. Enter model and prompt.
 6. Click **Send** to generate and/or apply the flow.
@@ -67,7 +67,8 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 - **Checkpoint / Restore**: a snapshot of the flow is taken immediately before each import, and a per-message Restore button rewinds the workspace to that pre-edit state. It sits above the prompt it undoes, and **Apply Again** sits on the reply's schema block, so you can switch between the flow you had and the one the model proposed.
 - **Custom system prompt**: add persistent instructions (preferred node types, coding style, language) via Settings.
 - **Forgiving import**: the flow in a reply is found whether it is fenced or not and whatever prose surrounds it.
-- **Edits are merges**: what the reply lists is added or updated, what it maps to `null` is deleted, and the rest of your flow is left alone — so a partial answer never rewrites the whole tab.
+- **Edits are merges**: what the reply lists is added or updated, what it names under `delete` is deleted, and the rest of your flow is left alone — so a partial answer never rewrites the whole tab.
+- **Tidy layout**: new and moved nodes land on the editor grid, so they line up when dragged: wires two squares long, sequences three squares apart, with or without group boxes.
 - **Several sequences**: ask for several flows in one tab and you get several independent sequences (`flow` in the schema always means the tab). Group boxes stay yours: a new node wired into a boxed sequence joins that box.
 
 ## Planned: `llm-request` node
@@ -111,7 +112,7 @@ So whoever controls the model's output controls what gets deployed. Point Agent 
 
 ### Credentials and shared instances
 
-Everything the plugin keeps — settings, chat history, and API keys (encrypted) — is in one folder, `<userDir>/llm-plugin`; removing it resets the plugin. API keys are masked in the UI and redacted from logs, and a stored key is never carried over to a new endpoint behind your back. With `adminAuth` enabled the plugin's endpoints require an authenticated editor session. Several people applying Agent edits to the same Node-RED at once is not supported yet ([#8](https://github.com/404background/node-red-contrib-llm-plugin/issues/8)).
+Everything the plugin keeps — settings, chat history, and API keys (encrypted) — is in one folder, `<userDir>/llm-plugin`; removing it resets the plugin. API keys are masked in the UI and redacted from logs, replies are rendered as Markdown through DOMPurify (images become links, so nothing is fetched), and a stored key is never carried over to a new endpoint behind your back. With `adminAuth` enabled the plugin's endpoints require an authenticated editor session. Several people applying Agent edits to the same Node-RED at once is not supported yet ([#8](https://github.com/404background/node-red-contrib-llm-plugin/issues/8)).
 
 When sharing your Node-RED user directory (Git, backups, environment exports), keep `llm-plugin/`, `flows_cred.json`, `.config.*.json` and `settings.js` out of the share.
 

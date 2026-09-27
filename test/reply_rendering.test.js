@@ -4,11 +4,9 @@
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
-const { ok, summary, ROOT, buildEditorMock } = require('./helpers.js');
+const { ok, summary, ROOT, buildEditorMock, CLIENT_MODULES } = require('./helpers.js');
 const { createLLMPluginServer } = require(path.join(ROOT, 'src', 'server.js'));
 
-const MODULES = ['src/common.js', 'src/core/canvas_layout.js', 'src/core/flow_converter_core.js',
-  'src/core/llm_json_parser.js', 'src/chat_manager.js', 'src/importer.js', 'src/ui_core.js'];
 
 function servedPurify() {
   const routes = {};
@@ -32,7 +30,7 @@ function editor(withPurify) {
   w.eval(fs.readFileSync(path.join(path.dirname(require.resolve('marked/package.json')), 'lib', 'marked.umd.js'), 'utf8'));
   if (withPurify) w.eval(servedPurify());
   w.RED = buildEditorMock({ tabs: [{ id: 't1', type: 'tab', label: 'Flow 1' }], activeId: 't1' }).RED;
-  MODULES.forEach((m) => w.eval(fs.readFileSync(path.join(ROOT, m), 'utf8')));
+  CLIENT_MODULES.forEach((m) => w.eval(fs.readFileSync(path.join(ROOT, m), 'utf8')));
   return w;
 }
 

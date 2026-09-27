@@ -362,5 +362,5 @@ function buildEditorMock(opts) {
 module.exports = {
   ROOT,
   ok, assert, it, describe, summary,
-  clone, fence, loadPluginSandbox, buildEditorMock, coreRED,
+  clone, fence, loadPluginSandbox, buildEditorMock, coreRED, CLIENT_MODULES,
 };
