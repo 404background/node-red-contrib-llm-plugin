@@ -189,6 +189,25 @@ const TICK_LOG = () => ({
           n('b', 'debug', 'log', 350, 100, [], { active: true, complete: 'payload' })],
 });
 
+// Everything the user named on it is Japanese.
+const JAPANESE_FLOW = () => ({
+  tabs: [Object.assign({}, TAB1, { label: '温度センサー監視', info: '工場の温度を5分ごとに記録する' })],
+  nodes: [n('c', 'comment', 'センサー値を取得して保存する', 150, 40, []),
+          n('i', 'inject', '5分ごと', 150, 100, [['f']], { repeat: '300' }),
+          n('f', 'function', '温度を整形', 320, 100, [['d']], { func: '// 摂氏に変換\nmsg.payload = msg.payload / 10;\nreturn msg;', outputs: 1 }),
+          n('d', 'debug', '温度ログ', 480, 100, [])],
+});
+
+// The reply's own words, not the flow's: names it quotes, bolds or puts in
+// code or a table are left out before counting.
+function writtenInJapanese(reply) {
+  const body = String(reply || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ')
+    .replace(/\*\*[^*]*\*\*/g, ' ').replace(/"[^"]*"|「[^」]*」|“[^”]*”/g, ' ').replace(/\|[^\n]*\|/g, ' ');
+  const ja = (body.match(/[぀-ヿ一-鿿]/g) || []).length;
+  const en = (body.match(/[A-Za-z]/g) || []).length;
+  return ja > 0 && ja * 4 >= en;
+}
+
 const SCENARIOS = [
   {
     name: 'build a flow from nothing (ja)', mode: 'agent',
@@ -759,6 +778,26 @@ const SCENARIOS = [
       if (schema) return 'Ask proposed a flow';
       if (!/debug_low|\blow\b/i.test(reply)) return 'the answer does not name debug_low';
       return null;
+    },
+  },
+  // A short message says little about its language, and the flow's names say
+  // a lot: models answered "Hello" in Japanese next to a Japanese flow.
+  {
+    name: 'ask: English on a Japanese flow', mode: 'ask',
+    prompt: 'Hello',
+    canvas: JAPANESE_FLOW,
+    checkReply: (reply, schema) => {
+      if (schema) return 'Ask proposed a flow';
+      return writtenInJapanese(reply) ? 'answered an English message in Japanese' : null;
+    },
+  },
+  {
+    name: 'agent: English on a Japanese flow', mode: 'agent', allowNoSchema: true,
+    prompt: 'Hello',
+    canvas: JAPANESE_FLOW,
+    check: (f, ctx) => {
+      if (writtenInJapanese(ctx.reply)) return 'answered an English message in Japanese';
+      return kept(f, ['i', 'f', 'd']);
     },
   },
 ];
