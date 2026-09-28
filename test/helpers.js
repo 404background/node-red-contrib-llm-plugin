@@ -153,11 +153,14 @@ function buildEditorMock(opts) {
     nodesById[id] || junctionsById[id] || groupsById[id] || configById[id] || null;
 
   // Turn a node's `wires` array into link objects, the way import() does.
-  function linkFromWires(node) {
+  // `only`: the ids of one import. RED.nodes.import links a wire only to a
+  // node in the same import (red.js importNodes, `node_map`); a wire to a
+  // node already on the canvas is dropped.
+  function linkFromWires(node, only) {
     (node.wires || []).forEach((port, i) => {
       (Array.isArray(port) ? port : []).forEach((targetId) => {
         const target = nodesById[targetId] || junctionsById[targetId];
-        if (!target) return;
+        if (!target || (only instanceof Set && !only.has(targetId))) return;
         addLink({ source: node, sourcePort: i, target });
       });
     });
@@ -297,9 +300,10 @@ function buildEditorMock(opts) {
           else if (n.z === undefined) configById[n.id] = n;
           else { nodesById[n.id] = n; added.push(n); }
         });
+        const importIds = new Set(added.map((n) => n.id));
         added.forEach((n) => {
           if (Array.isArray(n.wires) && typeof n.outputs !== 'number') n._ports = n.wires.length;
-          linkFromWires(n);
+          linkFromWires(n, importIds);
         });
         return { nodes };
       },

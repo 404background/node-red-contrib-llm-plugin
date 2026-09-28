@@ -262,6 +262,22 @@ async function renamingKeepsTheColumn() {
 // The fixture sits off the grid (left edges at 50, 250, 450). A reposition
 // is kept at the sequence's old top-left, but only to the nearest square:
 // the node already at that corner used to stay off the grid.
+// RED.nodes.import links a wire only to a node in the same import, so a wire
+// from the new node to one already on the canvas has to be made after it:
+// an edit inserting a change between a ui-form and a ui-text lost the second
+// wire in the editor while the old mock kept it.
+async function aNewNodeWiresToAnExistingOne() {
+  console.log('\nA new node is wired to the existing node it feeds');
+  const { res, byId } = await apply(fence({
+    nodes: { change_mid: { type: 'change', name: 'mid', props: { rules: [{ t: 'set', p: 'payload', pt: 'msg', to: 'x', tot: 'str' }] } } },
+    connections: [{ from: 'function_shape', to: 'change_mid' }, { from: 'change_mid', to: 'debug_out' }],
+  }));
+  const mid = Object.values(byId).find((n) => n.type === 'change');
+  ok(res && res.ok && mid && byId.fn.wires[0].indexOf(mid.id) !== -1, 'the existing node feeds the new one');
+  ok(mid && mid.wires[0] && mid.wires[0].indexOf('dbg') !== -1,
+    'and the new one feeds the existing debug (' + JSON.stringify(mid && mid.wires) + ')');
+}
+
 async function repositionLandsOnTheGrid() {
   console.log('\nA reposition puts the whole sequence on the grid');
   const { res, byId } = await apply(fence({ reposition: ['inject_tick', 'function_shape', 'debug_out'] }));
@@ -287,5 +303,6 @@ async function repositionLandsOnTheGrid() {
   await joiningAGroupIsStillADiff();
   await renamingKeepsTheColumn();
   await repositionLandsOnTheGrid();
+  await aNewNodeWiresToAnExistingOne();
   summary();
 })();

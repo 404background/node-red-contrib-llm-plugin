@@ -313,8 +313,13 @@ Added nodes are imported **before** the wire pass, because a new link needs both
 to exist.
 
 Two ordering details follow from this:
-- An added node's own `wires` become links during the import. Wires pointing **at** it
-  from nodes that were not re-imported do not — that is what the rewire pass covers.
+- The import links a wire only to a node **in the same import** (red.js `importNodes`
+  builds links through its own `node_map`). So neither a wire pointing **at** an added
+  node from one that was not re-imported, nor a wire **from** an added node to one
+  already on the canvas, comes out of it: the rewire pass makes both. The second was
+  missed for a long time because the test mock linked to any existing node; an edit
+  inserting a node before an existing `ui-text` lost that wire in the editor. The mock
+  now links only within one import, as the editor does.
 - A property update that repoints a config reference de-registers against the **old**
   value (`updateConfigNodeUsers(node, {action:'remove'})`) before writing and
   re-registers after, or the config node's `users` list keeps a node that no longer

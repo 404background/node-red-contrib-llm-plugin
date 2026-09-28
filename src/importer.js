@@ -1842,6 +1842,14 @@
                 let live = liveById[id] || liveEntity(id);
                 if (live) applyWireDiff(live, afterById[id].wires);
             });
+            // RED.nodes.import links a wire only to a node in the same import:
+            // one from a new node to a node already on the canvas is dropped.
+            added.forEach(function(n) {
+                let live = liveEntity(n.id);
+                if (live && afterById[n.id] && Array.isArray(afterById[n.id].wires)) {
+                    applyWireDiff(live, afterById[n.id].wires);
+                }
+            });
 
             try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
             refreshCanvasView([wsId]);
