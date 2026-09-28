@@ -19,6 +19,8 @@
 // LLM_TEST_REPLAY=run.log[,more.log] sends nothing: it re-judges the failed
 // replies a run with LLM_TEST_SHOW_FAILED=1 logged, against the code as it is
 // now, and reports which of them would pass.
+// The flags in llm_args.js (--url, --model, --only, --runs, --provider,
+// --show-failed) set the same variables.
 // Exit codes: 0 = every scenario passed for every model, 1 = some failed,
 // 2 = skipped (endpoint or model absent).
 
@@ -26,6 +28,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { loadPluginSandbox, buildEditorMock, clone } = require('./helpers.js');
+require('./llm_args.js').applyArgs(process.argv.slice(2));
 
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG = (function() {

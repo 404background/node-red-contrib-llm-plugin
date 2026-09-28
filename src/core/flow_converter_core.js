@@ -524,7 +524,10 @@
             if (targetSpec && isNoInputType(targetSpec.type)) return;
             let sourceSpec = nodeSpecs[conn.from];
             if (sourceSpec && isNoOutputType(sourceSpec.type)) return;
-            let port = Math.max(0, Math.min(conn.fromPort || 0, 32));
+            // A model can write `"out1"` or `0.5`: anything that is not a
+            // whole number is port 0, or the index would name no port.
+            let port = Math.floor(Number(conn.fromPort));
+            port = isFinite(port) ? Math.max(0, Math.min(port, 32)) : 0;
             while (wiresMap[conn.from].length <= port) {
                 wiresMap[conn.from].push([]);
             }

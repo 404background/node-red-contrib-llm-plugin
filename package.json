@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "test": "node test/run_all.js",
-    "test:llm": "node test/llm_roundtrip.test.js && node test/llm_scenarios.test.js"
+    "test:llm": "node test/run_llm.js"
   },
   "node-red": {
     "version": ">=4.0.0",

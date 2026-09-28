@@ -6,8 +6,8 @@
 //     npm run test:llm
 //
 // Settings come from `llm-test-config.json` next to this file (git-ignored;
-// copy `llm-test-config.example.json` to create it). Environment variables
-// LLM_TEST_URL / LLM_TEST_MODEL override individual fields.
+// copy `llm-test-config.example.json` to create it). `--url` / `--model`
+// (llm_args.js), or LLM_TEST_URL / LLM_TEST_MODEL, override individual fields.
 //
 // What it covers is the path a user actually drives, using the same engine
 // the sidebar and the llm-request node use:
@@ -35,6 +35,7 @@ const http = require('http');
 const ROOT = path.resolve(__dirname, '..');
 const Cfg = require(path.join(ROOT, 'src', 'core', 'flow_converter_core.js'));
 const Parser = require(path.join(ROOT, 'src', 'core', 'llm_json_parser.js'));
+require('./llm_args.js').applyArgs(process.argv.slice(2));
 
 // ------------------------------------------------------------------ //
 //  Configuration                                                      //

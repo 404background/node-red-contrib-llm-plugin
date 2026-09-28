@@ -84,11 +84,26 @@ cp test/llm-test-config.example.json test/llm-test-config.json
 | `attempts` | Retries allowed for a reply to contain a parseable schema — small models sometimes answer in prose first |
 | `showReplies` | Print the model's raw replies so you can see what it actually said |
 
-`LLM_TEST_URL` / `LLM_TEST_MODEL` override the file for a single run:
+Arguments override the file for a single run (`npm run test:llm -- --help`):
 
 ```bash
-LLM_TEST_MODEL=llama3.2 npm run test:llm
+npm run test:llm -- --url 192.0.2.10 --model gemma3:4b,gemma4:e4b
+npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delete,switch --runs 5
 ```
+
+| Argument | Meaning |
+|----------|---------|
+| `--url <host\|url>` | Ollama server. A bare host gets `http://` and port `11434` |
+| `--model <a[,b]>` | Model, or several: the round-trip runs once per model, the scenarios print a table |
+| `--only <a[,b]>` | Scenarios whose name contains one of these |
+| `--runs <n>` | Each scenario n times without retries, with a pass rate |
+| `--provider <name>` | `ollama` (default) or `openai` |
+| `--show-failed` | Print the replies that failed |
+
+Each flag sets the matching `LLM_TEST_*` variable (`LLM_TEST_URL`, `LLM_TEST_MODEL(S)`,
+`LLM_TEST_ONLY`, `LLM_TEST_RUNS`, `LLM_TEST_PROVIDER`, `LLM_TEST_SHOW_FAILED`), so the
+variables still work, and a flag wins over them. Both suites also take the flags when
+run directly (`node test/llm_scenarios.test.js --url …`).
 
 Exit codes: `0` passed, `1` failed, `2` skipped — the endpoint was unreachable,
 the model was not installed, or the endpoint failed to serve the request.
@@ -197,12 +212,26 @@ cp test/llm-test-config.example.json test/llm-test-config.json
 | `attempts` | 解析可能なスキーマを含む応答が返るまでの再試行回数。小さいモデルはまず散文で答えてくることがある |
 | `showReplies` | モデルの応答をそのまま表示する。実際に何を返したか確認したいとき |
 
-`LLM_TEST_URL` / `LLM_TEST_MODEL` を指定すると、その 1 回だけファイルの設定を
-上書きできる。
+引数を渡すと、その 1 回だけファイルの設定を上書きできる(`npm run test:llm -- --help`)。
 
 ```bash
-LLM_TEST_MODEL=llama3.2 npm run test:llm
+npm run test:llm -- --url 192.0.2.10 --model gemma3:4b,gemma4:e4b
+npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delete,switch --runs 5
 ```
+
+| 引数 | 意味 |
+|------|------|
+| `--url <host\|url>` | Ollama サーバ。ホスト名だけなら `http://` とポート `11434` を補う |
+| `--model <a[,b]>` | モデル。複数なら、往復テストはモデルごとに実行し、シナリオは表にまとめる |
+| `--only <a[,b]>` | 名前にどれかを含むシナリオだけを実行する |
+| `--runs <n>` | 各シナリオを再試行なしで n 回ずつ実行し、通過率を出す |
+| `--provider <name>` | `ollama`(既定)か `openai` |
+| `--show-failed` | 失敗した応答を表示する |
+
+各引数は対応する `LLM_TEST_*` 変数(`LLM_TEST_URL`、`LLM_TEST_MODEL(S)`、`LLM_TEST_ONLY`、
+`LLM_TEST_RUNS`、`LLM_TEST_PROVIDER`、`LLM_TEST_SHOW_FAILED`)を設定するだけなので、変数も
+そのまま使え、両方あれば引数が優先される。各スイートを直接実行するときも同じ引数が使える
+(`node test/llm_scenarios.test.js --url …`)。
 
 終了コード: `0` 成功、`1` 失敗、`2` スキップ(エンドポイントに到達できない、
 モデルが入っていない、エンドポイントがリクエストを処理できなかった)。

@@ -235,4 +235,16 @@ it('`config: true` on a node drawn on the canvas does not make it a config node'
     assert(fn && typeof fn.x === 'number' && fn.z === 'ws' && fn.wires[0].length === 1, JSON.stringify(fn));
 });
 
+// A live run crashed here: `wiresMap[from][NaN].push`.
+it('a port that is not a whole number is port 0, not a crash', function() {
+    ['out1', 0.5, -3].forEach(function(p) {
+        const flow = Cfg.toNodeRed({
+            nodes: { inject_a: { type: 'inject' }, debug_b: { type: 'debug' } },
+            connections: [{ from: 'inject_a', to: 'debug_b', fromPort: p }]
+        }, { workspace: 'ws' });
+        const inj = byType(flow, 'inject')[0];
+        assert(inj.wires.length === 1 && inj.wires[0].length === 1, JSON.stringify(p) + ' -> ' + JSON.stringify(inj.wires));
+    });
+});
+
 summary();
