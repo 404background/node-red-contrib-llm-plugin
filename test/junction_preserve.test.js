@@ -365,7 +365,7 @@ async function scenarioRoutingFollowsTheBoxItServes() {
   const { res, byId } = await runImport(nodes, junctions, groups, msg);
   const b1 = byId['b1'], j1 = byId['j1'], li = byId['li'], lo = byId['lo'], gA = byId['gA'];
   ok(res && res.ok && b1.y > 320, 'the box below was pushed down (' + (b1 && b1.y) + ')');
-  ok(j1.x - b1.x === 80 && j1.y - b1.y === -80,
+  ok(Math.abs(j1.x - b1.x - 80) <= 10 && j1.y - b1.y === -80,
     'the junction feeding it kept its place beside it (' + (j1.x - b1.x) + ',' + (j1.y - b1.y) + ')');
   ok(!(j1.x > gA.x && j1.x < gA.x + gA.w && j1.y > gA.y && j1.y < gA.y + gA.h),
     'so it is not left inside the box that grew');

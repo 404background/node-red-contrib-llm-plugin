@@ -284,7 +284,7 @@ function buildEditorMock(opts) {
       addLink,
       removeLink,
       updateConfigNodeUsers: function () {},
-      import: function (nodes) {
+      import: function (nodes, options) {
         importCalls++;
         // Reproduces a mid-import failure (a malformed node, a registry that
         // rejects the set) so the rollback path runs.
@@ -301,6 +301,8 @@ function buildEditorMock(opts) {
           else { nodesById[n.id] = n; added.push(n); }
         });
         const importIds = new Set(added.map((n) => n.id));
+        // As red.js: an imported node is marked changed only when asked to.
+        added.forEach((n) => { n.changed = !!(options && options.markChanged); });
         added.forEach((n) => {
           if (Array.isArray(n.wires) && typeof n.outputs !== 'number') n._ports = n.wires.length;
           linkFromWires(n, importIds);

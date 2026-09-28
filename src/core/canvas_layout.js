@@ -755,20 +755,26 @@
         });
         if (nonComments.length < 2) return;
 
+        // Top EDGE, like startY: pinning the centre put every reflowed chain
+        // half a node, then a grid square, lower than it was.
+        let nodeHeight = pickOption(opts, 'nodeHeight', LAYOUT_DEFAULTS.nodeHeight);
         let minLeft = Infinity, minTop = Infinity;
         nonComments.forEach(function(n) {
             let w = getNodeWidth(n, opts);
             let left = n.x - w / 2;
             if (left < minLeft) minLeft = left;
-            if (n.y < minTop) minTop = n.y;
+            if (n.y - nodeHeight / 2 < minTop) minTop = n.y - nodeHeight / 2;
         });
         if (!isFinite(minLeft)) minLeft = pickOption(opts, 'startX', LAYOUT_DEFAULTS.startX);
         if (!isFinite(minTop))  minTop  = pickOption(opts, 'startY', LAYOUT_DEFAULTS.startY);
 
-        // Pin the reflow to the component's existing top-left.
+        // Pin the reflow to the component's existing top-left, to the nearest
+        // square: the chain is laid out again, so all of it lands on the grid
+        // together rather than new nodes on it and old ones beside it.
+        let gridSize = pickOption(opts, 'gridSize', LAYOUT_DEFAULTS.gridSize);
         let pinnedOpts = Object.assign({}, opts || {}, {
-            startX: minLeft,
-            startY: minTop
+            startX: gridRound(minLeft, gridSize),
+            startY: gridRound(minTop + nodeHeight / 2, gridSize) - nodeHeight / 2
         });
         reflowCanvasNodes(componentNodes, pinnedOpts);
     }

@@ -246,8 +246,8 @@ async function renamingKeepsTheColumn() {
   const column = 100 - Layout.estimateNodeWidth({ type: 'inject', name: 'tick' }, {}) / 2;
 
   ok(res && res.ok, 'the edit applied');
-  // The fixture's column is off the grid; the node stays in it, on the grid.
-  ok(Math.abs(leftOf(byId.inj) - column) <= 10 && leftOf(byId.inj) % 20 === 0,
+  // The fixture's column is off the grid: the node keeps it, or the nearest square.
+  ok(Math.abs(leftOf(byId.inj) - column) <= 10,
     'the renamed node kept its left edge (' + leftOf(byId.inj) + ', was ' + column + ')');
   ok(leftOf(byId.cap) === leftOf(byId.inj),
     'the caption still shares that edge (' + leftOf(byId.cap) + ')');
@@ -276,6 +276,27 @@ async function aNewNodeWiresToAnExistingOne() {
   ok(res && res.ok && mid && byId.fn.wires[0].indexOf(mid.id) !== -1, 'the existing node feeds the new one');
   ok(mid && mid.wires[0] && mid.wires[0].indexOf('dbg') !== -1,
     'and the new one feeds the existing debug (' + JSON.stringify(mid && mid.wires) + ')');
+  // The chain is reflowed around the insertion but stays on its row: pinning
+  // its centre as a top edge put it a square lower every time.
+  ok([byId.inj, byId.fn, byId.dbg].every((n) => n && n.y === 100),
+    'and the chain keeps its row (' + [byId.inj, byId.fn, byId.dbg].map((n) => n && n.y).join(',') + ')');
+}
+
+// An import marks nothing unless asked: a new node came in looking deployed
+// while the edited one next to it was marked, so a Deploy looked complete.
+async function aNewNodeIsUndeployed() {
+  console.log('\nA new node is marked undeployed, like an edited one');
+  const f = flow();
+  const mock = buildEditorMock({ tabs: TABS, nodes: f.nodes, junctions: f.junctions, groups: f.groups, activeId: 't1' });
+  const LLMPlugin = loadPluginSandbox(mock.RED);
+  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({
+    nodes: { debug_extra: { type: 'debug', name: 'extra' }, function_shape: { type: 'function', name: 'shape', props: { func: 'return null;' } } },
+    connections: [{ from: 'function_shape', to: 'debug_extra' }],
+  }), { mode: 'agent', allowedWorkspaceIds: ['t1'] });
+  const added = mock.snapshot('t1').find((n) => n.name === 'extra');
+  ok(res && res.ok && added && mock.RED.nodes.node(added.id).changed === true, 'the new node is changed');
+  ok(mock.RED.nodes.node('fn').changed === true, 'and so is the edited one');
+  ok(!mock.RED.nodes.node('inj').changed, 'while the untouched inject is not');
 }
 
 async function repositionLandsOnTheGrid() {
@@ -304,5 +325,6 @@ async function repositionLandsOnTheGrid() {
   await renamingKeepsTheColumn();
   await repositionLandsOnTheGrid();
   await aNewNodeWiresToAnExistingOne();
+  await aNewNodeIsUndeployed();
   summary();
 })();

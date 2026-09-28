@@ -1353,6 +1353,7 @@
             // Bypass RED.history — rewind via the plugin's checkpoints instead.
             importNodes.forEach(applyTypeDefaults);
             RED.nodes.import(importNodes, { generateIds: false, reimport: true, addFlow: false });
+            markChangedAgainst(backupEntitiesJSON, importNodes);
             try { RED.workspaces.refresh(); } catch (e) { /* ignore */ }
             refreshCanvasView([workspaceId]);
             return { ok: true, count: importNodes.length, configUpdated: configNodesToUpdate.length };
@@ -1611,6 +1612,26 @@
         liveNode.dirty = true;
     }
 
+    // After a whole-tab re-import, which marks nothing: a node that is new, or
+    // whose properties differ from before, is undeployed; one that only moved
+    // is `moved`, as a drag leaves it. Unchanged nodes stay clean.
+    function markChangedAgainst(before, nodes) {
+        let was = {};
+        (before || []).forEach(function(b) { if (b && b.id) was[b.id] = b; });
+        let PLACE = { x: 1, y: 1, w: 1, h: 1, z: 1 };
+        (nodes || []).forEach(function(n) {
+            let live = n && n.id ? liveEntity(n.id) : null;
+            if (!live) return;
+            let b = was[n.id];
+            let keys = Object.keys(n).concat(b ? Object.keys(b) : []);
+            let differs = !b || keys.some(function(k) {
+                return !PLACE[k] && JSON.stringify(n[k]) !== JSON.stringify(b[k]);
+            });
+            if (differs) { live.changed = true; live.dirty = true; }
+            else if (b.x !== n.x || b.y !== n.y) { live.moved = true; live.dirty = true; }
+        });
+    }
+
     // Clear the tab and re-import an export of it. Rollback only: on a
     // half-applied failure it is the only way back to a known state.
     function restoreWorkspaceFromExport(exportedFlow, wsId) {
@@ -1831,7 +1852,8 @@
             if (importSet.length > 0) {
                 // Bypass RED.history - rewind via the plugin's checkpoints.
                 importSet.forEach(applyTypeDefaults);
-                RED.nodes.import(importSet, { generateIds: false, reimport: true, addFlow: false });
+                // markChanged: an import marks nothing, and a new node is undeployed.
+                RED.nodes.import(importSet, { generateIds: false, reimport: true, addFlow: false, markChanged: true });
             }
 
             // After the import: a member added by this edit has to exist
