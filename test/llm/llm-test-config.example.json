@@ -9,7 +9,8 @@
     "runs": 3,
     "servers": [
       { "name": "local", "url": "http://localhost:11434" },
-      { "name": "slow-box", "url": "http://192.0.2.10:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] }
+      { "name": "slow-box", "url": "http://192.0.2.10:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
+      { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true }
     ]
   }
 }

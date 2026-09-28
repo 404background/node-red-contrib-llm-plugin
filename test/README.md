@@ -128,14 +128,17 @@ run directly (`node test/llm/llm_scenarios.test.js --url …`).
 
 `test/llm/llm_accuracy.js` measures how well each model does the sidebar's job: for
 every server under `accuracy.servers` in the config, it lists the models the server
-has (cloud and embedding models aside), checks each one loads, and runs the scenarios
+has (embedding models aside, and cloud models: those run at ollama.com whichever server
+relays them, so they are measured once, on a server marked `"cloud": true`, which measures
+only them), checks each one loads, and runs the scenarios
 with `runs` per scenario. Servers run in parallel, the models on one server one after
 another. `--server`, `--model` and `--runs` narrow a run.
 
 ```json
 "accuracy": { "runs": 3, "servers": [
   { "name": "gpu-box", "url": "http://192.0.2.10:11434" },
-  { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] } ] }
+  { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
+  { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true } ] }
 ```
 
 The results stay on this machine, in `test/llm/results/`: `accuracy.md` (the latest
@@ -292,15 +295,17 @@ npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delet
 ### 精度(`npm run test:llm:accuracy`)
 
 `test/llm/llm_accuracy.js` は、各モデルがサイドバーの仕事をどれだけこなせるかを測る。
-設定の `accuracy.servers` にある各サーバについて、そのサーバにあるモデル(クラウドと
-埋め込み用を除く)を一覧し、読み込めるか確かめてから、シナリオを1つにつき `runs` 回
+設定の `accuracy.servers` にある各サーバについて、そのサーバにあるモデル(埋め込み用を除く。
+クラウドモデルはどのサーバを経由しても ollama.com で動くので、`"cloud": true` を付けた
+サーバでだけ、それだけを測る)を一覧し、読み込めるか確かめてから、シナリオを1つにつき `runs` 回
 実行する。サーバ同士は並行、1台のサーバのモデルは1つずつ順に実行する。`--server`・
 `--model`・`--runs` で対象を絞れる。
 
 ```json
 "accuracy": { "runs": 3, "servers": [
   { "name": "gpu-box", "url": "http://192.0.2.10:11434" },
-  { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] } ] }
+  { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
+  { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true } ] }
 ```
 
 結果はこの端末の `test/llm/results/` に残る。`accuracy.md`(サーバ・モデルごとの最新の

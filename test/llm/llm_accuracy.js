@@ -8,7 +8,8 @@
 //
 //     "accuracy": { "runs": 3, "servers": [
 //         { "name": "gpu-box", "url": "http://<host>:11434" },
-//         { "name": "slow-box", "url": "http://<host>:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] } ] }
+//         { "name": "slow-box", "url": "http://<host>:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
+//         { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true } ] }
 //
 // Results go to results/ next to this file (git-ignored like the config:
 // they name the servers): the raw log of every run, accuracy.json (every run,
@@ -53,10 +54,11 @@ function config() {
   return acc;
 }
 
-// Chat models only: a cloud model does not run on the server, and an
-// embedding model cannot answer.
-function usable(name) {
-  return !/[:-]cloud$/.test(name) && !/embed/i.test(name);
+// Chat models only, and a server's own: a cloud model runs at ollama.com
+// whichever server relays it, so it is measured once, on the server marked
+// `"cloud": true` (which measures nothing else). An embedding model cannot answer.
+function usable(name, cloud) {
+  return /[:-]cloud$/.test(name) === !!cloud && !/embed/i.test(name);
 }
 
 async function getJson(url) {
@@ -162,7 +164,8 @@ async function measure(s, opts, defaults, date, commit) {
   const runs = opts.runs || s.runs || defaults.runs || 3;
   let models, ollama = null;
   try {
-    models = ((await getJson(url + '/api/tags')).models || []).map((m) => m.name).filter(usable).sort();
+    models = ((await getJson(url + '/api/tags')).models || []).map((m) => m.name)
+      .filter((m) => usable(m, s.cloud)).sort();
     ollama = (await getJson(url + '/api/version')).version || null;
   } catch (e) {
     console.log('[' + s.name + '] unreachable: ' + ((e && e.message) || e));
