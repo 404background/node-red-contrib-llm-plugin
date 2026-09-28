@@ -15,7 +15,7 @@
 // are already made there (`propertyEditTouchesNothingElse` pins every wire,
 // `rewiringOnlyMovesLinks` drives a `remove` directive). Asserting them twice
 // meant two suites to update for one behaviour change.
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 // `byId` / `imported` read the flow AS IT NOW STANDS, not import()'s payload:
 // the apply is a diff, so an untouched junction or an unmentioned wire is

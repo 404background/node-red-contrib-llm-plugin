@@ -15,7 +15,7 @@
 // honest about what is being checked.
 const fs = require('fs');
 const path = require('path');
-const { ok, summary, ROOT } = require('./helpers.js');
+const { ok, summary, ROOT } = require('../helpers.js');
 
 const HTML = fs.readFileSync(path.join(ROOT, 'llm_plugin.html'), 'utf8');
 const UI_CORE = fs.readFileSync(path.join(ROOT, 'src', 'ui_core.js'), 'utf8');

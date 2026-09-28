@@ -10,7 +10,7 @@ const http = require('http');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { ROOT, ok, summary, coreRED } = require('./helpers.js');
+const { ROOT, ok, summary, coreRED } = require('../helpers.js');
 
 const KEY = 'f3a91c4e-77bd-4a2e-9c10-8de55b0f1a22'; // not sk-shaped: only the
                                                     // literal-value redaction

@@ -13,8 +13,9 @@
     "images/"
   ],
   "scripts": {
-    "test": "node test/run_all.js",
-    "test:llm": "node test/run_llm.js"
+    "test": "node test/unit/run_all.js",
+    "test:llm": "node test/llm/run_llm.js",
+    "test:llm:accuracy": "node test/llm/llm_accuracy.js"
   },
   "node-red": {
     "version": ">=4.0.0",

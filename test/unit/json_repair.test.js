@@ -10,7 +10,7 @@
 // The schema-level behaviour of the recovered nodes belongs to
 // flow_converter_core / import_safety; here the question is only whether the
 // text parses at all, and into what.
-const { ok, summary, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 const mock = buildEditorMock({ tabs: [{ id: 'tab1', type: 'tab', label: 'Flow 1' }], activeId: 'tab1' });
 const sandbox = loadPluginSandbox(mock.RED);

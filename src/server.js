@@ -617,7 +617,7 @@ function createLLMPluginServer(RED) {
     });
 
     // Exactly what client.js loads, never the server-side modules beside them.
-    // test/server_api.test.js keeps the two lists equal.
+    // test/unit/server_api.test.js keeps the two lists equal.
     const CLIENT_FILES = [
         'client.js',
         'common.js',

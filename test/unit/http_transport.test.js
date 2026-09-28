@@ -11,7 +11,7 @@
 //   * a stream cut before its end marker is an error, not a short reply.
 const http = require('http');
 const path = require('path');
-const { ok, summary, ROOT } = require('./helpers.js');
+const { ok, summary, ROOT } = require('../helpers.js');
 
 const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
 

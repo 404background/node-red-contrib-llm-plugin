@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
-const { ok, summary, ROOT, CLIENT_MODULES } = require('./helpers.js');
+const { ok, summary, ROOT, CLIENT_MODULES } = require('../helpers.js');
 
 const TABS = [{ id: 't1', type: 'tab', label: 'Flow 1' }, { id: 't2', type: 'tab', label: 'Flow 2' },
   { id: 't3', type: 'tab', label: 'Flow 3' }];

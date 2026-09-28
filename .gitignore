@@ -1,19 +1,11 @@
 .logs/
 .credentials.json
 
-# Keep the regression tests (run by `npm test`), their runners (and the live
-# suites' argument parser), their shared
-# scaffolding, the live-test template and their documentation tracked; ignore
-# any other scratch files dropped into test/ — including `llm-test-config.json`
-# itself, which is machine-specific (endpoint + model for `npm run test:llm`).
-test/*
-!test/*.test.js
-!test/run_all.js
-!test/run_llm.js
-!test/llm_args.js
-!test/helpers.js
-!test/llm-test-config.example.json
-!test/README.md
+# Test code is tracked. Ignored: what describes this machine (the live suites'
+# endpoints and models, which name hosts) and what a run produced.
+test/llm/llm-test-config.json
+test/llm/results/
+test/**/.tmp-*/
 .claude/
 temp/
 *.pdf

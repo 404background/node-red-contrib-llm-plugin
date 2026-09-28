@@ -9,7 +9,7 @@
 //    because the editor draws from both and repairs neither for us;
 //  - the BOX is ours to fit. Node-RED stores x/y/w/h on the group and only
 //    recomputes them when a user drags a member.
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 const TABS = [{ id: 'tab1', type: 'tab', label: 'Flow 1' }];
 
@@ -46,7 +46,7 @@ function boxHolds(group, members) {
 // asserts is that the shape an LLM actually proposes comes out of the
 // importer with it — the node layout spaces MEMBERS, and a caption that
 // joined a group used to grow its box 10px into the box above.
-const GROUP_GAP = require('../src/core/canvas_layout.js').LAYOUT_DEFAULTS.groupGap;
+const GROUP_GAP = require('../../src/core/canvas_layout.js').LAYOUT_DEFAULTS.groupGap;
 
 function boxGaps(groups) {
   const sorted = groups.slice().sort((a, b) => a.y - b.y);
@@ -162,7 +162,7 @@ async function scenarioRepositionTakesTheCaptionAlong() {
   const at = (id) => flow.find((n) => n.id === id);
   // Widths from the engine's own estimator, so this measures the same edges
   // the layout was reasoning about.
-  const Layout = require('../src/core/canvas_layout.js');
+  const Layout = require('../../src/core/canvas_layout.js');
   const leftOf = (n) => n.x - Layout.estimateNodeWidth(n, {}) / 2;
 
   ok(res && res.ok, 'the import applied');

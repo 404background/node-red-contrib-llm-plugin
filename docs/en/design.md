@@ -46,7 +46,7 @@ with `_`) — and it constrains **both directions** of the boundary.
 - **"The model cannot forge it" is part of the rule**: if a schema could set `_llmSpecKeys`
   (which decides property preservation, §4.2) or `_autoStub` (which feeds config protection,
   §5), the LLM's output could bend the merge rules themselves.
-- Regression test: `test/schema_conventions.test.js` (registered in `npm test`).
+- Regression test: `test/unit/schema_conventions.test.js` (registered in `npm test`).
 
 ---
 
@@ -184,7 +184,7 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 - Scoping makes "flows written ⊆ flows checkpointed" hold, which is what keeps Restore meaningful.
 - When the active tab is out of scope (the user switched tabs after Send), the target is a context flow, not the active tab. Only an empty scope (no flow selected) keeps the legacy active-tab behaviour.
 - A final check right before the apply **aborts** the import if the target escaped the scope.
-- Regression test: `test/cross_flow_isolation.test.js` (alias collision / tab switch / fan-out / out-of-scope `flow` tag / unscoped backwards compatibility / one alias one node / node ids in properties / runtime and editor numbering alike).
+- Regression test: `test/unit/cross_flow_isolation.test.js` (alias collision / tab switch / fan-out / out-of-scope `flow` tag / unscoped backwards compatibility / one alias one node / node ids in properties / runtime and editor numbering alike).
 
 ---
 
@@ -203,12 +203,12 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 - A junction has x/y/wires, so `isCanvasNode` is true. It is a real routing point and stays in the layout adjacency graph, so a chain is laid out through it; then it goes back where it was. **The layout never places a junction** itself: it moves only with what it serves. A junction or link node outside a box follows the nodes it leads to (a `link out`, the nodes feeding it) by as much as they moved, so one between two boxes goes with the lower box when a node added above pushes it down ([layout.md](./layout.md#routing-follows-what-it-serves)). It is measured at its real 10×10, and `settleCollisions` moves whatever lands on one (a junction on a box edge is an ordinary route and is left alone).
 - A group also has x/y, so `isCanvasNode` is true too, but **a group's bounding box encloses its own members**. Feeding it to the collision-resolution passes makes it "collide with its own contents" and break.
 - → Added `isLayoutNode()` (= `isCanvasNode && type!=='group'`), applied to all layout calls. **Groups are excluded from layout** (their positions are kept as-is).
-- Regression test: `test/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive; that no edit moves a junction whose targets stayed put, rewires it or lands on it; that routing between two boxes follows the box it feeds when that box is pushed down; that the context reads through junctions and a restated connection adds no wire; that a removed connection is cut through junctions and link nodes with every other connection kept and idle routing removed; and that a link node's hover-only virtual link does not join two sequences.
+- Regression test: `test/unit/junction_preserve.test.js` (registered in `npm test`). Edits an `A→junction→B` flow and verifies the junction and both wire directions survive; that no edit moves a junction whose targets stayed put, rewires it or lands on it; that routing between two boxes follows the box it feeds when that box is pushed down; that the context reads through junctions and a restated connection adds no wire; that a removed connection is cut through junctions and link nodes with every other connection kept and idle routing removed; and that a link node's hover-only virtual link does not join two sequences.
 
 ### The rollback snapshot is subject to the same rule
 - Both appliers take their own backup before touching the workspace, so a failing `RED.nodes.import` can put the flow back. That backup used to hold **regular nodes only** — so the error path, the one case that is supposed to change nothing, deleted the workspace's junctions and groups for good.
 - The backup now covers junctions and groups too, and is produced with `createExportableNodeSet` rather than a plain JSON clone: a *live* group's `nodes` array holds node **objects**, which a naive clone would serialise into the backup where the import format expects ids.
-- Regression test: `test/import_safety.test.js` scenario B.
+- Regression test: `test/unit/import_safety.test.js` scenario B.
 
 ---
 
@@ -279,7 +279,7 @@ The deployed runtime was never restarted by this. `diffNodes` in
 compares node configs by id while deliberately ignoring `x`, `y` and `wires` (and, for
 a group, `nodes` / `style` / `w` / `h`). Since the rebuild preserves ids and carries
 untouched nodes through from the snapshot unchanged, they never land in
-`diff.changed`. Pinned by `test/deploy_churn.test.js`, which re-implements that exact
+`diff.changed`. Pinned by `test/unit/deploy_churn.test.js`, which re-implements that exact
 criterion. (A **Full** deploy restarts everything regardless, and the **Modified
 Flows** deploy type also restarts `linked` and `rewired` nodes — both are the deploy
 type's doing, not the applier's.)
@@ -413,8 +413,8 @@ nodes' `users` lists first. `changed` is restored along with the values, because
 that flag is what a deploy reads — leaving it set would restart a config node for an
 edit that never landed.
 
-- Regression tests: `test/incremental_apply.test.js` (what gets touched),
-  `test/deploy_churn.test.js` (what gets restarted), `test/import_safety.test.js`
+- Regression tests: `test/unit/incremental_apply.test.js` (what gets touched),
+  `test/unit/deploy_churn.test.js` (what gets restarted), `test/unit/import_safety.test.js`
   scenario B (canvas rollback) and scenario D (config-node rollback).
 
 ---
@@ -492,7 +492,7 @@ could therefore corrupt every `reposition` or group member list in the same
 reply. The container the cursor is in is now tracked, and a string inside an
 array is always a value.
 
-- Regression tests: `test/json_repair.test.js` — an expression keeps the quotes
+- Regression tests: `test/unit/json_repair.test.js` — an expression keeps the quotes
   of its own literals (both the case that loses two and the case that loses only
   the trailing one); a concatenation and a ternary that already read correctly
   are not re-quoted; the f-string inside a function body is still left alone.
@@ -574,7 +574,7 @@ with the editor's own 25px padding ([layout.md](./layout.md#group-boxes)).
 Every box is fitted tightly, including one the user made larger: a box bigger
 than its contents cannot be lined up or spaced by what is in it.
 
-- Regression tests: `test/group_schema.test.js`: a reply cannot create, edit or
+- Regression tests: `test/unit/group_schema.test.js`: a reply cannot create, edit or
   delete a box; the context shows no box and leaves node aliases alone; a node
   added to a box pushes the next sequence down, whole; rearranging a boxed
   sequence refits the box, and its caption follows the node it heads; a box
@@ -583,4 +583,4 @@ than its contents cannot be lined up or spaced by what is in it.
   joins that box; a branch added inside a box lands clear of the others, in
   port order; a comment moves to the node the reply names, and into its box;
   and a new comment over a boxed node is drawn inside the box.
-  `test/junction_preserve.test.js` covers the junction and link-node side.
+  `test/unit/junction_preserve.test.js` covers the junction and link-node side.

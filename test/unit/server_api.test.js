@@ -2,7 +2,7 @@
 // unauthenticated routes hand out and what a write is refused for.
 const fs = require('fs');
 const path = require('path');
-const { ok, summary, ROOT } = require('./helpers.js');
+const { ok, summary, ROOT } = require('../helpers.js');
 
 const { createLLMPluginServer } = require(path.join(ROOT, 'src', 'server.js'));
 

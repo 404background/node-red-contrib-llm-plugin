@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
-const { ok, summary, ROOT, buildEditorMock, CLIENT_MODULES } = require('./helpers.js');
+const { ok, summary, ROOT, buildEditorMock, CLIENT_MODULES } = require('../helpers.js');
 const { createLLMPluginServer } = require(path.join(ROOT, 'src', 'server.js'));
 
 

@@ -14,7 +14,7 @@
 //     including one it knows only by an alias numbered across every context
 //     flow - whatever the property is called, and is cleared and reported when
 //     it resolves to nothing rather than left pointing at a generated id.
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 // The shared editor mock models links as their own registry, which is what
 // lets these scenarios read the flow as it NOW STANDS (`idsIn` / `snapshot`)

@@ -32,7 +32,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const Cfg = require(path.join(ROOT, 'src', 'core', 'flow_converter_core.js'));
 const Parser = require(path.join(ROOT, 'src', 'core', 'llm_json_parser.js'));
 require('./llm_args.js').applyArgs(process.argv.slice(2));

@@ -1,5 +1,5 @@
 // Regression tests for the layout engine (src/core/canvas_layout.js).
-// Run with `node test/canvas_layout.test.js`.
+// Run with `node test/unit/canvas_layout.test.js`.
 //
 // Three guarantees, each with its own history:
 //
@@ -13,8 +13,8 @@
 // 3. A component the edit did not touch is RIGID: it may be translated as a
 //    whole, never reflowed or sheared.
 
-const Layout = require('../src/core/canvas_layout.js');
-const { it, describe, assert, ok, summary } = require('./helpers.js');
+const Layout = require('../../src/core/canvas_layout.js');
+const { it, describe, assert, ok, summary } = require('../helpers.js');
 
 const NODE_HEIGHT = 30;
 

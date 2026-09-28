@@ -12,8 +12,8 @@
 //     `d`, and the merge must not restore the node's previous `d: true`.
 //     docs/{en,jp}/vibe-schema.md "Editor flags".
 
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
-const Cfg = require('../src/core/flow_converter_core.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
+const Cfg = require('../../src/core/flow_converter_core.js');
 
 function metaKeysOf(obj) {
   return Object.keys(obj || {}).filter((k) => k.charAt(0) === '_');

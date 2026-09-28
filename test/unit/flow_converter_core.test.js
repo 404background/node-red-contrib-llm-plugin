@@ -1,5 +1,5 @@
 // Regression tests for flow_converter_core.js auto-stub creation.
-// Run with `node test/flow_converter_core.test.js`.
+// Run with `node test/unit/flow_converter_core.test.js`.
 //
 // The historical bug: the auto-stub scan in toNodeRed treated a config
 // node's OWN value props as dangling config references. An mqtt-broker's
@@ -9,9 +9,9 @@
 // Fixed by skipping the stub when the mapped type equals the node's own
 // type (cross-type refs like ui-group's `tab` → ui-tab still stub).
 
-const Cfg = require('../src/core/flow_converter_core.js');
+const Cfg = require('../../src/core/flow_converter_core.js');
 const assert = require('assert');
-const { it, summary } = require('./helpers.js');
+const { it, summary } = require('../helpers.js');
 
 function byType(flow, type) {
     return flow.filter(function(n) { return n.type === type; });
@@ -194,7 +194,7 @@ it('reformatting a function body never changes anything but whitespace', functio
     });
 });
 
-// What the small models wrote in the live scenarios (test/llm_scenarios.test.js).
+// What the small models wrote in the live scenarios (test/llm/llm_scenarios.test.js).
 it('an http in written `http-in`, with GET and a path, is a working http in', function() {
     const flow = Cfg.toNodeRed({
         nodes: { http_hello: { type: 'http-in', name: 'hello', props: { method: ['GET'], path: 'hello' } },

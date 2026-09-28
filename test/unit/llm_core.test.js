@@ -19,9 +19,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { ok, summary } = require('./helpers.js');
+const { ok, summary } = require('../helpers.js');
 
-const CORE = path.resolve(__dirname, '..', 'src', 'llm_core.js');
+const CORE = path.resolve(__dirname, '..', '..', 'src', 'llm_core.js');
 
 // llm_core is a per-process singleton, so a "restart" has to be a real
 // subprocess. `store` stands in for Node-RED's settings storage and is handed
@@ -234,12 +234,12 @@ function aMissingKeyIsNamed() {
 
 function systemPromptShips() {
   console.log('\nPackaging');
-  const prompt = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'prompt_system.txt'), 'utf8');
+  const prompt = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'prompt_system.txt'), 'utf8');
   ok(prompt.length > 500, 'prompt_system.txt is present and not truncated');
   ok(/Vibe Schema/.test(prompt), 'and still describes the Vibe Schema');
-  const ask = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'prompt_ask.txt'), 'utf8');
+  const ask = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'prompt_ask.txt'), 'utf8');
   ok(ask.length > 200, 'prompt_ask.txt ships too — neither has a fallback');
-  ok(typeof require('../src/llm_core.js') === 'function',
+  ok(typeof require('../../src/llm_core.js') === 'function',
     'llm_core loads, which is what proves both prompts are readable');
 }
 

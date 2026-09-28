@@ -1,5 +1,5 @@
 // Chat history: several chats go in one delete, behind one confirmation.
-const { ok, summary, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 function load(confirmAnswer) {
   const deleted = [];

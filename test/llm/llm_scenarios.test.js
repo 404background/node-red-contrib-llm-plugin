@@ -27,10 +27,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { loadPluginSandbox, buildEditorMock, clone } = require('./helpers.js');
+const { loadPluginSandbox, buildEditorMock, clone } = require('../helpers.js');
 require('./llm_args.js').applyArgs(process.argv.slice(2));
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const CONFIG = (function() {
   const cfg = { ollamaUrl: 'http://localhost:11434', model: 'gemma3:4b', timeoutMs: 1800000, attempts: 2 };
   const file = path.join(__dirname, 'llm-test-config.json');

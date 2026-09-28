@@ -1,7 +1,7 @@
 # Tests
 
 Everything about this project's tests lives here: what the suites are, what each
-one protects, and how to run the live round-trip. The rest of the developer
+one protects, and how to run the live suites. The rest of the developer
 documentation is in [`../docs/`](../docs/README.md).
 
 日本語版は[このページの後半](#テスト)にあります。
@@ -9,8 +9,18 @@ documentation is in [`../docs/`](../docs/README.md).
 ## Running
 
 ```bash
-npm test          # the offline suites — nothing but Node required
-npm run test:llm  # the live round-trip against a real LLM endpoint
+npm test                   # test/unit: the static suites — nothing but Node required
+npm run test:llm           # test/llm: the node, the round-trip and the scenarios against a real LLM
+npm run test:llm:accuracy  # test/llm: the pass rate of every model on every configured server
+```
+
+```
+test/
+  README.md, helpers.js   shared by both
+  unit/                   the plugin's code, no model: npm test
+  llm/                    a real model's replies: npm run test:llm, test:llm:accuracy
+    llm-test-config.json  this machine's servers and models (git-ignored)
+    results/              what the runs produced (git-ignored)
 ```
 
 `npm test` is the gate: it makes no network call, needs no model, and is the one
@@ -21,7 +31,7 @@ separate — it talks to an actual model, so it cannot be deterministic.
 
 Each suite states the guarantee it protects in its own header comment, and that
 comment — not the assertion names — is the place to look first. `npm test` is
-`test/run_all.js`: it finds every `*.test.js` in this folder and runs each in
+`test/unit/run_all.js`: it finds every `*.test.js` in `test/unit/` and runs each in
 its own process, in name order, so a new suite runs the moment it is written.
 Every suite is run even after one fails, and the tally at the end names the
 ones that did.
@@ -56,7 +66,13 @@ is its runtime counterpart: the minimal Node-RED that `llm_core` and the
 `buildRED`: the registries it sets up and the state it captures are the point of
 that suite.
 
-## Live round-trip (`npm run test:llm`)
+## Live suites (`npm run test:llm`)
+
+`llm_node.test.js` sends messages through the `llm-request` node to a real model:
+the reply comes back on `msg.payload` with the other properties untouched,
+`msg.llm` is filled in, the node's system prompt is followed and `msg.system`
+overrides it, an object payload is sent as JSON, `msg.model` and `msg.timeout`
+are honoured, and a blank payload is refused before any request.
 
 `llm_roundtrip.test.js` drives the same engine the sidebar and the `llm-request`
 node use — prompt construction, a real HTTP call to the provider, Vibe Schema
@@ -69,11 +85,14 @@ exact: a schema must be extractable, and the flow it yields must be one
 
 `llm_scenarios.test.js` goes one step further: realistic requests — building, inserting, editing properties (inject, function, change with JSONata, debug), renaming, disabling, deleting nodes and single connections (also through a junction or link nodes), comments, layout, group boxes, config nodes (reuse, never invent), several sequences, switches and multi-output functions, other flows, a request for a node that does not exist, and questions in both modes — are sent to the model, applied to a mocked editor through the real importer, and the canvas is checked for the outcome the user asked for, plus two invariants (every wire lands on a node, nothing overlaps). Each scenario gets `attempts` tries. `LLM_TEST_MODELS=gemma3:4b,gemma4:e2b` runs it against several models and prints a table; `LLM_TEST_SHOW_FAILED=1` prints the replies that failed. `LLM_TEST_ONLY=delete,switch` runs only the scenarios whose name contains one of them. `LLM_TEST_RUNS=5` runs each scenario 5 times without retries and reports how many passed, plus an overall pass rate per model (a run the endpoint never answered, even after retries, is counted apart as unanswered); `LLM_TEST_URL` points it at another Ollama server (a Tailscale address works). `LLM_TEST_PROVIDER=openai` runs it against OpenAI with the key in `LLM_TEST_OPENAI_KEY` or the git-ignored `.credentials.json` at the repository root (`{ "OpenAI": "sk-..." }`); the tokens the API reports (reasoning included) are counted, and `LLM_TEST_TOKEN_BUDGET=200000` stops before the next scenario once that many are spent. `LLM_TEST_REPLAY=run.log[,more.log]` sends nothing: it takes the failed replies a run logged with `LLM_TEST_SHOW_FAILED=1`, judges them again against the code as it is now, and reports which would pass (a reply longer than the 3000 characters the log keeps is marked as cut) — a way to see what a parser or importer change buys without the server.
 
-Endpoint and model come from `llm-test-config.json`, next to the suites it
+`npm run test:llm` is `test/llm/run_llm.js`: the node test and the round-trip once
+per model given, then the scenarios.
+
+Endpoint and model come from `test/llm/llm-test-config.json`, next to the suites it
 configures. That file is git-ignored, so copy the template to create it:
 
 ```bash
-cp test/llm-test-config.example.json test/llm-test-config.json
+cp test/llm/llm-test-config.example.json test/llm/llm-test-config.json
 ```
 
 | Field | Meaning |
@@ -102,8 +121,26 @@ npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delet
 
 Each flag sets the matching `LLM_TEST_*` variable (`LLM_TEST_URL`, `LLM_TEST_MODEL(S)`,
 `LLM_TEST_ONLY`, `LLM_TEST_RUNS`, `LLM_TEST_PROVIDER`, `LLM_TEST_SHOW_FAILED`), so the
-variables still work, and a flag wins over them. Both suites also take the flags when
-run directly (`node test/llm_scenarios.test.js --url …`).
+variables still work, and a flag wins over them. Each suite also takes the flags when
+run directly (`node test/llm/llm_scenarios.test.js --url …`).
+
+### Accuracy (`npm run test:llm:accuracy`)
+
+`test/llm/llm_accuracy.js` measures how well each model does the sidebar's job: for
+every server under `accuracy.servers` in the config, it lists the models the server
+has (cloud and embedding models aside), checks each one loads, and runs the scenarios
+with `runs` per scenario. Servers run in parallel, the models on one server one after
+another. `--server`, `--model` and `--runs` narrow a run.
+
+```json
+"accuracy": { "runs": 3, "servers": [
+  { "name": "gpu-box", "url": "http://192.0.2.10:11434" },
+  { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] } ] }
+```
+
+The results stay on this machine, in `test/llm/results/`: `accuracy.md` (the latest
+pass rate of each server and model, with a per-scenario table), `accuracy.json` (every
+run, appended) and the raw log of each run in a dated folder.
 
 Exit codes: `0` passed, `1` failed, `2` skipped — the endpoint was unreachable,
 the model was not installed, or the endpoint failed to serve the request.
@@ -112,8 +149,9 @@ the model was not installed, or the endpoint failed to serve the request.
 
 1. Open with a header comment naming the guarantee and why it exists — the
    history that made it necessary is the useful part.
-2. Name it `<what it guards>.test.js` and leave it in `test/`. The runner
-   discovers it; nothing has to be listed in `package.json`.
+2. Name it `<what it guards>.test.js`. A suite that needs no model goes in
+   `test/unit/`, where the runner discovers it; one that talks to a model goes in
+   `test/llm/` and is added to `run_llm.js`.
 3. One behaviour, one suite. Where two suites drive the same path — the apply
    is the obvious one — each asserts its own layer and says in its header what
    it deliberately leaves to the other: `incremental_apply` owns the work the
@@ -121,25 +159,34 @@ the model was not installed, or the endpoint failed to serve the request.
    `junction_preserve` owns junctions and groups. Asserting a behaviour twice
    means two suites to update for one change, and neither one tells you which
    is authoritative.
-4. `.gitignore` tracks `test/*.test.js`, `run_all.js`, `helpers.js`,
-   `llm-test-config.example.json` and this README, and ignores anything else
-   dropped into `test/`, so scratch files, temp storage and the local
-   `llm-test-config.json` stay untracked. Tests are not published to npm
-   (`files` in `package.json`).
+4. Test code is tracked. `.gitignore` leaves out only what describes this machine or
+   a run of it: `test/llm/llm-test-config.json` (it names hosts), `test/llm/results/`
+   and the suites' `.tmp-*` storage. Tests are not published to npm (`files` in
+   `package.json`).
 
 ---
 
 # テスト
 
 このプロジェクトのテストに関することはすべてここにまとめてある。どんなスイートが
-あり、それぞれ何を守っているか、実 LLM との往復テストをどう動かすか。その他の
+あり、それぞれ何を守っているか、実 LLM とのテストをどう動かすか。その他の
 開発者向けドキュメントは [`../docs/`](../docs/README.md) にある。
 
 ## 実行方法
 
 ```bash
-npm test          # オフラインのスイート。Node 以外に必要なものはない
-npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
+npm test                   # test/unit: 静的なスイート。Node 以外に必要なものはない
+npm run test:llm           # test/llm: ノード・往復・シナリオを実際の LLM で
+npm run test:llm:accuracy  # test/llm: 設定した各サーバの全モデルの通過率
+```
+
+```
+test/
+  README.md, helpers.js   両方で共有
+  unit/                   プラグインのコード。モデルは使わない: npm test
+  llm/                    実際のモデルの応答: npm run test:llm, test:llm:accuracy
+    llm-test-config.json  この端末のサーバとモデル(git 管理外)
+    results/              実行結果(git 管理外)
 ```
 
 `npm test` が門番である。ネットワークにも出ず、モデルも要らず、変更を入れる前に
@@ -149,8 +196,8 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 ## オフラインのスイート
 
 各スイートは「何を守るためのテストか」を冒頭のコメントに書いてある。アサーション
-の名前ではなく、まずそこを読むこと。`npm test` の実体は `test/run_all.js` で、
-このフォルダの `*.test.js` をすべて見つけ、名前順に 1 つずつ別プロセスで実行する。
+の名前ではなく、まずそこを読むこと。`npm test` の実体は `test/unit/run_all.js` で、
+`test/unit/` の `*.test.js` をすべて見つけ、名前順に 1 つずつ別プロセスで実行する。
 スイートを書けばその時点で実行対象になる。途中で失敗しても最後まで走らせ、
 末尾の集計で落ちたスイート名を挙げる。
 
@@ -184,7 +231,13 @@ npm run test:llm  # 実際の LLM エンドポイントとの往復テスト
 それ以外の `buildRED` は各スイートが自前で持つ。どんなレジストリを用意し、
 何を記録するかがそのスイートの本題だからである。
 
-## 実 LLM との往復テスト(`npm run test:llm`)
+## 実 LLM とのテスト(`npm run test:llm`)
+
+`llm_node.test.js` は `llm-request` ノードに実際のモデルでメッセージを通す。応答が
+`msg.payload` に入りほかのプロパティはそのまま通ること、`msg.llm` が入ること、ノードの
+システムプロンプトに従い `msg.system` で上書きできること、オブジェクトの payload が
+JSON として送られること、`msg.model` と `msg.timeout` が効くこと、空の payload は
+リクエストを送らずに拒むことを確かめる。
 
 `llm_roundtrip.test.js` は、サイドバーと `llm-request` ノードが使うのと同じ
 エンジン — プロンプト組み立て、プロバイダへの実 HTTP リクエスト、応答からの
@@ -197,11 +250,14 @@ Vibe Schema 抽出、インポート可能なフローへの変換 — をその
 
 `llm_scenarios.test.js` はさらに一歩進める。現実的な依頼(新規作成、挿入、プロパティの変更(inject、function、JSONata の change、debug)、名前の変更、無効化、ノードや接続1本の削除(junction や link ノード経由も)、コメント、整列、グループ枠、設定ノード(再利用し、作り出さない)、複数シーケンス、switch や複数出力の function、別フロー、存在しないノードへの依頼、両モードでの質問)をモデルに送り、実際のインポート処理でモックのエディタに適用し、依頼どおりの結果になったかをキャンバスで確かめる。あわせて2つの不変条件(すべてのワイヤが実在するノードに届くこと、何も重ならないこと)も確かめる。各シナリオは `attempts` 回まで試す。`LLM_TEST_MODELS=gemma3:4b,gemma4:e2b` で複数のモデルを続けて試し、結果を表で出す。`LLM_TEST_SHOW_FAILED=1` で失敗した応答を表示する。`LLM_TEST_ONLY=delete,switch` で名前にどれかを含むシナリオだけを実行する。`LLM_TEST_RUNS=5` で各シナリオを再試行なしで5回ずつ実行し、通過した回数とモデルごとの通過率を出す(再試行しても応答が無かった回は unanswered として別に数える)。`LLM_TEST_URL` で別の Ollama サーバーを指定できる(Tailscale のアドレスでもよい)。`LLM_TEST_PROVIDER=openai` で OpenAI を使う。キーは `LLM_TEST_OPENAI_KEY` か、リポジトリ直下の git 管理外の `.credentials.json`(`{ "OpenAI": "sk-..." }`)から読む。API が報告するトークン数(推論分を含む)を数え、`LLM_TEST_TOKEN_BUDGET=200000` でその量に達したら次のシナリオの前で止める。`LLM_TEST_REPLAY=run.log[,more.log]` は何も送らない。`LLM_TEST_SHOW_FAILED=1` で記録した失敗応答を今のコードで判定し直し、どれが通るようになったかを出す(ログが残す 3000 文字を超えた応答は切れていると示す)。パーサやインポータの変更の効果を、サーバーなしで確かめられる。
 
-接続先とモデルは、スイートと同じ `test/` に置く `llm-test-config.json` から読む。
+`npm run test:llm` の実体は `test/llm/run_llm.js` で、ノードのテストと往復テストを
+モデルごとに実行し、最後にシナリオを実行する。
+
+接続先とモデルは、スイートと同じ `test/llm/` に置く `llm-test-config.json` から読む。
 このファイルは git 管理外なので、テンプレートをコピーして作る。
 
 ```bash
-cp test/llm-test-config.example.json test/llm-test-config.json
+cp test/llm/llm-test-config.example.json test/llm/llm-test-config.json
 ```
 
 | フィールド | 意味 |
@@ -231,7 +287,24 @@ npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delet
 各引数は対応する `LLM_TEST_*` 変数(`LLM_TEST_URL`、`LLM_TEST_MODEL(S)`、`LLM_TEST_ONLY`、
 `LLM_TEST_RUNS`、`LLM_TEST_PROVIDER`、`LLM_TEST_SHOW_FAILED`)を設定するだけなので、変数も
 そのまま使え、両方あれば引数が優先される。各スイートを直接実行するときも同じ引数が使える
-(`node test/llm_scenarios.test.js --url …`)。
+(`node test/llm/llm_scenarios.test.js --url …`)。
+
+### 精度(`npm run test:llm:accuracy`)
+
+`test/llm/llm_accuracy.js` は、各モデルがサイドバーの仕事をどれだけこなせるかを測る。
+設定の `accuracy.servers` にある各サーバについて、そのサーバにあるモデル(クラウドと
+埋め込み用を除く)を一覧し、読み込めるか確かめてから、シナリオを1つにつき `runs` 回
+実行する。サーバ同士は並行、1台のサーバのモデルは1つずつ順に実行する。`--server`・
+`--model`・`--runs` で対象を絞れる。
+
+```json
+"accuracy": { "runs": 3, "servers": [
+  { "name": "gpu-box", "url": "http://192.0.2.10:11434" },
+  { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] } ] }
+```
+
+結果はこの端末の `test/llm/results/` に残る。`accuracy.md`(サーバ・モデルごとの最新の
+通過率と、シナリオ別の表)、`accuracy.json`(全実行の追記)、日付フォルダに各実行の生ログ。
 
 終了コード: `0` 成功、`1` 失敗、`2` スキップ(エンドポイントに到達できない、
 モデルが入っていない、エンドポイントがリクエストを処理できなかった)。
@@ -240,16 +313,16 @@ npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delet
 
 1. 冒頭のコメントに「何を守るテストか」と「なぜ必要になったか」を書く。必要に
    なった経緯こそが後から効いてくる。
-2. ファイル名は `<何を守るか>.test.js` とし、`test/` に置く。ランナーが自動で
-   見つけるので、`package.json` に書き足す必要はない。
+2. ファイル名は `<何を守るか>.test.js` とする。モデルを使わないスイートは
+   `test/unit/` に置けばランナーが自動で見つける。モデルと話すスイートは `test/llm/`
+   に置き、`run_llm.js` に書き足す。
 3. 一つの振る舞いは一つのスイートで検証する。同じ経路を通るスイートが複数ある
    場合(適用まわりが典型)、それぞれ自分の層だけを検証し、何を他に任せたかを
    冒頭コメントに書く。`incremental_apply` はエディタが行う作業、`deploy_churn`
    はランタイムがノードを再起動するかどうか、`junction_preserve` は junction と
    group を担当する。二重に検証すると、一つの変更で二つのスイートを直すことに
    なり、どちらが正なのかも分からなくなる。
-4. `.gitignore` は `test/*.test.js`・`run_all.js`・`helpers.js`・
-   `llm-test-config.example.json`・この README だけを追跡し、`test/` に置かれた
-   それ以外は無視する。一時ファイルやテスト用ストレージ、手元の
-   `llm-test-config.json` が紛れ込まないようにするためである。テストは npm には
-   公開されない(`package.json` の `files`)。
+4. テストのコードはすべて追跡する。`.gitignore` が外すのは、この端末やその実行を
+   表すものだけである。`test/llm/llm-test-config.json`(ホスト名を含む)、
+   `test/llm/results/`、スイートの一時領域 `.tmp-*`。テストは npm には公開されない
+   (`package.json` の `files`)。

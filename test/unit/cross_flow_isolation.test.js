@@ -2,7 +2,7 @@
 // An edit may only modify the flows sent to the model. Aliases are unique
 // only WITHIN a flow and the rebuild clears its target's canvas first, so a
 // misrouted edit is destructive, not additive.
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 // `imported` is still the raw import() payload, because scenario 1-7 ask
 // "which workspaces did this edit WRITE to" — and under an incremental apply

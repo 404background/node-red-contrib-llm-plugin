@@ -10,7 +10,7 @@
 // removed, which were handed to import(), which links were cut and made. The
 // resulting flow is checked too, because "touch nothing" is only a virtue if
 // the edit still lands.
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 const TABS = [{ id: 't1', type: 'tab', label: 'Main' }];
 
@@ -239,7 +239,7 @@ async function renamingKeepsTheColumn() {
 
   const byId = {};
   mock.snapshot('t1').forEach((n) => { byId[n.id] = n; });
-  const Layout = require('../src/core/canvas_layout.js');
+  const Layout = require('../../src/core/canvas_layout.js');
   const leftOf = (n) => n.x - Layout.estimateNodeWidth(n, {}) / 2;
 
   // The fixture's inject sits at x=100 and is 100 wide, so its column is 50.
@@ -317,7 +317,7 @@ async function newNodesGoHome() {
 async function repositionLandsOnTheGrid() {
   console.log('\nA reposition puts the whole sequence on the grid');
   const { res, byId } = await apply(fence({ reposition: ['inject_tick', 'function_shape', 'debug_out'] }));
-  const Layout = require('../src/core/canvas_layout.js');
+  const Layout = require('../../src/core/canvas_layout.js');
   const off = ['inj', 'fn', 'dbg'].filter((id) => {
     const n = byId[id];
     return (n.x - Layout.estimateNodeWidth(n, {}) / 2) % 20 !== 0 || n.y % 20 !== 0;

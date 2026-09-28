@@ -154,7 +154,7 @@ forbids and which therefore means the string was never closed. Which reading is
 right cannot be known in advance, so neither is assumed: only the one that
 yields valid JSON is used, and a block that was already valid never reaches a
 repair at all. One dropped quote in a forty-node schema otherwise costs the
-whole reply. Guarded by `test/json_repair.test.js`.
+whole reply. Guarded by `test/unit/json_repair.test.js`.
 
 **Expression values.** A value the quote repair had to touch is then tested
 against the two readings of where its string literals begin and end, because
@@ -221,7 +221,7 @@ Full import workflow with these guarantees:
    saw. An empty
    / absent scope means "no flow context was selected" and keeps the
    legacy active-tab behaviour. Regression test:
-   `test/cross_flow_isolation.test.js`.
+   `test/unit/cross_flow_isolation.test.js`.
 3. **One alias, one node** — the model is shown one alias numbering over
    every context flow, so each alias names exactly one node.
    `contextAliasTable` rebuilds that numbering from `UI.getFlowsByIds`, and
@@ -237,8 +237,8 @@ Full import workflow with these guarantees:
    it, else reported in the chat. A wire between two tabs is not made.
    Node ids inside properties (`scope: [...]`) are aliases to the model at
    any depth, and `restoreNodeRefs` turns them back. Regression tests:
-   `test/cross_flow_isolation.test.js` scenarios 9–11 and
-   `test/import_safety.test.js` scenarios A1–A3.
+   `test/unit/cross_flow_isolation.test.js` scenarios 9–11 and
+   `test/unit/import_safety.test.js` scenarios A1–A3.
 4. **Strict delete → add → connect ordering** —
    `rebuildWorkspaceFromSnapshot` runs three labeled phases so a single
    schema cannot contradict itself mid-merge:
@@ -457,7 +457,7 @@ No chat history is sent — each request is stateless to the LLM.
   modules) stay unauthenticated because `<script>` / `<link>` tags cannot
   send an auth header. Each serves one fixed file: the modules are exactly
   the list `client.js` loads, so the server-side modules beside them in
-  `src/` are never served (`test/server_api.test.js` keeps the lists equal).
+  `src/` are never served (`test/unit/server_api.test.js` keeps the lists equal).
 - **Reply rendering.** A reply is Markdown, rendered inside the editor, which
   holds admin privileges — so raw HTML in it is text, never markup. That is
   enforced in the renderer (`html()` escapes the token) rather than by
@@ -475,7 +475,7 @@ No chat history is sent — each request is stateless to the LLM.
   becomes `LLMPlugin.DOMPurify`: its UMD build would otherwise replace the
   editor's global `DOMPurify`, which red.js uses, with another version and
   with this plugin's hook on it. Without it the reply is shown as escaped
-  text; there is no hand-written fallback. `test/reply_rendering.test.js`
+  text; there is no hand-written fallback. `test/unit/reply_rendering.test.js`
   drives this in jsdom with the scripts the editor loads.
 - API keys (OpenAI and Custom-endpoint) are stored encrypted in
   `<userDir>/llm-plugin/credentials.json` using AES-256-GCM, in a

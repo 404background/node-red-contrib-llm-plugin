@@ -14,7 +14,7 @@
 // never mentioned would restart a running node — an mqtt subscription
 // reconnecting, an inject timer resetting — for an edit somewhere else in the
 // tab. That is what is asserted here.
-const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('../helpers.js');
 
 // --- Node-RED's own restart criterion, mirrored in behaviour ---
 // @node-red/runtime/lib/flows/util.js (4.1.2). A node that lands in
