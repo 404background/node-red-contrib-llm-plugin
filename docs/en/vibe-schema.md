@@ -243,6 +243,12 @@ still read, since a model may write them: an alias mapped to `null` (or to
 the top-level `delete`. Internally a connection delete is carried as
 `{ remove: { from, to } }` from the parser on.
 
+A delete that contradicts the same reply is dropped: an alias the reply both
+lists under `delete` and declares in `nodes` is kept (the declaration wins —
+the delete runs first and a deleted alias cannot come back, so obeying both
+would lose the node), and a connection deleted from a node to itself is noise.
+The smallest models write `delete` next to every node they restate.
+
 **Junctions and `link in` / `link out` nodes are not in the schema.** They are
 the user's routing: the context reads a wire through them as a connection to
 where it leads (`A → junction → B` and `A → link out ⇢ link in → B` both show as
