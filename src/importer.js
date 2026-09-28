@@ -60,9 +60,14 @@
         return !allowedSet || (!!wsId && !!allowedSet[wsId]);
     }
 
-    // The active tab when it is in scope, else the first context flow: the
-    // user may have changed tabs between Send and Import.
+    // The tab that was open when the reply was asked for (`homeWorkspaceId`),
+    // else the active tab when it is in scope, else the first context flow:
+    // the user may have changed tabs before an Apply Again.
+    let homeWorkspace = null;
     function pickDefaultWorkspace(allowedSet) {
+        if (homeWorkspace && (!allowedSet || allowedSet[homeWorkspace]) && RED.nodes.workspace(homeWorkspace)) {
+            return homeWorkspace;
+        }
         let active = getActiveWorkspaceId();
         if (!allowedSet) return active;
         if (active && allowedSet[active]) return active;
@@ -2207,6 +2212,7 @@
 
     Importer.importFlowFromMessage = async function(messageContent, options) {
         options = options || {};
+        if (!options._isSubImport) homeWorkspace = options.homeWorkspaceId || null;
         try {
             // The flows sent as context. Null = none was selected, which
             // leaves the active tab as the only sensible target.
@@ -2599,6 +2605,8 @@
             });
             Common.notice('Failed to import flow: ' + (err && err.message ? err.message : String(err)), 'error');
             return { ok: false, error: err && err.message ? err.message : String(err) };
+        } finally {
+            if (!options._isSubImport) homeWorkspace = null;
         }
     };
 

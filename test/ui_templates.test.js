@@ -306,6 +306,23 @@ function scenarioRetryReusesTheSendPath() {
     'a failed rewind still asks, against the flow as it stands');
 }
 
+// Apply Again clicked on several replies before a deploy: the last one clicked
+// is what the canvas shows. So it rewinds to the checkpoint its reply was first
+// applied over, then applies, instead of stacking on whatever is there. And
+// a reply's new nodes go to the tab it was asked from, not the one now open.
+function scenarioApplyAgainRewindsFirst() {
+  console.log('\nApply Again rewinds to its own checkpoint, then applies');
+  const btn = (/function createReapplyButton\(([\s\S]*?)\n    \}/.exec(UI_CORE) || [])[1] || '';
+  ok(/checkpointId/.test(btn) && btn.indexOf('restoreCheckpoint(checkpointId)') !== -1,
+    'it restores the checkpoint the reply was applied over');
+  ok(btn.indexOf('rewind.then(function() { return runImport(') !== -1, 'and only then applies');
+  ok(UI_CORE.indexOf('placeReapplyOnTheSchema(message, content, messageMeta, checkpointId)') !== -1,
+    'the checkpoint reaches the button from the import that took it');
+  ok(UI_CORE.indexOf('homeWorkspaceId: metaOf(messageMeta).homeWorkspaceId') !== -1 &&
+     VIBE_UI.indexOf('homeWorkspaceId: homeWorkspaceId') !== -1,
+    'the tab a reply was asked from is kept with it and handed to the import');
+}
+
 // The answer is only useful if the user can get from it to the node it is
 // about, and that holds for BOTH modes: Ask names the node at fault, Agent
 // names the ones it built. So the annotation must not be one of the things
@@ -373,6 +390,7 @@ function run() {
   scenarioPromptKeysAreWired();
   scenarioRestoreAndReapplyArePaired();
   scenarioRetryReusesTheSendPath();
+  scenarioApplyAgainRewindsFirst();
   scenarioNodeLinksAreModeIndependent();
   scenarioModeAndModelShareARow();
   scenarioThePluginRaisesNoNotifications();

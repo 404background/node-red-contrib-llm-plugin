@@ -299,6 +299,21 @@ async function aNewNodeIsUndeployed() {
   ok(!mock.RED.nodes.node('inj').changed, 'while the untouched inject is not');
 }
 
+// A reply's new nodes go to the tab it was asked from, even when another tab
+// in scope is open by the time it is applied (an Apply Again later on).
+async function newNodesGoHome() {
+  console.log('\nNew nodes go to the tab the reply was asked from');
+  const tabs = [{ id: 't1', type: 'tab', label: 'Flow 1' }, { id: 't2', type: 'tab', label: 'Flow 2' }];
+  const mock = buildEditorMock({ tabs, activeId: 't2', nodes: [
+    { id: 'a', type: 'inject', z: 't1', name: 'a', x: 150, y: 100, wires: [[]] },
+    { id: 'b', type: 'inject', z: 't2', name: 'b', x: 150, y: 100, wires: [[]] }] });
+  const LLMPlugin = loadPluginSandbox(mock.RED);
+  const res = await LLMPlugin.Importer.importFlowFromMessage(fence({ nodes: { debug_new: { type: 'debug', name: 'new' } } }),
+    { mode: 'agent', allowedWorkspaceIds: ['t1', 't2'], homeWorkspaceId: 't1' });
+  const onT1 = mock.snapshot('t1').some((n) => n.name === 'new'), onT2 = mock.snapshot('t2').some((n) => n.name === 'new');
+  ok(res && res.ok && onT1 && !onT2, 'it lands on Flow 1, not the open Flow 2 (' + onT1 + '/' + onT2 + ')');
+}
+
 async function repositionLandsOnTheGrid() {
   console.log('\nA reposition puts the whole sequence on the grid');
   const { res, byId } = await apply(fence({ reposition: ['inject_tick', 'function_shape', 'debug_out'] }));
@@ -326,5 +341,6 @@ async function repositionLandsOnTheGrid() {
   await repositionLandsOnTheGrid();
   await aNewNodeWiresToAnExistingOne();
   await aNewNodeIsUndeployed();
+  await newNodesGoHome();
   summary();
 })();

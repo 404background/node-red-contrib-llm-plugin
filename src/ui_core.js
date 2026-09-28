@@ -418,7 +418,7 @@
     // proposal in Agent mode. See docs/{en,jp}/architecture.md.
     function showPostImportActions(message, checkpointId, content, messageMeta) {
         placeRestoreAboveThePrompt(message, checkpointId, messageMeta);
-        placeReapplyOnTheSchema(message, content, messageMeta);
+        placeReapplyOnTheSchema(message, content, messageMeta, checkpointId);
     }
 
     // The prompt this reply answered — the first user message above it. Two
@@ -455,7 +455,7 @@
         parent.insertBefore(bar, anchor);
     }
 
-    function placeReapplyOnTheSchema(message, content, messageMeta) {
+    function placeReapplyOnTheSchema(message, content, messageMeta, checkpointId) {
         message.querySelectorAll('.reapply-btn').forEach(function(b) { b.remove(); });
         let summary = message.querySelector('.json-collapsible[data-vibe-schema] > summary');
         // No schema block to hang it on (a reply carrying only directives, or
@@ -463,10 +463,13 @@
         // reachable.
         let host = summary || message.querySelector('.flow-actions:not(.pre-chat-actions)');
         if (!host) return;
-        host.appendChild(createReapplyButton(message, content, messageMeta));
+        host.appendChild(createReapplyButton(message, content, messageMeta, checkpointId));
     }
 
-    function createReapplyButton(message, content, messageMeta) {
+    // Rewind to the checkpoint this reply was applied over, then apply it: the
+    // last Apply Again clicked is what the canvas shows, not every one stacked.
+    // The rewind is best effort, as Retry's is.
+    function createReapplyButton(message, content, messageMeta, checkpointId) {
         let btn = Common.cloneTemplate('llm-plugin-reapply-btn-template');
         btn.addEventListener('click', function(e) {
             // Inside a <summary>, a click is the disclosure toggle unless it
@@ -474,7 +477,10 @@
             e.preventDefault();
             e.stopPropagation();
             btn.disabled = true;
-            runImport(message, content, messageMeta)
+            let rewind = checkpointId
+                ? LLMPlugin.Importer.restoreCheckpoint(checkpointId).catch(function() { return null; })
+                : Promise.resolve(null);
+            rewind.then(function() { return runImport(message, content, messageMeta); })
                 .catch(function(err) {
                     Common.notice('Import failed: ' + ((err && err.message) || err), 'error');
                 })
@@ -491,6 +497,7 @@
             .then(function(checkpointId) {
                 return LLMPlugin.Importer.importFlowFromMessage(content, {
                     chatId: chatId,
+                    homeWorkspaceId: metaOf(messageMeta).homeWorkspaceId || null,
                     mode: metaOf(messageMeta).mode || 'ask',
                     // The same set the checkpoint covers, so Restore can
                     // always undo what the import did.

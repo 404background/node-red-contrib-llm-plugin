@@ -700,6 +700,8 @@
 
             // One endpoint for both modes; Agent also imports the reply (below).
             let fetchStart = Date.now();
+            // Where the reply's new nodes go, now and on an Apply Again.
+            let homeWorkspaceId = getActiveWorkspaceId();
 
             Common.apiFetch('llm-plugin/generate', {
                 method: 'POST',
@@ -708,7 +710,7 @@
                     model: model,
                     prompt: prompt,
                     currentFlow: currentFlow,
-                    activeWorkspaceId: getActiveWorkspaceId(),
+                    activeWorkspaceId: homeWorkspaceId,
                     // Ask and Agent are different questions, not the same one
                     // handled differently afterwards: the server picks the
                     // instructions from this.
@@ -739,7 +741,8 @@
                     elapsedMs: totalElapsed,
                     model: usedModel,
                     targetFlowIds: (flowIdsToSend && flowIdsToSend.length > 0) ? flowIdsToSend.slice() : null,
-                    targetFlowName: targetFlowName
+                    targetFlowName: targetFlowName,
+                    homeWorkspaceId: homeWorkspaceId
                 };
                 msgEl = LLMPlugin.ChatManager.addMessage(data.response, false, metaOpts);
 
