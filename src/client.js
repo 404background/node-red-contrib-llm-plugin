@@ -11,10 +11,7 @@
         'llm-plugin/src/chat_manager.js',
         'llm-plugin/src/importer.js',
         'llm-plugin/src/ui_core.js',
-        'llm-plugin/src/vibe_ui.js',
-        // Last: the llm-request node's editor half applies through the
-        // modules above the moment a reply arrives.
-        'llm-plugin/src/agent_apply.js'
+        'llm-plugin/src/vibe_ui.js'
     ];
 
     // Fetch scripts in parallel but execute sequentially to preserve dependencies

@@ -1,9 +1,4 @@
-// The two server-side HTTP callers, against a real local server.
-//
-// Both used to pick between the `http` and `https` modules by hand and build
-// requests out of host/port/path parts. They are on global `fetch` now, which
-// speaks both schemes through one path — so the parts that had to be carried
-// by hand (a scheme flag, 443/80 defaults, chunk collection) are gone.
+// The provider adapters, against a real local server.
 //
 // A transport swap is invisible to the rest of the suite: nothing else here
 // makes a network call, so the unit tests would pass just as happily against
@@ -13,14 +8,11 @@
 //   * the timeout still arrives as `code === 'ETIMEDOUT'`. The node reads
 //     that to show "timeout" instead of "error"; an aborted fetch throws a
 //     TimeoutError with no `code` at all, so it has to be put back.
-//   * a >=400 body still names the PATH, never the full URL. The base can
-//     carry `user:pass@` (it may come from `msg.editorUrl`), and that message
-//     travels out through done(err) to the log and `msg.error`.
+//   * a stream cut before its end marker is an error, not a short reply.
 const http = require('http');
 const path = require('path');
 const { ok, summary, ROOT } = require('./helpers.js');
 
-const createAdminApi = require(path.join(ROOT, 'node', 'lib', 'admin_api.js'));
 const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
 
 // Start a loopback server; resolve once its real port is known.
@@ -49,60 +41,6 @@ function fakeRED() {
     log: { info() {}, warn() {}, error() {} },
     nodes: { registerType() {} },
   };
-}
-
-async function scenarioAdminApiReadsFlows() {
-  console.log('admin_api GETs the flows endpoint over fetch');
-  let seen = null;
-  const s = await serve((req, res) => {
-    seen = { url: req.url, accept: req.headers.accept, apiVersion: req.headers['node-red-api-version'] };
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ rev: 'abc', flows: [{ id: 't1', type: 'tab' }] }));
-  });
-  try {
-    const api = createAdminApi(fakeRED());
-    const out = await api.getFlows({ url: 'http://127.0.0.1:' + s.port + '/' });
-    ok(!!out && Array.isArray(out.flows), 'the JSON body comes back parsed');
-    ok(out.rev === 'abc', 'and complete (rev=' + out.rev + ')');
-    ok(seen && seen.url === '/flows', 'it hit /flows (' + (seen && seen.url) + ')');
-    ok(seen && seen.apiVersion === 'v2', 'with the v2 API header');
-    ok(seen && /json/.test(seen.accept || ''), 'and an Accept of JSON');
-  } finally { await s.close(); }
-}
-
-async function scenarioAdminApiKeepsUrlOutOfErrors() {
-  console.log('\nadmin_api names the path, not the URL, on an error status');
-  const s = await serve((req, res) => {
-    res.writeHead(500, { 'Content-Type': 'text/plain' });
-    res.end('boom');
-  });
-  try {
-    const api = createAdminApi(fakeRED());
-    // Userinfo in the base is the case that matters: it must not be quoted
-    // back into an error that reaches the log and msg.error.
-    let msg = '';
-    try {
-      await api.getFlows({ url: 'http://user:s3cret@127.0.0.1:' + s.port + '/' });
-    } catch (e) { msg = e.message || ''; }
-    ok(/failed \(500\)/.test(msg), 'the status is reported (' + msg.slice(0, 60) + ')');
-    ok(msg.indexOf('s3cret') === -1, 'the password is NOT in the message');
-    ok(msg.indexOf('user:') === -1, 'nor the username');
-    ok(/\/flows/.test(msg), 'but the path still is, which is the useful half');
-  } finally { await s.close(); }
-}
-
-async function scenarioAdminApiRejectsForeignSchemes() {
-  console.log('\nadmin_api still refuses a scheme it has no business opening');
-  const api = createAdminApi(fakeRED());
-  let msg = '';
-  try { await api.getFlows({ url: 'file:///etc/passwd' }); }
-  catch (e) { msg = e.message || ''; }
-  ok(/must use http/.test(msg), 'file:// is refused (' + msg.slice(0, 50) + ')');
-
-  msg = '';
-  try { await api.getFlows({ url: 'not a url' }); }
-  catch (e) { msg = e.message || ''; }
-  ok(/not a valid URL/.test(msg), 'and so is a non-URL');
 }
 
 async function scenarioOllamaRoundTrip() {
@@ -330,10 +268,66 @@ async function scenarioACutStreamIsNotAReply() {
   } finally { await s.close(); }
 }
 
+// OpenAI itself is called through the Responses API: newer models are served
+// there and some nowhere else. The SDK reads OPENAI_BASE_URL when no base is
+// given, which points it at the loopback server.
+async function scenarioOpenAIUsesTheResponsesApi() {
+  console.log('\nthe OpenAI provider posts to /v1/responses and joins the text deltas');
+  let body = null;
+  let mode = 'ok';
+  const s = await serve((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      body = { url: req.url, json: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const send = (ev) => res.write('event: ' + ev.type + '\ndata: ' + JSON.stringify(ev) + '\n\n');
+      send({ type: 'response.created', sequence_number: 0, response: { id: 'r', status: 'in_progress' } });
+      ['hel', 'lo 日本', '語'].forEach((d, i) => send({ type: 'response.output_text.delta', sequence_number: i + 1,
+        item_id: 'm', output_index: 0, content_index: 0, delta: d }));
+      if (mode === 'ok') send({ type: 'response.completed', sequence_number: 9, response: { id: 'r', status: 'completed' } });
+      if (mode === 'incomplete') send({ type: 'response.incomplete', sequence_number: 9,
+        response: { id: 'r', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } } });
+      if (mode === 'failed') send({ type: 'response.failed', sequence_number: 9,
+        response: { id: 'r', status: 'failed', error: { code: 'server_error', message: 'the model fell over' } } });
+      res.end();
+    });
+  });
+  const saved = process.env.OPENAI_BASE_URL;
+  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:' + s.port + '/v1';
+  const settings = { openaiApiKey: 'sk-test' };
+  const messages = [{ role: 'system', content: 'be brief' }, { role: 'user', content: 'hi' }];
+  try {
+    const core = createLLMCore(fakeRED());
+    const out = await core.generateWithProvider('openai', settings, 'gpt-5-mini', messages, {});
+    ok(out === 'hello 日本語', 'the deltas are joined (' + out + ')');
+    ok(body && body.url === '/v1/responses', 'posted to /v1/responses (' + (body && body.url) + ')');
+    ok(body && body.json.stream === true && body.json.store === false, 'streamed, and not stored on OpenAI');
+    ok(body && body.json.instructions === 'be brief', 'the system message is sent as instructions');
+    ok(body && JSON.stringify(body.json.input) === JSON.stringify([{ role: 'user', content: 'hi' }]),
+      'and only the rest as input (' + JSON.stringify(body && body.json.input) + ')');
+
+    mode = 'incomplete';
+    let err = null;
+    try { await core.generateWithProvider('openai', settings, 'm', messages, {}); } catch (e) { err = e; }
+    ok(err && /cut short \(max_output_tokens\)/.test(err.message), 'an incomplete reply is an error that says why (' + (err && err.message) + ')');
+
+    mode = 'failed';
+    err = null;
+    try { await core.generateWithProvider('openai', settings, 'm', messages, {}); } catch (e) { err = e; }
+    ok(err && /the model fell over/.test(err.message), 'a failed response reports what OpenAI said (' + (err && err.message) + ')');
+
+    mode = 'cut';
+    err = null;
+    try { await core.generateWithProvider('openai', settings, 'm', messages, {}); } catch (e) { err = e; }
+    ok(err && err.code === 'ECONNRESET', 'a stream with no end event is not a reply (' + (err && (err.code || err.message)) + ')');
+  } finally {
+    if (saved === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = saved;
+    await s.close();
+  }
+}
+
 async function run() {
-  await scenarioAdminApiReadsFlows();
-  await scenarioAdminApiKeepsUrlOutOfErrors();
-  await scenarioAdminApiRejectsForeignSchemes();
   await scenarioOllamaRoundTrip();
   await scenarioOllamaSurfacesHttpErrors();
   await scenarioOllamaTimeoutKeepsItsCode();
@@ -341,6 +335,7 @@ async function run() {
   await scenarioOllamaReadsAStream();
   await scenarioOllamaTimeoutMidStream();
   await scenarioOpenAICompatibleReadsAStream();
+  await scenarioOpenAIUsesTheResponsesApi();
   await scenarioACutStreamIsNotAReply();
   summary();
 }

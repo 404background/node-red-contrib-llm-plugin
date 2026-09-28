@@ -22,7 +22,7 @@ decisions and priorities**.
 | **Interpose an intermediate "Vibe Schema"** | The boundary that enforces the split structurally. Raw Node-RED JSON carries random IDs, coordinates, and type-specific internal arrays that an LLM cannot meaningfully generate/edit. Abstracting to human-readable `{type}_{name}` aliases without coordinates means the LLM *cannot* invent IDs and has no positions to worry about. `flow_converter_core.js` handles raw JSON ↔ Vibe Schema. |
 | **`_`-prefixed properties are metadata, never shown to the LLM** | Code-side hand-offs — aliases, declaration order, a comment's anchor target — ride on nodes as `_llmAlias` / `_llmOrder` / `_llmAboveId` and friends. Both directions of the boundary hang off that naming convention (§0, the metadata boundary). |
 | **Applying is always a "merge"** | The LLM does not return the whole flow every time (partial edits are the norm). Fixing the rule to "only add/update what is listed, delete what `delete` names, leave the unmentioned as-is" keeps an incomplete LLM response from breaking the existing flow. There is no branch that lets the model choose how to apply — a misfire there falls on the side of destroying the existing flow. |
-| **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser (both sidebar and Agent node). |
+| **Applying happens on the editor (browser) side** | Writing back from the server via the Admin API cannot clear the open editor's unsaved state (dirty/highlights), so it diverges from what the user sees. `RED.nodes.import` is used to apply directly to the canvas inside the browser |
 | **Always checkpoint before a destructive change** | An LLM apply rewrites the original flow in one click. A snapshot is saved immediately before applying, enabling per-message "undo". `RED.history` is not used; the plugin's own checkpoints rewind. |
 | **The snapshot must be the "complete flow"** | The snapshot is both the merge base and the rollback state, and the fallback apply still clears the target workspace, so any canvas entity missing from it can still disappear. → junctions / groups must be included (§7). |
 | **Keep what the reply does not name** | One rule behind several mechanisms: anything a reply does not mention stays as it is, and removing something takes an explicit instruction. Wires are added, never cut by omission (§4.1). Properties that are not mentioned keep their values (§4.2). Config nodes are never created or deleted (§5). Junctions and groups are kept in the snapshot (§7). A group box is the user's: a reply cannot create, edit or delete one, and it is never removed because it became empty (§15). **Position is the exception**: the layout tidies the whole canvas, whoever placed things. Every box is fitted and aligned, and every overlap is resolved. Only a flow's shape is kept, since an untouched flow is translated, never reflowed ([layout.md](./layout.md)). A new mechanism starts from this default. |
@@ -79,10 +79,6 @@ Importer.importFlowFromMessage(response, {mode})   ← the heart of applying
         └─ falls back to replaceWorkspaceFlow (clear + re-import) only when
            the diff cannot express the change (§12)
 ```
-
-The Agent node (`node/llm-request`) also publishes the response to the editor via
-`RED.comms.publish`, and an editor-side subscriber calls the same
-`Importer.importFlowFromMessage`. **The apply logic is fully shared with the sidebar.**
 
 ---
 
@@ -178,7 +174,6 @@ itself is a rule**, designed so a single schema cannot break even if it contradi
 - **A new node** goes to its `flow` tab when that is a context flow, else to the flow of what it is wired to or captions, else to the default flow. It is renamed when its tab already gives that alias to another node.
 - A deletion, a `reposition` and a removed connection go to the flow of the node they name. A token that is not exactly an alias is looked up on each flow and applied only where exactly one flow has it.
 - A wire between two tabs is not made. A removed connection across two context tabs (through link nodes) is cut by `severAcrossFlows` ([vibe-schema.md](./vibe-schema.md)).
-- The llm-request node builds its context on the runtime (`flowContextFor`) with tabs in the order selected and config nodes in id order — the order `UI.getFlowsByIds` gives — so both sides number alike.
 - **Reason**: each tab on its own numbers its nodes independently, so two tabs both have a `debug`. Reading a reply tab by tab, or guessing the tab from the first one that had the alias, is how an edit landed on the wrong node. The numbering the model saw has no such ambiguity.
 
 ### The scan is confined to the context flows (mandatory)
@@ -230,7 +225,6 @@ Inference, label resolution, and dispatch all scan **only the flows sent to the 
 
 - **Immediately before** applying, save a snapshot of the target flow (`saveImportCheckpoint`). Bind the ID to the message; the Restore button next to the message rewinds.
 - Checkpoints are pruned oldest-first past `MAX_CHECKPOINT_FILES`.
-- An `llm-request` node's edit takes no checkpoint and has no restore UI: the sidebar's chat history is how an edit is followed, and a node's edits are reviewed on the canvas before Deploy.
 - Pruning happens **after** the write, not before. Pruning first left the directory at cap+1 once the new record landed, so the limit never meant what it said, and the memory-only branch (which inserts then trims) disagreed with the on-disk one about the same constant.
 - Restore (`restoreMultiFlowCheckpoint`) removes all non-tab entities of the target workspace (regular nodes + subflow instances + junctions + groups) via type-specific APIs, then re-imports the snapshot.
 - That the snapshot includes junctions/groups (§7) is the prerequisite for them not vanishing on restore.
@@ -425,17 +419,15 @@ edit that never landed.
 
 ---
 
-## 13. Two producers, one canvas
+## 13. Applies are not ordered
 
-The sidebar and the `llm-request` node both apply edits to the canvas, and a
-node reply arrives whenever its model finishes. **They are not ordered**: each
-apply lands when it arrives, merged onto the canvas as it stands at that moment.
+Replies from different chats, and an Apply Again on an older reply, can reach
+the canvas in any order. **They are not queued**: each apply lands when it is
+made, merged onto the canvas as it stands at that moment.
 
 - Each apply saves its checkpoint immediately before it runs. Restoring it puts
   its flows back as they were then, which also takes away anything applied
   after it.
-- A node reply reaches every open editor, and only the first to claim it
-  (`agent-apply/claim`) applies it, so it is applied once.
 - The write itself is still Node-RED's to guard: a deploy against an old
   revision returns `409` and opens the editor's merge-conflict dialog.
 - **Why there is no queue.** An applied-but-undeployed flow used to be held

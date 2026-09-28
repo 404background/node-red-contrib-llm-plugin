@@ -725,8 +725,8 @@
             }
             if (nodes.length === 0) return null;
 
-            // In id order, as the runtime's flowContextFor has them: the
-            // alias numbering has to come out the same on both sides.
+            // In id order: the importer rebuilds the alias numbering from
+            // this export, so it has to come out the same every time.
             let configNodes = collectReferencedConfigs(nodes, seenIds).sort(function(a, b) {
                 return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
             });
@@ -740,7 +740,7 @@
     };
 
     // By reference only, transitively and through arrays: the selection is what
-    // may leave the machine. Matches `flowContextFor` in node/llm-request.
+    // may leave the machine.
     function collectReferencedConfigs(nodes, seenIds) {
         let configById = {};
         RED.nodes.eachConfig(function(cn) {

@@ -78,7 +78,7 @@ async function theErrorExitCarriesNoKey() {
     nodeModule(RED);
 
     const node = {};
-    RED.nodes._ctor.call(node, { mode: 'ask', provider: 'custom', model: 'm', timeout: 30 });
+    RED.nodes._ctor.call(node, { provider: 'custom', model: 'm', timeout: 30 });
 
     const err = await new Promise(function(resolve) {
         node.handlers.input.call(node, { payload: 'hi' }, function() {}, resolve);

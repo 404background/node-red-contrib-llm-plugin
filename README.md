@@ -37,7 +37,7 @@ Requires Node-RED 4.0 or later on Node.js 22 or later.
 1. Open the LLM Plugin sidebar.
 2. Configure provider in Settings:
 - Ollama: set URL (default `http://localhost:11434`)
-- OpenAI: set API key
+- OpenAI: set API key (called through the current Responses API)
 - Custom (OpenAI-compatible): set Base URL (e.g. `http://localhost:8080/v1`) and, if required, an API key. Use for llama.cpp, LM Studio, vLLM, LocalAI, or any other server speaking the OpenAI chat-completions API.
 3. Pick which flow tabs to include via the **flow selector** (check additional tabs in the dropdown to send them too). A new chat starts on the open flow; a chat you come back to — including the latest one when Node-RED restarts — brings back the flows it was working on.
 4. Pick the mode: **Ask** reads the selected flows and explains them (it never proposes a flow), **Agent** changes them and applies the result.
@@ -71,11 +71,14 @@ node: a minimal inject → venv → debug flow kept in the active tab.
 - **Tidy layout**: new and moved nodes land on the editor grid, so they line up when dragged: wires two squares long, sequences three squares apart, with or without group boxes.
 - **Several sequences**: ask for several flows in one tab and you get several independent sequences (`flow` in the schema always means the tab). Group boxes stay yours: a new node wired into a boxed sequence joins that box.
 
-## Planned: `llm-request` node
+## `llm-request` node
 
-An `llm-request` node, so a flow can call an LLM without the sidebar, is in
-development and **not part of this release**. Its design is in
-[docs/en/llm-request.md](docs/en/llm-request.md) ([日本語](docs/jp/llm-request.md)).
+A node (palette category **llm-plugin**) so a flow can call an LLM without the
+sidebar: `msg.payload` goes in, the reply comes out on `msg.payload`. Set a
+provider, a model and, optionally, a system prompt on the node; API keys and
+URLs come from the sidebar's Settings. The node does not edit flows — that is
+the sidebar's job. An example is under **Import → Examples → llm-plugin**.
+Details: [docs/en/llm-request.md](docs/en/llm-request.md) ([日本語](docs/jp/llm-request.md)).
 
 ## Documentation
 
@@ -89,7 +92,7 @@ Japanese (`docs/jp/`) version of every page.
 | Architecture | Module-by-module guide, HTTP endpoints, security measures | [en](docs/en/architecture.md) | [jp](docs/jp/architecture.md) |
 | Vibe Schema | The intermediate flow format the LLM reads and writes | [en](docs/en/vibe-schema.md) | [jp](docs/jp/vibe-schema.md) |
 | Layout | Canvas layout engine, spacing rules, comment placement | [en](docs/en/layout.md) | [jp](docs/jp/layout.md) |
-| `llm-request` node (planned) | The node a flow calls an LLM from, in full | [en](docs/en/llm-request.md) | [jp](docs/jp/llm-request.md) |
+| `llm-request` node | The node a flow calls an LLM from, in full | [en](docs/en/llm-request.md) | [jp](docs/jp/llm-request.md) |
 
 Two more, kept next to what they describe:
 

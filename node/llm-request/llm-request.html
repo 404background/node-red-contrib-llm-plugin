@@ -3,17 +3,12 @@
         category: 'llm-plugin',
         color: '#ffd700',
         defaults: {
-            name:        { value: '' },
-            mode:        { value: 'ask' },
-            provider:    { value: 'ollama' },
-            model:       { value: '', required: true },
-            targetFlows: { value: [] },
-            // Admin API base; blank = auto-detect.
-            editorUrl:   { value: '' },
-            editorUrlType: { value: 'str' },
-            autoDeploy:  { value: false },
+            name:         { value: '' },
+            provider:     { value: 'ollama' },
+            model:        { value: '', required: true },
+            systemPrompt: { value: '' },
             // Seconds, 0 = no limit. Long by default: local LLMs are slow.
-            timeout:     { value: 3600, validate: function(v) {
+            timeout:      { value: 3600, validate: function(v) {
                 return v === '' || v === undefined || (!isNaN(v) && Number(v) >= 0);
             } }
         },
@@ -22,30 +17,7 @@
         icon: 'font-awesome/fa-comments',
         paletteLabel: 'llm-request',
         label: function() {
-            return this.name || ('llm-request (' + (this.mode === 'agent' ? 'agent' : 'ask') + ')');
-        },
-        oneditprepare: function() {
-            $('#node-input-editorUrl').typedInput({
-                default: 'str',
-                types: ['str', 'msg', 'flow', 'global'],
-                typeField: '#node-input-editorUrlType'
-            });
-
-            // Refreshed on every open: the tab list changes underneath.
-            var sel = $('#node-input-targetFlows').empty();
-            RED.nodes.eachWorkspace(function(ws) {
-                sel.append($('<option>').val(ws.id).text(ws.label || ws.id));
-            });
-            sel.val(Array.isArray(this.targetFlows) ? this.targetFlows : []);
-
-            function syncMode() {
-                $('.llm-request-agent-only').toggle($('#node-input-mode').val() === 'agent');
-            }
-            $('#node-input-mode').on('change', syncMode);
-            syncMode();
-        },
-        oneditsave: function() {
-            this.targetFlows = $('#node-input-targetFlows').val() || [];
+            return this.name || this.model || 'llm-request';
         }
     });
 </script>
@@ -54,13 +26,6 @@
     <div class="form-row">
         <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
         <input type="text" id="node-input-name" placeholder="LLM">
-    </div>
-    <div class="form-row">
-        <label for="node-input-mode"><i class="fa fa-cogs"></i> Mode</label>
-        <select id="node-input-mode">
-            <option value="ask">Ask</option>
-            <option value="agent">Agent</option>
-        </select>
     </div>
     <div class="form-row">
         <label for="node-input-provider"><i class="fa fa-server"></i> Provider</label>
@@ -72,69 +37,40 @@
     </div>
     <div class="form-row">
         <label for="node-input-model"><i class="fa fa-microchip"></i> Model</label>
-        <input type="text" id="node-input-model" placeholder="e.g. llama3.1 / gpt-4o-mini">
+        <input type="text" id="node-input-model" placeholder="e.g. llama3.1 / gpt-5-mini">
     </div>
     <div class="form-row">
-        <label for="node-input-targetFlows" style="vertical-align:top;"><i class="fa fa-sitemap"></i> Flows</label>
-        <select id="node-input-targetFlows" multiple size="4" style="width:70%;"></select>
-    </div>
-    <div class="form-row">
-        <label for="node-input-editorUrl"><i class="fa fa-link"></i> API URL</label>
-        <input type="text" id="node-input-editorUrl" style="width:70%;" placeholder="http://localhost:1880">
-        <input type="hidden" id="node-input-editorUrlType">
+        <label for="node-input-systemPrompt" style="vertical-align:top;"><i class="fa fa-file-text-o"></i> System</label>
+        <textarea id="node-input-systemPrompt" rows="4" style="width:70%;" placeholder="(optional) instructions for every request"></textarea>
     </div>
     <div class="form-row">
         <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
         <input type="number" id="node-input-timeout" min="0" step="1" placeholder="3600" style="width:120px;"> seconds (0 = no limit)
     </div>
-    <div class="form-row llm-request-agent-only">
-        <label for="node-input-autoDeploy"><i class="fa fa-upload"></i> Auto deploy</label>
-        <input type="checkbox" id="node-input-autoDeploy" style="display:inline-block; width:auto; vertical-align:middle;">
-        <span style="font-size:12px;">deploy right after applying</span>
-    </div>
     <div class="form-tips">
-        <i class="fa fa-info-circle"></i> API keys & provider URLs come from the LLM Plugin sidebar. Selected flows are sent as context. API URL: blank = auto-detect (recommended).
-    </div>
-    <div class="form-tips llm-request-agent-only" style="margin-top:6px;">
-        <i class="fa fa-exclamation-triangle"></i> Agent applies the reply to the open editor with no review step, and a generated flow may contain <code>function</code> / <code>exec</code> nodes — never wire untrusted input into an Agent node. <b>Auto deploy</b> deploys immediately, without confirmation: development only.
+        <i class="fa fa-info-circle"></i> API keys & provider URLs come from the LLM Plugin sidebar.
     </div>
 </script>
 
 <script type="text/html" data-help-name="llm-request">
-    <p>Sends <code>msg.payload</code> to an LLM and outputs the reply. Provider,
-    model and the flows sent as context are set here; API keys and provider URLs
-    come from the <b>LLM Plugin sidebar</b> (Settings).</p>
+    <p>Sends <code>msg.payload</code> to an LLM and outputs the reply. API keys
+    and provider URLs come from the <b>LLM Plugin sidebar</b> (Settings).</p>
 
     <h3>Inputs</h3>
     <dl class="message-properties">
         <dt>payload <span class="property-type">string | object</span></dt><dd>The prompt. Objects are JSON-stringified.</dd>
+        <dt class="optional">system <span class="property-type">string</span></dt><dd>Overrides the node's system prompt.</dd>
         <dt class="optional">model <span class="property-type">string</span></dt><dd>Overrides the configured model.</dd>
         <dt class="optional">timeout <span class="property-type">number</span></dt><dd>Overrides the timeout, in seconds (0 = no limit).</dd>
     </dl>
 
     <h3>Outputs</h3>
     <dl class="message-properties">
-        <dt>payload <span class="property-type">string</span></dt><dd>The reply, in natural language — do not <code>JSON.parse</code> it.</dd>
-        <dt>llm <span class="property-type">object</span></dt><dd>mode, provider, model, elapsed ms.</dd>
-        <dt>flow <span class="property-type">object</span></dt><dd>Agent mode only: <code>{ targetFlows, dispatchedToEditor, autoDeploy }</code>.</dd>
+        <dt>payload <span class="property-type">string</span></dt><dd>The reply text.</dd>
+        <dt>llm <span class="property-type">object</span></dt><dd>provider, model, elapsed ms.</dd>
     </dl>
 
-    <h3>Modes</h3>
-    <dl class="message-properties">
-        <dt>Ask</dt><dd>The reply comes back on <code>msg.payload</code>. The selected flows, if any, are sent as context.</dd>
-        <dt>Agent</dt><dd>Also applies the proposed changes to the selected flows, live in the open editor — review on the canvas and <b>Deploy</b>. Needs an editor open with the LLM Plugin loaded.</dd>
-    </dl>
-
-    <h3>Before you wire it up</h3>
-    <ul>
-        <li>Agent runs what the model writes: a generated flow may contain <code>function</code> nodes (JavaScript in this process) or <code>exec</code> nodes (shell commands). Do <b>not</b> feed untrusted text into an Agent node.</li>
-        <li>Every message costs one LLM request, and one canvas edit in Agent mode — mind the trigger rate.</li>
-        <li><b>Timeout</b> defaults to 3600 seconds because local models are slow; 0 = no limit.</li>
-        <li><b>API URL</b>: leave blank to auto-detect (recommended). A <code>msg</code> property is read only when the field is set to that type.</li>
-    </ul>
-
-    <p>Auto deploy and troubleshooting are
-    documented in full on GitHub:
+    <p>Every message is one LLM request — mind the trigger rate. Details on GitHub:
     <a href="https://github.com/404background/node-red-contrib-llm-plugin/blob/main/docs/en/llm-request.md" target="_blank" rel="noopener">llm-request node</a>
     (<a href="https://github.com/404background/node-red-contrib-llm-plugin/blob/main/docs/jp/llm-request.md" target="_blank" rel="noopener">日本語</a>).</p>
 </script>

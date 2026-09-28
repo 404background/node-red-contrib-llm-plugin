@@ -5,7 +5,6 @@ const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
 const createLLMCore = require('./llm_core');
-const agentDispatch = require('./agent_dispatch');
 
 function createLLMPluginServer(RED) {
     const core = createLLMCore(RED);
@@ -559,17 +558,6 @@ function createLLMPluginServer(RED) {
         }
     });
 
-    // An Agent-node reply is published to every editor; the first one to
-    // claim it applies it, the rest drop it. PERM_WRITE, so an editor that
-    // could not deploy the edit never makes it. See docs/{en,jp}/llm-request.md.
-    RED.httpAdmin.post('/llm-plugin/agent-apply/claim', guard(PERM_WRITE), function(req, res) {
-        try {
-            return res.json({ granted: agentDispatch.claim(String((req.body || {}).dispatchId || '')) });
-        } catch (error) {
-            return fail(res, error);
-        }
-    });
-
     RED.httpAdmin.post('/llm-plugin/client-log', guard(PERM_WRITE), function(req, res) {
         try {
             const body = req.body || {};
@@ -639,8 +627,7 @@ function createLLMPluginServer(RED) {
         'chat_manager.js',
         'importer.js',
         'ui_core.js',
-        'vibe_ui.js',
-        'agent_apply.js'
+        'vibe_ui.js'
     ];
     CLIENT_FILES.forEach(function(file) {
         RED.httpAdmin.get('/llm-plugin/src/' + file, function(req, res) {

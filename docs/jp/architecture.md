@@ -55,14 +55,10 @@ src/
   importer.js           LLM 出力の抽出、再構築、エディタへの import
   ui_core.js            メッセージ描画、フローエクスポート
   vibe_ui.js            サイドバー構築 + 生成ワークフロー
-  agent_apply.js        `llm-request` ノードのエディタ側: 通信チャネル → インポータ
-  agent_dispatch.js     ランタイム側: Agent ノードの応答1件を1つのエディタだけが受け取る
-  llm_core.js           共有 LLM エンジン(設定/認証/プロバイダ/プロンプト/コンテキスト)
+  llm_core.js           共有 LLM エンジン(設定/認証/プロバイダ/プロンプト)
   server.js             HTTP エンドポイント + チャット/チェックポイント永続化
 node/                   `llm-request` ノード(パレットカテゴリ: llm-plugin)
-  lib/admin_api.js      ローカル Node-RED Admin API クライアント(読み取り専用 GET /flows)
-  llm-request/          「LLM」ノード — msg.payload に対する Ask / Agent。
-                        Agent モードのエディタ側は src/agent_apply.js にある
+  llm-request/          msg.payload を送り、モデルの応答を出力する
 ```
 
 ## 読み込み順(クライアント)
@@ -73,12 +69,10 @@ node/                   `llm-request` ノード(パレットカテゴリ: llm-pl
 ```
 common → canvas_layout → flow_converter_core → llm_json_parser
        → chat_manager → importer → ui_core → vibe_ui
-       → agent_apply
 ```
 
 レイアウトエンジンは変換器より前でなければならない。変換器がノードの座標決めを
-レイアウトエンジンに任せているためである。agent_apply が最後なのは、束縛した瞬間に
-`llm-request` の応答が届きうるうえ、その適用に上のすべてを使うからである。
+レイアウトエンジンに任せているためである。
 全モジュールは即時実行関数で自身を包み、共通のグローバル名前空間を介して互いを参照する。
 
 ## HTTP エンドポイント
@@ -92,7 +86,6 @@ common → canvas_layout → flow_converter_core → llm_json_parser
 | POST | `/llm-plugin/chats/save` | write | チャットの永続化 |
 | POST | `/llm-plugin/chats/delete` | write | チャット ID でチャットとそのチェックポイントを削除 |
 | POST | `/llm-plugin/checkpoints/save` | write | フロースナップショットの保存 |
-| POST | `/llm-plugin/agent-apply/claim` | write | Agent ノードの応答を受け取る。最初に受け取ったエディタだけが適用する |
 | GET | `/llm-plugin/checkpoints/:id` | read | 保存済みチェックポイントの読み込み |
 | POST | `/llm-plugin/client-log` | write | ブラウザ側で起きた失敗を Node-RED のログへ報告 |
 | GET | `/llm-plugin/vendor/marked.js` | **なし** | 同梱の marked.js を提供(オフライン Markdown 描画) |
@@ -371,8 +364,8 @@ API キーをそのまま引き継げる — 設定と認証情報の置き場�
 |---------|---------------|
 | ストレージ解決 | `chatsDir` / `checkpointsDir` / `persistenceEnabled`(`<userDir>/llm-plugin`。書けなければメモリのみ)、`writeFileAtomic` |
 | 設定 + 認証情報 | `getPluginSettings`, `savePluginSettings`、暗号化した認証情報ファイル、旧形式のキーの移行、`maskApiKey`, `redactSecrets` |
-| プロンプト構築 | `buildMessages`(システムプロンプトの読み込みと、現在のフローの Vibe Schema 化)、`buildChatMessages`(フロー文脈を伴わない素のチャット) |
-| LLM アダプタ | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` — 実際の送信先は Ollama のチャット API か、OpenAI 互換のエンドポイント。後者は接続先を指定しなければ OpenAI 本体、指定すれば llama.cpp / LM Studio / vLLM / LocalAI といったローカルサーバになる。どちらも応答を**ストリーミング**で受け取る。ストリーミングしないとエンドポイントは生成が終わるまでヘッダを返さず、Node の `fetch` はタイムアウト設定に関係なく 300 秒でヘッダ待ちを打ち切る(SDK はさらに生成全体を2回送り直していた)。ストリームは終端の印(Ollama の `done`、OpenAI の `finish_reason`)が届いて初めて完結とみなす。途中で接続を切るプロキシでもストリームは同じように終わるので、印が無ければ短い応答ではなく `ECONNRESET` とする。タイムアウトは応答全体にかかる。通信エラーのコードは `cause` 側にあり、generate ルートはそこを読んで「接続できない」と伝える。 |
+| プロンプト構築 | `buildMessages`(システムプロンプトの読み込みと、現在のフローの Vibe Schema 化)。`llm-request` ノードはこれを使わず、自分のシステムプロンプトとプロンプトだけでメッセージを組む |
+| LLM アダプタ | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` — 実際の送信先は3つ。Ollama のチャット API、OpenAI 本体(SDK の Responses API、`/v1/responses`。システムメッセージは `instructions` で送り、`store: false` を付ける。新しいモデルはこの API で提供され、この API でしか使えないものもある)、Custom(Chat Completions。llama.cpp / LM Studio / vLLM / LocalAI などのローカルサーバが話す形式)。いずれも応答を**ストリーミング**で受け取る。ストリーミングしないとエンドポイントは生成が終わるまでヘッダを返さず、Node の `fetch` はタイムアウト設定に関係なく 300 秒でヘッダ待ちを打ち切る(SDK はさらに生成全体を2回送り直していた)。ストリームは終端の印(Ollama の `done`、Chat Completions の `finish_reason`、Responses の `response.completed`。Responses が `incomplete` で終わった場合は理由を添えたエラーにする)が届いて初めて完結とみなす。途中で接続を切るプロキシでもストリームは同じように終わるので、印が無ければ短い応答ではなく `ECONNRESET` とする。タイムアウトは応答全体にかかる。通信エラーのコードは `cause` 側にあり、generate ルートはそこを読んで「接続できない」と伝える。 |
 
 ### `server.js`
 
@@ -387,7 +380,7 @@ API キーをそのまま引き継げる — 設定と認証情報の置き場�
 
 ### `node/` — `llm-request` ノード
 
-`llm-request` ノード(および Admin API ヘルパー)はこのエンジンを再利用する。詳細は
+`llm-request` ノードは設定・認証情報・プロバイダ呼び出しにこのエンジンを再利用する。詳細は
 **[docs/jp/llm-request.md](./llm-request.md)** に別途記載。補足: サイドバーのチャット履歴は
 対象フローの ID だけでなく**名前**も保持する。後から見返したときに、その回がどのフローに
 対する対話だったかが読んで分かるようにするためである。
@@ -488,30 +481,23 @@ messages[1] = { role: "user", content: <user prompt> }
 - クライアントからの報告は、行単位のログへ渡す前に改行を除去する。呼び出し側が渡した
   文字列でログの行を偽装できないようにするためである。
 - LLM へ送る前に、フローコンテキストから認証情報を取り除く。`llm-request` ノードは
-  さらに範囲を絞り、選択したフローが実際に参照している config ノードだけを送る
-  (参照は再帰的にたどる)。インスタンス内の全 config ノードは送らない。
+  フローコンテキストを一切送らない。送るのはシステムプロンプトと `msg.payload` だけである。
 
 #### Agent モードはモデルが書いたものをそのまま動かす
 
 これは機能の性質であって不具合ではない。そのうえでプラグイン最大のリスクでもある。
 
-- Agent モードはモデルの応答を**確認なしで**キャンバスに適用する。`Auto deploy` を
-  有効にすると、そのまま即座にデプロイする。
-- 応答は開いているすべてのエディタに配信されるが、適用するのは最初に受け取った
-  (`POST /agent-apply/claim`、write 権限)エディタだけである。2つ目のエディタや
-  読み取り専用ユーザーのエディタは破棄する。
+- Agent モードはモデルの応答を**確認なしで**キャンバスに適用する。ユーザーがデプロイ
+  するまでは動かず、適用の前にチェックポイントを取るので、Restore で取り消せる。
 - ノード種別の**許可リストは設けていない**。生成されたフローには `function` ノード
   (ランタイムプロセス内で動く任意の JavaScript)や `exec` ノード(任意のシェル
   コマンド)が含まれうる。モデルが作れるものを制限すると、このモードの意義そのものが
   失われるため、あえて制限していない。
 
-したがって、モデルの出力を支配できる者は Node-RED ホストを支配できる。設定した LLM
-エンドポイントは信頼できるインフラとして扱うこと。そして**信頼できないテキストを
-Agent ノードに流し込まないこと** — `http in` のペイロード、外部から届く MQTT
-メッセージ、スクレイピングしてきたページの中身など。`Auto deploy` が有効なら、それは
-リモートの文字列からホスト上のコード実行までが一直線につながることを意味する。
-`llm-self-feedback` サンプルが「使い捨てインスタンス用の開発者向けおもちゃ」なのは、
-まさにこの理由による。
+したがって、モデルの出力を支配できる者は、次のデプロイで何が動くかを支配できる。設定した
+LLM エンドポイントは信頼できるインフラとして扱い、Agent の編集はデプロイ前にキャンバスで
+確認すること。`llm-request` ノードには Agent モードがない。応答は `msg.payload` の
+テキストであり、エディタに適用されるものは何もない。
 
 ## テスト
 

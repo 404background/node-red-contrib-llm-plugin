@@ -13,8 +13,8 @@
 // the sidebar and the llm-request node use:
 //
 //     user prompt
-//       -> llm_core.buildMessages / buildChatMessages   (system prompt +
-//                                                        Vibe Schema flow ctx)
+//       -> llm_core.buildMessages                     (system prompt +
+//                                                      Vibe Schema flow ctx)
 //       -> llm_core.generateWithProvider                (real HTTP to Ollama)
 //       -> LLMJsonParser.extractVibeSchema              (parse a model reply)
 //       -> FlowConverterCore.toNodeRed                  (importable flow)
@@ -254,14 +254,11 @@ async function main() {
     const settings = core.getPluginSettings();
 
     // -------------------------------------------------------------- //
-    console.log('Scenario 1: Ask mode - a plain question, a plain answer');
-    // The sidebar with no flow selected, and the llm-request node's Ask mode.
+    console.log('Scenario 1: a plain question, a plain answer');
+    // What the llm-request node sends: the prompt and nothing else.
     {
         const prompt = 'Node-RED の inject ノードは何をするノードですか。1〜2文で簡潔に答えてください。';
-        const messages = core.buildChatMessages(prompt, settings);
-        ok(messages[messages.length - 1].content === prompt, 'the user prompt is passed through verbatim');
-        ok(!messages.some(m => /Vibe Schema/i.test(m.content)),
-            'Ask mode carries no flow-building instructions');
+        const messages = [{ role: 'user', content: prompt }];
 
         const started = Date.now();
         const reply = await callModel(core, settings, messages);

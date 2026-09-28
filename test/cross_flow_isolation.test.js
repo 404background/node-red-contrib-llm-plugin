@@ -1,16 +1,8 @@
-// The flow-isolation guarantee: the user's flow selection is the boundary,
-// in both directions.
-//
-// INBOUND (1-7): an edit may only modify the flows sent to the model.
-// Aliases are unique only WITHIN a flow and the rebuild clears its target's
-// canvas first, so a misrouted edit is destructive, not additive.
-//
-// OUTBOUND (8): the same selection bounds what LEAVES the machine. Attaching
-// every config node in the instance meant picking one small flow still
-// shipped every broker and endpoint definition to the provider.
-const path = require('path');
-
-const { ROOT, ok, summary, clone, fence, loadPluginSandbox, buildEditorMock, coreRED } = require('./helpers.js');
+// The flow-isolation guarantee: the user's flow selection is the boundary.
+// An edit may only modify the flows sent to the model. Aliases are unique
+// only WITHIN a flow and the rebuild clears its target's canvas first, so a
+// misrouted edit is destructive, not additive.
+const { ok, summary, clone, fence, loadPluginSandbox, buildEditorMock } = require('./helpers.js');
 
 // `imported` is still the raw import() payload, because scenario 1-7 ask
 // "which workspaces did this edit WRITE to" — and under an incremental apply
@@ -288,93 +280,6 @@ async function scenarioNodeReferencesInPropertiesRoundTrip() {
   ok(JSON.stringify(r.after.lc.links) === JSON.stringify(['li']), 'and the link call kept its target');
 }
 
-// The llm-request node builds its context on the runtime, and the editor
-// reads the reply against the numbering it rebuilds itself. Both have to
-// number alike, even with the flows selected in another order than the tab
-// bar has them and with two config nodes of one type.
-async function scenarioRuntimeAndEditorNumberAlike() {
-  console.log('\nScenario 11: the runtime and the editor number the aliases alike');
-  const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
-  const core = createLLMCore(coreRED());
-  const flows = [
-    { id: 'tabA', type: 'tab', label: 'Alpha' },
-    { id: 'tabB', type: 'tab', label: 'Beta' },
-    { id: 'a1', type: 'mqtt in', z: 'tabA', name: '', topic: 'alpha', broker: 'zz', x: 100, y: 100, wires: [[]] },
-    { id: 'b1', type: 'mqtt in', z: 'tabB', name: '', topic: 'beta', broker: 'aa', x: 100, y: 100, wires: [[]] },
-    { id: 'zz', type: 'mqtt-broker', name: '', broker: 'zz.local' },
-    { id: 'aa', type: 'mqtt-broker', name: '', broker: 'aa.local' },
-  ];
-  const selected = ['tabB', 'tabA'];
-  const system = core.buildMessages('x', core.flowContextFor(flows, selected), 'tabB', {}, { mode: 'agent' })[0].content;
-  const runtime = JSON.parse(system.slice(system.indexOf('{', system.indexOf('CURRENT FLOW'))));
-
-  const mock = buildEditorMock({ tabs: flows.filter((n) => n.type === 'tab'),
-    nodes: flows.filter((n) => n.z), configs: flows.filter((n) => n.type === 'mqtt-broker'), activeId: 'tabA' });
-  const P = loadPluginSandbox(mock.RED);
-  const editor = P.FlowConverterCore.toIntermediate(P.UI.getFlowsByIds(selected, { includeCanvasExtras: true }));
-  const label = (nodes) => Object.keys(nodes).sort().map((a) =>
-    a + '=' + ((nodes[a].props || {}).topic || (nodes[a].props || {}).broker)).join(' ');
-  ok(label(runtime.nodes) === label(editor.nodes),
-    'every alias names the same node (' + label(runtime.nodes) + ' / ' + label(editor.nodes) + ')');
-}
-
-// ------------------------------------------------------------------ //
-//  Outbound: what the llm-request node sends to the provider          //
-// ------------------------------------------------------------------ //
-
-function scenarioProviderContextIsScoped() {
-  console.log('\nScenario 8: the flow context sent to the provider is scoped too');
-
-  // The selection lives in the plugin core; the node only calls it.
-  const createLLMCore = require(path.join(ROOT, 'src', 'llm_core.js'));
-  const flowContextFor = createLLMCore(coreRED()).flowContextFor;
-
-  // Alpha's mqtt node points at one broker, Beta's at another. `tls-shared`
-  // is referenced by Alpha's broker (a config node referencing another),
-  // `broker-orphan` by nobody.
-  const FLOWS = [
-    { id: 'alpha', type: 'tab', label: 'Alpha' },
-    { id: 'beta', type: 'tab', label: 'Beta' },
-    { id: 'a1', type: 'mqtt in', z: 'alpha', broker: 'broker-a', topic: 'a/#' },
-    { id: 'a2', type: 'debug', z: 'alpha' },
-    { id: 'b1', type: 'mqtt in', z: 'beta', broker: 'broker-b', topic: 'b/#' },
-    { id: 'broker-a', type: 'mqtt-broker', name: 'Alpha broker', host: 'alpha.local', tls: 'tls-shared' },
-    { id: 'broker-b', type: 'mqtt-broker', name: 'Beta broker', host: 'beta.local' },
-    { id: 'tls-shared', type: 'tls-config', name: 'shared TLS' },
-    { id: 'broker-orphan', type: 'mqtt-broker', name: 'Unused broker', host: 'orphan.local' },
-  ];
-  const idsOf = (ctx) => (ctx || []).map((n) => n.id);
-
-  const alpha = idsOf(flowContextFor(FLOWS, ['alpha']));
-  ok(alpha.includes('a1') && alpha.includes('a2') && alpha.includes('alpha'),
-    "Alpha's own nodes and tab are present");
-  ok(alpha.includes('broker-a'), 'a referenced config node is pulled in');
-  ok(alpha.includes('tls-shared'), 'a config referenced BY that config is pulled in (transitive)');
-  ok(!alpha.includes('broker-b'), "Beta's broker does not leak into Alpha's context");
-  ok(!alpha.includes('broker-orphan'), 'an unreferenced config node does not leak');
-  ok(!alpha.includes('b1') && !alpha.includes('beta'), 'Beta canvas nodes and tab do not leak');
-
-  const beta = idsOf(flowContextFor(FLOWS, ['beta']));
-  ok(beta.includes('broker-b') && !beta.includes('broker-a'),
-    'selecting Beta pulls in only Beta\'s broker');
-  ok(!beta.includes('tls-shared'), 'a config reachable only through Alpha does not leak');
-
-  const both = idsOf(flowContextFor(FLOWS, ['alpha', 'beta']));
-  ok(both.includes('broker-a') && both.includes('broker-b'),
-    'selecting both flows pulls in both referenced brokers');
-  ok(!both.includes('broker-orphan'), 'the unreferenced config still does not leak');
-
-  const withArray = idsOf(flowContextFor(
-    FLOWS.concat([{ id: 'g1', type: 'some-node', z: 'alpha', servers: ['broker-orphan'] }]),
-    ['alpha']));
-  ok(withArray.includes('broker-orphan'), 'a config named inside an array property is pulled in');
-
-  ok(flowContextFor(FLOWS, []) === null, 'no selection -> no flow context at all');
-  ok(flowContextFor(FLOWS, null) === null, 'null selection -> no flow context');
-  ok(flowContextFor(null, ['alpha']) === null, 'no flows -> no flow context');
-  ok(flowContextFor(FLOWS, ['nope']) === null, 'an unknown tab yields nothing, not a full dump');
-}
-
 async function run() {
   await scenarioAliasCollision();
   await scenarioTabSwitchedBeforeImport();
@@ -385,8 +290,6 @@ async function run() {
   await scenarioUntaggedNodesFollowTheContextFlow();
   await scenarioAnAliasNamesOneNodeAcrossTheContext();
   await scenarioNodeReferencesInPropertiesRoundTrip();
-  await scenarioRuntimeAndEditorNumberAlike();
-  scenarioProviderContextIsScoped();
   summary();
 }
 

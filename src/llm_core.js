@@ -376,46 +376,6 @@ function createLLMCore(RED) {
     //  Prompt construction & flow context                                  //
     // ------------------------------------------------------------------ //
 
-    // The selected tabs plus the config nodes they reference, transitively,
-    // out of a whole `/flows` export. Null when nothing is selected. What
-    // this returns is what leaves the machine. See docs/{en,jp}/design.md §6.
-    function flowContextFor(allFlows, ids) {
-        if (!Array.isArray(ids) || ids.length === 0 || !Array.isArray(allFlows)) return null;
-        const set = new Set(ids);
-        const selected = [];
-        const configById = new Map();
-        allFlows.forEach(function(n) {
-            if (!n || !n.type) return;
-            if (n.type === 'tab') { if (set.has(n.id)) selected.push(n); }
-            else if (n.z) { if (set.has(n.z)) selected.push(n); }
-            else configById.set(n.id, n);
-        });
-
-        const wanted = new Set();
-        const queue = selected.slice();
-        while (queue.length > 0) {
-            const node = queue.pop();
-            Object.keys(node).forEach(function(key) {
-                const value = node[key];
-                const candidates = Array.isArray(value) ? value : [value];
-                candidates.forEach(function(v) {
-                    if (typeof v !== 'string' || wanted.has(v) || !configById.has(v)) return;
-                    wanted.add(v);
-                    queue.push(configById.get(v));
-                });
-            });
-        }
-
-        // Tabs in the order they were selected and config nodes in id order,
-        // as the editor's UI.getFlowsByIds has them: the importer reads the
-        // reply against the alias numbering it rebuilds from that.
-        const rank = function(n) { return ids.indexOf(n.type === 'tab' ? n.id : n.z) * 2 + (n.type === 'tab' ? 0 : 1); };
-        selected.sort(function(a, b) { return rank(a) - rank(b); });
-        const configs = Array.from(wanted).sort().map(function(id) { return configById.get(id); });
-        const ctx = selected.concat(configs);
-        return ctx.length > 0 ? ctx : null;
-    }
-
     // The flow context for the prompt, as Vibe Schema: aliases, no ids or coordinates.
     function buildFlowContextDescription(flow, activeWorkspaceId) {
         const empty = { header: 'CURRENT FLOW (Vibe Schema):', body: 'No current flow context available.' };
@@ -515,8 +475,7 @@ function createLLMCore(RED) {
     }
 
     // The user's custom system prompt from plugin settings (trimmed; '' when
-    // unset). Single definition so buildMessages and buildChatMessages can
-    // never drift apart on how the setting is read.
+    // unset).
     function getUserSystemPrompt(settings) {
         const s = settings || getPluginSettings();
         return (s.systemPrompt !== undefined && s.systemPrompt !== null)
@@ -555,19 +514,6 @@ function createLLMCore(RED) {
         ];
     }
 
-    // Plain chat messages (no flow context, no Vibe Schema instructions) for
-    // the llm-request node's "Ask" mode: just pass the payload through, honoring
-    // the user's custom system prompt from settings if one is configured.
-    function buildChatMessages(userPrompt, settings) {
-        const userSystemPrompt = getUserSystemPrompt(settings);
-        const messages = [];
-        if (userSystemPrompt) {
-            messages.push({ role: 'system', content: userSystemPrompt });
-        }
-        messages.push({ role: 'user', content: String(userPrompt || '') });
-        return messages;
-    }
-
     // ------------------------------------------------------------------ //
     //  LLM provider adapters                                              //
     // ------------------------------------------------------------------ //
@@ -588,7 +534,7 @@ function createLLMCore(RED) {
             if (!settings.openaiApiKey) {
                 return Promise.reject(new Error('OpenAI API key is not configured. Please set it in LLM Plugin settings.'));
             }
-            return generateWithOpenAICompatible(settings.openaiApiKey, null, model, messages, timeoutMs, signal);
+            return generateWithOpenAIResponses(settings.openaiApiKey, model, messages, timeoutMs, signal);
         }
         if (provider === 'custom') {
             let baseUrl = (settings.customBaseUrl && String(settings.customBaseUrl).trim()) || '';
@@ -710,29 +656,33 @@ function createLLMCore(RED) {
         return err;
     }
 
-    // One adapter for OpenAI (`baseURL` null) and OpenAI-compatible
-    // endpoints. A blank key becomes a placeholder: the SDK insists on one.
-    async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs, signal) {
+    // OpenAI itself speaks the Responses API, which newer models need (some
+    // are served nowhere else). Compatible servers (llama.cpp, LM Studio,
+    // vLLM, …) speak chat completions. A blank key becomes a placeholder: the
+    // SDK insists on one.
+    function openAIClient(apiKey, baseURL) {
         const effectiveKey = (apiKey && String(apiKey).trim()) ? String(apiKey).trim() : 'no-key';
-        const openai = new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });
-        // Streamed for the reason the Ollama adapter is: unstreamed, a reply
-        // over 300 s dies waiting for headers, and the SDK retries it whole.
+        return new OpenAI(baseURL ? { apiKey: effectiveKey, baseURL: baseURL } : { apiKey: effectiveKey });
+    }
+
+    // Streamed for the reason the Ollama adapter is: unstreamed, a reply over
+    // 300 s dies waiting for headers, and the SDK retries it whole. `read`
+    // takes each event and returns true on the end marker; `blank` is the
+    // error for a stream that carried nothing at all.
+    async function readSdkStream(open, read, timeoutMs, signal, blank) {
         const timer = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
-        let content = '';
-        let sawChoice = false;
+        let saw = false;
         let finished = false;
         try {
-            const stream = await openai.chat.completions.create({
-                messages: Array.isArray(messages) ? messages : [],
-                model: model,
-                stream: true,
-            }, { timeout: timeoutMs > 0 ? timeoutMs : 2147483647, signal: combineSignals(timer, signal) });
-            for await (const part of stream) {
-                const choice = part && part.choices && part.choices[0];
-                if (!choice) continue;
-                sawChoice = true;
-                if (choice.delta && typeof choice.delta.content === 'string') content += choice.delta.content;
-                if (choice.finish_reason) finished = true;
+            const stream = await open({
+                timeout: timeoutMs > 0 ? timeoutMs : 2147483647,
+                signal: combineSignals(timer, signal)
+            });
+            for await (const event of stream) {
+                const r = read(event);
+                if (r === undefined) continue;
+                saw = true;
+                if (r) finished = true;
             }
             // The SDK ends an aborted stream quietly; a cut-off reply must not
             // pass for a whole one.
@@ -750,12 +700,64 @@ function createLLMCore(RED) {
             }
             throw wrapProviderError(e);
         }
-        if (!sawChoice) {
-            throw new Error('The LLM endpoint returned no message content. Verify the Base URL points to an ' +
-                'OpenAI-compatible chat-completions API (e.g. ends in /v1) and that the model name is valid.');
-        }
-        // The last chunk carries `finish_reason`; without it the stream was cut.
+        if (!saw) throw new Error(blank);
         if (!finished) throw connectionClosed();
+    }
+
+    async function generateWithOpenAICompatible(apiKey, baseURL, model, messages, timeoutMs, signal) {
+        const openai = openAIClient(apiKey, baseURL);
+        let content = '';
+        await readSdkStream(function(opts) {
+            return openai.chat.completions.create({
+                messages: Array.isArray(messages) ? messages : [],
+                model: model,
+                stream: true,
+            }, opts);
+        }, function(part) {
+            const choice = part && part.choices && part.choices[0];
+            if (!choice) return undefined;
+            if (choice.delta && typeof choice.delta.content === 'string') content += choice.delta.content;
+            // The last chunk carries `finish_reason`; without it the stream was cut.
+            return !!choice.finish_reason;
+        }, timeoutMs, signal,
+        'The LLM endpoint returned no message content. Verify the Base URL points to an ' +
+            'OpenAI-compatible chat-completions API (e.g. ends in /v1) and that the model name is valid.');
+        return content;
+    }
+
+    // System messages become `instructions`; the rest is the input. `store:
+    // false`: OpenAI keeps a response for 30 days unless told not to.
+    async function generateWithOpenAIResponses(apiKey, model, messages, timeoutMs, signal) {
+        const openai = openAIClient(apiKey, null);
+        const list = Array.isArray(messages) ? messages : [];
+        const instructions = list.filter(function(m) { return m && m.role === 'system'; })
+            .map(function(m) { return String(m.content); }).join('\n\n');
+        const input = list.filter(function(m) { return m && m.role !== 'system'; })
+            .map(function(m) { return { role: m.role, content: String(m.content) }; });
+        let content = '';
+        await readSdkStream(function(opts) {
+            let body = { model: model, input: input, stream: true, store: false };
+            if (instructions) body.instructions = instructions;
+            return openai.responses.create(body, opts);
+        }, function(ev) {
+            if (!ev || !ev.type) return undefined;
+            // A refusal is the model's answer too; dropping it would leave
+            // an empty reply with no reason.
+            if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
+                content += ev.delta || '';
+                return false;
+            }
+            if (ev.type === 'response.completed') return true;
+            if (ev.type === 'response.incomplete') {
+                const why = ev.response && ev.response.incomplete_details && ev.response.incomplete_details.reason;
+                throw new Error('The reply was cut short' + (why ? ' (' + why + ')' : '') + '.');
+            }
+            if (ev.type === 'response.failed' || ev.type === 'error') {
+                const err = (ev.response && ev.response.error) || ev;
+                throw new Error('OpenAI API error: ' + String(err.message || err.code || 'the response failed'));
+            }
+            return false;
+        }, timeoutMs, signal, 'OpenAI returned an empty stream.');
         return content;
     }
 
@@ -772,9 +774,7 @@ function createLLMCore(RED) {
         redactSecrets: redactSecrets,
         scrubUrlCredentials: scrubUrlCredentials,
         // prompt construction
-        flowContextFor: flowContextFor,
         buildMessages: buildMessages,
-        buildChatMessages: buildChatMessages,
         // generation
         DEFAULT_TIMEOUT_MS: DEFAULT_TIMEOUT_MS,
         generateWithProvider: generateWithProvider

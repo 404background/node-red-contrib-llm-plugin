@@ -57,14 +57,10 @@ src/
   importer.js           Extract LLM output, rebuild & import into editor
   ui_core.js            Message rendering, flow export
   vibe_ui.js            Sidebar build + generation workflow
-  agent_apply.js        Editor half of the `llm-request` node: comms → importer
-  agent_dispatch.js     Runtime: one Agent-node reply, claimed by one editor
-  llm_core.js           Shared LLM engine (settings/creds/providers/prompts/context)
+  llm_core.js           Shared LLM engine (settings/creds/providers/prompts)
   server.js             HTTP endpoints + chat/checkpoint persistence
 node/                   The `llm-request` node (palette category: llm-plugin)
-  lib/admin_api.js      Local Node-RED Admin API client (read-only GET /flows)
-  llm-request/          "LLM" node — Ask / Agent against msg.payload; the
-                        editor half of Agent mode is src/agent_apply.js
+  llm-request/          msg.payload in, the model's reply out
 ```
 
 ## Loading sequence (client)
@@ -75,13 +71,10 @@ which fetches and runs the rest **in order**:
 ```
 common → canvas_layout → flow_converter_core → llm_json_parser
        → chat_manager → importer → ui_core → vibe_ui
-       → agent_apply
 ```
 
 `canvas_layout` must precede `flow_converter_core` because the
-converter's `toNodeRed` delegates layout to it. `agent_apply` is last: an
-`llm-request` reply can arrive the moment it binds, and applying one uses
-everything above. All modules use the IIFE pattern and communicate via
+converter's `toNodeRed` delegates layout to it. All modules use the IIFE pattern and communicate via
 `window.LLMPlugin`.
 
 ## HTTP endpoints
@@ -95,7 +88,6 @@ everything above. All modules use the IIFE pattern and communicate via
 | POST | `/llm-plugin/chats/save` | write | Persist a chat |
 | POST | `/llm-plugin/chats/delete` | write | Delete a chat, and its checkpoints, by chat id |
 | POST | `/llm-plugin/checkpoints/save` | write | Save flow snapshot |
-| POST | `/llm-plugin/agent-apply/claim` | write | Claim an Agent-node reply; only the first editor to claim it applies it |
 | GET | `/llm-plugin/checkpoints/:id` | read | Load saved checkpoint |
 | POST | `/llm-plugin/client-log` | write | Report a client-side failure into the Node-RED log |
 | GET | `/llm-plugin/vendor/marked.js` | **none** | Serve the bundled marked.js (offline Markdown rendering) |
@@ -340,7 +332,7 @@ restores before re-asking.
 | `createRestoreCheckpointButton(checkpointId)` | Shared Restore button. Inserted above the assistant message that triggered the import so a single click rewinds the workspace to the pre-edit snapshot. |
 | `showPostImportActions(message, checkpointId, content, messageMeta)` | The two halves of one choice, each placed where it acts. **Restore Checkpoint** goes above the PROMPT (`placeRestoreAboveThePrompt` → `promptAbove`, the first user message above the reply; a retry has no prompt between two replies, so the walk stops at the previous reply), because everything below it is what a rewind undoes — it is inserted among the message's neighbours, which is why `appendFlowActions` runs after the message joins the chat. **Apply Again** goes on the schema block's own header (`placeReapplyOnTheSchema` → `.json-collapsible[data-vibe-schema] > summary`, marked as the fold builds it), so the control that applies a proposal sits with the proposal; its click stops propagation, or it would just toggle the block. Switching between the two is how the versions get compared, and in Agent mode (where the Import button is hidden) Apply Again is the only way back to a rewound proposal. Both are removed before being re-added, so repeated applies do not stack. Apply Again first **rewinds to the checkpoint its reply was applied over**, then applies (best effort, as Retry): clicked on several replies before a deploy, the last one clicked is what the canvas shows, not all of them stacked. Each reply keeps, in its message meta, the tabs it was sent with (`targetFlowIds`, the only ones an apply may write), the tab open when it was asked (`homeWorkspaceId`, where its new nodes go even if another tab in scope is open later), and the checkpoint of its last apply (`checkpointId`). |
 | `runImport(message, content, messageMeta)` | The one path every sidebar import takes, Import and Apply Again alike: read the chat id at click time, save a checkpoint of the flows in scope, then import. Each run takes its own checkpoint, so Restore undoes that apply. |
-| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`), matching `flowContextFor` in the `llm-request` node. `opts.includeCanvasExtras` also appends the tabs' junctions **and** groups — for the rebuild, the checkpoint and the LLM context. The alias numbering the model sees is unchanged: the converter drops groups ([§15](./design.md#15-a-flow-a-tab-and-a-group)) and reads a wire through a junction or a `link out` → `link in` pair as a connection to where it leads. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
+| `getFlowsByIds(flowIds, opts?)` / `getCurrentFlow(flowIds?, opts?)` | Export selected workspace tabs + referenced config nodes (credentials stripped via `RED.nodes.createExportableNodeSet`). Config nodes come in **by reference only** — the flow selection is the user's statement of what may leave the machine — and references are followed **transitively** (an `mqtt-broker` pointing at a `tls-config`) and through **array** properties (`servers: ["id", …]`). `opts.includeCanvasExtras` also appends the tabs' junctions **and** groups — for the rebuild, the checkpoint and the LLM context. The alias numbering the model sees is unchanged: the converter drops groups ([§15](./design.md#15-a-flow-a-tab-and-a-group)) and reads a wire through a junction or a `link out` → `link in` pair as a connection to where it leads. See [docs/en/design.md](./design.md#7-snapshot-completeness--junction--group). |
 | `getActiveWorkspaceId()` / `extractWorkspaceIds(nodes)` | Workspace ID helpers. |
 | `retryLastUserMessage(messageMeta?)` | Restore the checkpoint attached to the retried assistant message (if any) and re-send the most recent user prompt, so the next request sees the pre-edit flow instead of the already-applied edit. Falls back to a plain re-send when the message has no associated checkpoint. |
 
@@ -415,8 +407,8 @@ sidebar — there is only one settings + credentials store.
 |---------|---------------|
 | Storage resolution | `chatsDir` / `checkpointsDir` / `persistenceEnabled` (`<userDir>/llm-plugin`, else memory only), `writeFileAtomic` |
 | Settings + credentials | `getPluginSettings`, `savePluginSettings`, encrypted `credentials.json` (AES-256-GCM), legacy-key migration, `maskApiKey`, `redactSecrets` |
-| Prompt construction | `buildMessages(prompt, flowContext, activeWorkspaceId, settings, options?)` — `options.mode === 'ask'` uses `prompt_ask.txt` (explain the flow, propose nothing), anything else `prompt_system.txt` (the Vibe Schema rules); the flow context is built the same way for both. `buildChatMessages` is the `llm-request` node's plain chat, with no flow context at all |
-| LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`) or `generateWithOpenAICompatible` (SDK; `baseURL` null = OpenAI, set = llama.cpp / LM Studio / vLLM / LocalAI). Both **stream** the reply: unstreamed, the endpoint sends no headers until it is done, and Node's `fetch` gives up waiting for headers after 300 s whatever the timeout says (the SDK then re-sent the whole generation twice). A stream is whole only once its end marker arrives (Ollama `done`, OpenAI `finish_reason`): a proxy that drops the connection ends it just as cleanly, so without the marker it is an `ECONNRESET`, not a short reply. The timeout bounds the whole reply; network errors keep their code on `cause`, which the generate route reads to say "Could not connect". |
+| Prompt construction | `buildMessages(prompt, flowContext, activeWorkspaceId, settings, options?)` — `options.mode === 'ask'` uses `prompt_ask.txt` (explain the flow, propose nothing), anything else `prompt_system.txt` (the Vibe Schema rules); the flow context is built the same way for both. The `llm-request` node builds its own messages (its system prompt and the prompt) and uses none of this |
+| LLM adapters | `generateWithProvider(provider, settings, model, messages, {timeoutMs})` → `generateWithOllamaChat` (`/api/chat`), `generateWithOpenAIResponses` (OpenAI: the SDK's Responses API, `/v1/responses`, system messages as `instructions`, `store: false` — newer models are served there, some only there) or `generateWithOpenAICompatible` (Custom: chat completions, which llama.cpp / LM Studio / vLLM / LocalAI speak). All **stream** the reply: unstreamed, the endpoint sends no headers until it is done, and Node's `fetch` gives up waiting for headers after 300 s whatever the timeout says (the SDK then re-sent the whole generation twice). A stream is whole only once its end marker arrives (Ollama `done`, chat completions `finish_reason`, Responses `response.completed`; a Responses stream that ends `incomplete` is an error naming the reason): a proxy that drops the connection ends it just as cleanly, so without the marker it is an `ECONNRESET`, not a short reply. The timeout bounds the whole reply; network errors keep their code on `cause`, which the generate route reads to say "Could not connect". |
 
 ### `server.js`
 
@@ -431,7 +423,7 @@ Thin HTTP layer over `llm_core.js`, plus the sidebar-only persistence.
 
 ### `node/` — the `llm-request` node
 
-The `llm-request` node (and its Admin-API helper) reuse this engine. It is
+The `llm-request` node reuses this engine for settings, credentials and the provider call. It is
 documented separately in **[docs/en/llm-request.md](./llm-request.md)**. Note: the
 sidebar's chat history retains the target flow **name** (`ui_core.js` badge +
 `vibe_ui.js` `metaOpts.targetFlowName`).
@@ -542,9 +534,8 @@ No chat history is sent — each request is stateless to the LLM.
 - Client-reported events have newlines collapsed before they reach the
   line-oriented log, so caller-supplied text cannot forge a log entry.
 - Credentials stripped from flow context before sending to the LLM. The
-  `llm-request` node narrows the context further: only the config nodes its
-  selected flows actually reference (transitively), rather than every
-  config node in the instance.
+  `llm-request` node sends no flow context at all: only its system prompt
+  and `msg.payload`.
 
 #### Agent mode runs what the model writes
 
@@ -552,22 +543,18 @@ This is a deliberate property of the feature, not an oversight, and it is
 the largest risk in the plugin:
 
 - Agent mode applies the model's reply to the canvas with **no
-  confirmation step**, and `Auto deploy` deploys it immediately.
-- The reply is published to every open editor, but only the first to
-  claim it (`POST /agent-apply/claim`, write permission) applies it. A
-  second editor, or a read-only user's, drops it.
+  confirmation step**. It is not deployed until the user deploys, and a
+  checkpoint is taken first, so Restore undoes it.
 - There is **no node-type allowlist**. Generated flows may contain
   `function` nodes (arbitrary JavaScript in the runtime process) and
   `exec` nodes (arbitrary shell commands). Restricting what the model may
   build would defeat the point of the mode, so it is not restricted.
 
-Consequently, whoever controls the model's output controls the Node-RED
-host. Treat the configured LLM endpoint as trusted infrastructure, and
-**do not route untrusted text into an Agent node** — an `http in`
-payload, an inbound MQTT message, scraped page content. With `Auto
-deploy` on, that is a direct path from a remote string to code execution
-on the host. The `llm-self-feedback` sample is a developer toy for
-disposable instances for exactly this reason.
+Consequently, whoever controls the model's output controls what the next
+Deploy runs. Treat the configured LLM endpoint as trusted infrastructure,
+and review an Agent edit on the canvas before deploying it. The
+`llm-request` node has no Agent mode: its reply is text on `msg.payload`,
+and nothing it returns is applied to the editor.
 
 ## Tests
 

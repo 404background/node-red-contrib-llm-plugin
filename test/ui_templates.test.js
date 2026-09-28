@@ -31,7 +31,6 @@ const CLONERS = [
 ];
 const CSS = fs.readFileSync(path.join(ROOT, 'llm-plugin_styles.css'), 'utf8');
 const CLIENT = fs.readFileSync(path.join(ROOT, 'src', 'client.js'), 'utf8');
-const AGENT_APPLY = fs.readFileSync(path.join(ROOT, 'src', 'agent_apply.js'), 'utf8');
 const NODE_JS = fs.readFileSync(path.join(ROOT, 'node', 'llm-request', 'llm-request.js'), 'utf8');
 const NODE_HTML = fs.readFileSync(path.join(ROOT, 'node', 'llm-request', 'llm-request.html'), 'utf8');
 
@@ -166,24 +165,22 @@ function scenarioDocsLinkIsWired() {
   ok(CSS.indexOf('.header-link {') !== -1, 'and the link has a stylesheet rule');
 }
 
-// The llm-request node is meant to be a thin caller of the plugin: the runtime
-// half publishes a reply, and the PLUGIN applies it. The seam between them is
-// a comms topic spelled out in two files, and the node's html is where editor
-// logic creeps back in.
+// The llm-request node is a thin caller of the plugin: msg in, one provider
+// call through the shared core, reply out. It does not reach into the editor,
+// and it ships: registered in package.json and inside the published files.
 function scenarioNodeLeansOnThePlugin() {
-  console.log('\nThe llm-request node stays a thin caller of the plugin');
-  const topicOf = (src) => (/'(llm-plugin\/agent-apply)'/.exec(src) || [])[1];
-  ok(!!topicOf(NODE_JS) && topicOf(NODE_JS) === topicOf(AGENT_APPLY),
-    'the node publishes on the topic the plugin subscribes to');
+  console.log('\nThe llm-request node stays a thin caller of the plugin, and ships');
+  const requires = (NODE_JS.match(/require\([^)]*\)/g) || []).join(' ');
+  ok(/llm_core\.js/.test(requires) && !/admin_api|agent_/.test(requires),
+    'the node requires the shared core and nothing of the editor path (' + requires + ')');
+  ok(!/RED\.comms/.test(NODE_JS), 'and publishes nothing to the editor');
   ok(!/LLMPlugin/.test(NODE_HTML) && !/RED\.comms/.test(NODE_HTML),
-    'and its html holds no plugin logic of its own');
-  // agent_apply.js applies the moment a reply arrives, so it has to load
-  // after the modules it reaches for.
-  const order = (f) => CLIENT.indexOf('src/' + f);
-  ['chat_manager.js', 'importer.js'].forEach((dep) => {
-    ok(order(dep) !== -1 && order(dep) < order('agent_apply.js'),
-      'client.js loads ' + dep + ' before agent_apply.js');
-  });
+    'its html holds no plugin logic of its own');
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const entry = pkg['node-red'] && pkg['node-red'].nodes && pkg['node-red'].nodes['llm-request'];
+  ok(!!entry && fs.existsSync(path.join(ROOT, entry)), 'package.json registers it (' + entry + ')');
+  ok(pkg.files.indexOf('node/') !== -1 && pkg.files.indexOf('examples/') !== -1,
+    'and publishes node/ and examples/');
 }
 
 // A help panel nobody reads documents nothing. What a user needs at the node

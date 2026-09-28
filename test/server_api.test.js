@@ -1,12 +1,10 @@
 // The admin routes' own guarantees, driven through the real handlers: what the
-// unauthenticated routes hand out, what a write is refused for, and that an
-// Agent-node reply is claimed by exactly one editor.
+// unauthenticated routes hand out and what a write is refused for.
 const fs = require('fs');
 const path = require('path');
 const { ok, summary, ROOT } = require('./helpers.js');
 
 const { createLLMPluginServer } = require(path.join(ROOT, 'src', 'server.js'));
-const agentDispatch = require(path.join(ROOT, 'src', 'agent_dispatch.js'));
 
 const WORK = path.join(ROOT, 'test', '.tmp-server-api');
 const CHATS = path.join(WORK, 'llm-plugin', 'chats');
@@ -67,18 +65,6 @@ function scenarioServesOnlyClientFiles() {
   ok(!RED.routes.get['/llm-plugin/src/*'], 'no wildcard route reaches src/');
 }
 
-async function scenarioAgentReplyClaimedOnce() {
-  console.log('An Agent-node reply is applied by the first editor that claims it');
-  const claim = RED.routes.post['/llm-plugin/agent-apply/claim'];
-  const id = agentDispatch.issue();
-  const first = await call(claim, { body: { dispatchId: id } });
-  const second = await call(claim, { body: { dispatchId: id } });
-  ok(first.body.granted === true, 'the first claim is granted');
-  ok(second.body.granted === false, 'a second editor is refused');
-  const forged = await call(claim, { body: { dispatchId: 'not-issued' } });
-  ok(forged.body.granted === false, 'an id the node never issued is refused');
-}
-
 async function scenarioSettingsRejectUnknownProvider() {
   console.log('Settings refuse a provider that does not exist');
   const r = await call(RED.routes.post['/llm-plugin/settings'], { body: { provider: 'evil' } });
@@ -129,7 +115,6 @@ async function scenarioRefusedConnectionIsNamed() {
 
 (async function run() {
   scenarioServesOnlyClientFiles();
-  await scenarioAgentReplyClaimedOnce();
   await scenarioSettingsRejectUnknownProvider();
   await scenarioCheckpointMetaCounts();
   await scenarioChatDeletedById();
