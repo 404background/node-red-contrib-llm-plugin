@@ -29,12 +29,10 @@ an English (`en/`) and a Japanese (`jp/`) version with identical content.
 | Vibe Schema | [docs/en/vibe-schema.md](./en/vibe-schema.md) | [docs/jp/vibe-schema.md](./jp/vibe-schema.md) | The intermediate flow format (LLM ↔ Node-RED) / 中間フロー表現の仕様 |
 | Layout | [docs/en/layout.md](./en/layout.md) | [docs/jp/layout.md](./jp/layout.md) | Canvas layout engine, spacing rules, comment placement / レイアウトエンジンと配置ルール |
 | `llm-request` node | [docs/en/llm-request.md](./en/llm-request.md) | [docs/jp/llm-request.md](./jp/llm-request.md) | The node a flow calls an LLM from / フローから LLM を呼ぶノード |
+| Testing | [docs/en/testing.md](./en/testing.md) | [docs/jp/testing.md](./jp/testing.md) | The suites, what each one guards, the live LLM suites and accuracy runs / 各スイートが守っているもの、実 LLM とのテストと精度測定 |
 
 ## Other references / その他の参照
 
 - Prompt template: [`src/prompt_system.txt`](../src/prompt_system.txt) — the system
   prompt the LLM receives (the rules it must follow). / LLM に渡すシステムプロンプト。
-- Tests: [`test/README.md`](../test/README.md) — the suites, what each one
-  guards, and the live round-trip. Kept with the tests themselves. /
-  テストのドキュメント。各スイートが守っているものと実 LLM との往復テスト。
 - User-facing README: [`README.md`](../README.md) — install and usage. / インストールと使い方。

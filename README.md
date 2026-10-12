@@ -93,10 +93,10 @@ Japanese (`docs/jp/`) version of every page.
 | Vibe Schema | The intermediate flow format the LLM reads and writes | [en](docs/en/vibe-schema.md) | [jp](docs/jp/vibe-schema.md) |
 | Layout | Canvas layout engine, spacing rules, comment placement | [en](docs/en/layout.md) | [jp](docs/jp/layout.md) |
 | `llm-request` node | The node a flow calls an LLM from, in full | [en](docs/en/llm-request.md) | [jp](docs/jp/llm-request.md) |
+| Testing | The suites, what each one guards, the live LLM suites and accuracy runs | [en](docs/en/testing.md) | [jp](docs/jp/testing.md) |
 
-Two more, kept next to what they describe:
+One more, kept next to what it describes:
 
-- Tests: [`test/README.md`](test/README.md) — the suites, what each one guards, and how to run the live round-trip against a real LLM endpoint.
 - Prompt templates: [`src/prompt_system.txt`](src/prompt_system.txt) (Agent — the Vibe Schema rules) and [`src/prompt_ask.txt`](src/prompt_ask.txt) (Ask — read the flow and explain it).
 
 > **AI agents / contributors:** read [`docs/`](docs/README.md) before editing —

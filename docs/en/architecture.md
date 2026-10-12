@@ -558,8 +558,8 @@ and nothing it returns is applied to the editor.
 
 ## Tests
 
-Test documentation lives with the tests, in
-**[`test/README.md`](../../test/README.md)**: what each suite guards, the
+Test documentation has its own page,
+**[`testing.md`](testing.md)**: what each suite guards, the
 shared `helpers.js` sandbox, and how to configure the live round-trip
 (`npm run test:llm`).
 
