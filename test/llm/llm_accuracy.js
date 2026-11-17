@@ -9,7 +9,12 @@
 //     "accuracy": { "runs": 3, "servers": [
 //         { "name": "gpu-box", "url": "http://<host>:11434" },
 //         { "name": "slow-box", "url": "http://<host>:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
-//         { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true } ] }
+//         { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true },
+//         { "name": "openai", "provider": "openai", "models": ["gpt-5.4"], "tokenBudget": 200000 } ] }
+//
+// An OpenAI entry lists its models (the key comes from ../../.credentials.json
+// or LLM_TEST_OPENAI_KEY, as for the suite) and stops before the next scenario
+// once the tokens the API reports reach tokenBudget, to stay within a free quota.
 //
 // Results go to results/ next to this file (git-ignored like the config:
 // they name the servers): the raw log of every run, accuracy.json (every run,
@@ -80,13 +85,18 @@ async function loadError(url, model) {
   }
 }
 
-function runScenarios(url, model, runs, logFile) {
+function runScenarios(s, url, model, runs, logFile) {
   return new Promise((resolve) => {
     const log = fs.createWriteStream(logFile);
+    const env = { LLM_TEST_MODELS: model, LLM_TEST_MODEL: model, LLM_TEST_RUNS: String(runs) };
+    if (s.provider === 'openai') {
+      env.LLM_TEST_PROVIDER = 'openai';
+      if (s.tokenBudget) env.LLM_TEST_TOKEN_BUDGET = String(s.tokenBudget);
+    } else {
+      env.LLM_TEST_URL = url;
+    }
     const child = spawn(process.execPath, [path.join(DIR, 'llm_scenarios.test.js')], {
-      env: Object.assign({}, process.env, {
-        LLM_TEST_URL: url, LLM_TEST_MODELS: model, LLM_TEST_MODEL: model, LLM_TEST_RUNS: String(runs),
-      }),
+      env: Object.assign({}, process.env, env),
     });
     let text = '';
     const take = (c) => { text += c; log.write(c); };
@@ -101,8 +111,10 @@ function parse(text) {
   const at = text.lastIndexOf('=== summary ===');
   if (at === -1) return null;
   const scenarios = {};
-  let rate = null, lost = 0;
+  let rate = null, lost = 0, tokens = null;
   text.slice(at).split(/\r?\n/).slice(2).forEach((line) => {
+    const t = /^tokens: .*= (\d+) over/.exec(line);
+    if (t) { tokens = +t[1]; return; }
     const m = /^(.*?)\s{2,}(\S.*?)\s*$/.exec(line);
     if (!m) return;
     if (m[1] === 'pass rate') rate = parseFloat(m[2]);
@@ -114,7 +126,7 @@ function parse(text) {
     const r = /^(\d+)\/(\d+)/.exec(scenarios[k]);
     if (r) { pass += +r[1]; total += +r[2]; }
   });
-  return (rate === null || isNaN(rate)) ? null : { rate, pass, total, lost, scenarios };
+  return (rate === null || isNaN(rate)) ? null : { rate, pass, total, lost, tokens, scenarios };
 }
 
 function history() {
@@ -147,6 +159,7 @@ function report(all) {
       md += '| ' + r.model + ' | ' + (r.error ? '—' : r.rate + '%') + ' | ' + (r.error ? '—' : r.pass + '/' + r.total) +
         ' | ' + r.runs + ' | ' + (r.error ? '—' : r.lost) + ' | ' + r.minutes + ' | ' + r.date + ' | ' + r.commit + ' |\n';
     });
+    list.filter((r) => r.tokens).forEach((r) => { md += '\n- ' + r.model + ': ' + r.tokens + ' tokens\n'; });
     list.filter((r) => r.error).forEach((r) => { md += '\n- ' + r.model + ': ' + r.error.replace(/\s+/g, ' ') + '\n'; });
     const judged = list.filter((r) => !r.error);
     if (!judged.length) return;
@@ -163,6 +176,9 @@ async function measure(s, opts, defaults, date, commit) {
   const url = String(s.url).replace(/\/$/, '');
   const runs = opts.runs || s.runs || defaults.runs || 3;
   let models, ollama = null;
+  if (s.provider === 'openai') {
+    return measureModels(s, opts, runs, s.models || [], 'OpenAI API', null, date, commit);
+  }
   try {
     models = ((await getJson(url + '/api/tags')).models || []).map((m) => m.name)
       .filter((m) => usable(m, s.cloud)).sort();
@@ -171,9 +187,13 @@ async function measure(s, opts, defaults, date, commit) {
     console.log('[' + s.name + '] unreachable: ' + ((e && e.message) || e));
     return;
   }
-  models = models.filter((m) => (!opts.models || opts.models.indexOf(m) !== -1) &&
-    (!s.models || s.models.indexOf(m) !== -1) && (s.skip || []).indexOf(m) === -1);
-  console.log('[' + s.name + '] Ollama ' + ollama + ', runs ' + runs + ': ' + (models.join(', ') || '(no models)'));
+  models = models.filter((m) => !s.models || s.models.indexOf(m) !== -1);
+  return measureModels(s, opts, runs, models, url, ollama, date, commit);
+}
+
+async function measureModels(s, opts, runs, models, url, ollama, date, commit) {
+  models = models.filter((m) => (!opts.models || opts.models.indexOf(m) !== -1) && (s.skip || []).indexOf(m) === -1);
+  console.log('[' + s.name + '] ' + (ollama ? 'Ollama ' + ollama : url) + ', runs ' + runs + ': ' + (models.join(', ') || '(no models)'));
   const dir = path.join(RESULTS, date, s.name);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -181,14 +201,14 @@ async function measure(s, opts, defaults, date, commit) {
     const started = Date.now();
     const minutes = () => Math.round((Date.now() - started) / 6000) / 10;
     const base = { date, commit, server: s.name, url, ollama, model, runs };
-    const cannot = await loadError(url, model);
+    const cannot = s.provider === 'openai' ? null : await loadError(url, model);
     if (cannot) {
       console.log('[' + s.name + '] ' + model + ': does not load (' + cannot + ')');
       save(Object.assign(base, { error: 'does not load: ' + cannot, minutes: minutes() }));
       continue;
     }
     console.log('[' + s.name + '] ' + model + ': running');
-    const run = await runScenarios(url, model, runs, path.join(dir, model.replace(/[^\w.-]+/g, '_') + '.log'));
+    const run = await runScenarios(s, url, model, runs, path.join(dir, model.replace(/[^\w.-]+/g, '_') + '.log'));
     const r = parse(run.text);
     if (!r) {
       const why = (run.text.match(/SKIP: .*|Error: .*/) || ['no summary (exit ' + run.code + ')'])[0];
@@ -196,8 +216,10 @@ async function measure(s, opts, defaults, date, commit) {
       save(Object.assign(base, { error: why, minutes: minutes() }));
       continue;
     }
-    console.log('[' + s.name + '] ' + model + ': ' + r.rate + '% (' + r.pass + '/' + r.total + ', ' + minutes() + ' min)');
-    save(Object.assign(base, { rate: r.rate, pass: r.pass, total: r.total, lost: r.lost, minutes: minutes(), scenarios: r.scenarios }));
+    console.log('[' + s.name + '] ' + model + ': ' + r.rate + '% (' + r.pass + '/' + r.total + ', ' + minutes() + ' min' +
+      (r.tokens === null ? '' : ', ' + r.tokens + ' tokens') + ')');
+    const spent = r.tokens === null ? {} : { tokens: r.tokens };
+    save(Object.assign(base, { rate: r.rate, pass: r.pass, total: r.total, lost: r.lost, minutes: minutes() }, spent, { scenarios: r.scenarios }));
   }
 }
 

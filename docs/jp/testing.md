@@ -128,13 +128,17 @@ npm run test:llm -- --url http://192.0.2.10:11434 --model gemma3:4b --only delet
 クラウドモデルはどのサーバを経由しても ollama.com で動くので、`"cloud": true` を付けた
 サーバでだけ、それだけを測る)を一覧し、読み込めるか確かめてから、シナリオを1つにつき `runs` 回
 実行する。サーバ同士は並行、1台のサーバのモデルは1つずつ順に実行する。`--server`・
-`--model`・`--runs` で対象を絞れる。
+`--model`・`--runs` で対象を絞れる。`"provider": "openai"` を付けた項目は、`models` に
+挙げたモデルを OpenAI API で測る(キーはシナリオと同じ)。`tokenBudget` を付けると、API が
+報告するトークン数がその量に達したところで次のシナリオの前で止める。無料枠の範囲で測るためで、
+使ったトークン数はレポートに出る。
 
 ```json
 "accuracy": { "runs": 3, "servers": [
   { "name": "gpu-box", "url": "http://192.0.2.10:11434" },
   { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
-  { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true } ] }
+  { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true },
+  { "name": "openai", "provider": "openai", "models": ["gpt-5.4"], "tokenBudget": 200000 } ] }
 ```
 
 結果はこの端末の `test/llm/results/` に残る。`accuracy.md`(サーバ・モデルごとの最新の

@@ -55,18 +55,20 @@ function openaiKey() {
   return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')).OpenAI || '') : '';
 }
 
-// The tokens OpenAI bills, reasoning included, are only in the stream's usage
-// chunk, which comes only when asked for. The test asks for it on the wire so
-// the adapter itself stays as it ships.
+// The tokens OpenAI bills, reasoning included, are only in the stream: the
+// Responses API (what the adapter uses for OpenAI) puts them in its
+// response.completed event; chat completions send a usage chunk only when
+// asked for, so the test asks for it on the wire and the adapter stays as it ships.
 const usage = { input: 0, output: 0, calls: 0, missing: 0, pending: [] };
 async function usageSettled() { await Promise.all(usage.pending.splice(0)); }
 function countOpenAITokens() {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async function(url, init) {
     const href = String(url && url.url ? url.url : url);
-    if (!/\/chat\/completions$/.test(href) || !init || typeof init.body !== 'string') return realFetch(url, init);
+    const chat = /\/chat\/completions$/.test(href);
+    if (!(chat || /\/responses$/.test(href)) || !init || typeof init.body !== 'string') return realFetch(url, init);
     const body = JSON.parse(init.body);
-    body.stream_options = { include_usage: true };
+    if (chat) body.stream_options = { include_usage: true };
     const res = await realFetch(url, Object.assign({}, init, { body: JSON.stringify(body) }));
     if (!res.body) return res;
     const [mine, theirs] = res.body.tee();
@@ -75,11 +77,15 @@ function countOpenAITokens() {
       let u = null;
       text.split('\n').forEach((line) => {
         if (line.indexOf('data: {') !== 0) return;
-        try { const obj = JSON.parse(line.slice(6)); if (obj.usage) u = obj.usage; } catch (e) { /* not JSON */ }
+        try {
+          const obj = JSON.parse(line.slice(6));
+          const found = obj.usage || (obj.response && obj.response.usage);
+          if (found) u = found;
+        } catch (e) { /* not JSON */ }
       });
       if (!u) { usage.missing++; return; }
-      usage.input += u.prompt_tokens || 0;
-      usage.output += u.completion_tokens || 0;
+      usage.input += u.prompt_tokens || u.input_tokens || 0;
+      usage.output += u.completion_tokens || u.output_tokens || 0;
       usage.calls++;
     })().catch(() => { usage.missing++; }));
     return new Response(theirs, { status: res.status, statusText: res.statusText, headers: res.headers });

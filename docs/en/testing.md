@@ -130,13 +130,17 @@ has (embedding models aside, and cloud models: those run at ollama.com whichever
 relays them, so they are measured once, on a server marked `"cloud": true`, which measures
 only them), checks each one loads, and runs the scenarios
 with `runs` per scenario. Servers run in parallel, the models on one server one after
-another. `--server`, `--model` and `--runs` narrow a run.
+another. `--server`, `--model` and `--runs` narrow a run. An entry with
+`"provider": "openai"` measures the `models` it lists through the OpenAI API (the key as
+for the scenarios), and with `tokenBudget` stops before the next scenario once the tokens
+the API reports reach it, to stay within a free daily quota; the report shows the tokens used.
 
 ```json
 "accuracy": { "runs": 3, "servers": [
   { "name": "gpu-box", "url": "http://192.0.2.10:11434" },
   { "name": "slow-box", "url": "http://192.0.2.11:11434", "runs": 1, "skip": ["llama3.2-vision:latest"] },
-  { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true } ] }
+  { "name": "ollama-cloud", "url": "http://localhost:11434", "cloud": true },
+  { "name": "openai", "provider": "openai", "models": ["gpt-5.4"], "tokenBudget": 200000 } ] }
 ```
 
 The results stay on this machine, in `test/llm/results/`: `accuracy.md` (the latest
